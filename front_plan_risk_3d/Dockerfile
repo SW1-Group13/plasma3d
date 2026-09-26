@@ -12,6 +12,9 @@ RUN npm install
 # Copiar el resto del código fuente
 COPY . .
 
+# Sobrescribir el environment de Angular con .env.ts si existe
+RUN if [ -f .env.ts ]; then cp .env.ts src/environments/environment.ts; fi
+
 # Construir Angular Universal (SSR)
 RUN npm run build
 

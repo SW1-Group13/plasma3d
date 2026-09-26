@@ -8,6 +8,8 @@ services:
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=071104
       - CORS_ALLOWED_ORIGINS=http://localhost:4000,http://angular-app:4000
+    env_file:
+      - ./back_plan_risk_3d/.env
     volumes:
       - ./back_plan_risk_3d:/app
     ports:
@@ -20,7 +22,7 @@ services:
       - backend
       - frontend
     command: >
-      sh -c "python manage.py makemigrations &&
+      sh -c "python manage.py makemigrations users plans presupuesto suggestion_risk view_url_3D &&
              python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
 

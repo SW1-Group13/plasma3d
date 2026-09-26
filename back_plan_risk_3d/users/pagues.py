@@ -1,6 +1,7 @@
 """Procesamiento de pagos con Stripe."""
 from datetime import date, datetime, timedelta
 
+import os
 import stripe
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -10,7 +11,8 @@ from rest_framework.response import Response
 from .models import Usuario
 
 
-stripe.api_key = (
+stripe.api_key = os.getenv(
+    "STRIPE_API_KEY",
     "sk_test_51SPXgBHisFNi9cpHBLgCrW8rHFZRokvF7AFGUkecGdlwYMu"
     "crehmGjPf1234LhfK8JNdyaLgUgeIx9HQvMecEl7Y001l5EOsBa"
 )

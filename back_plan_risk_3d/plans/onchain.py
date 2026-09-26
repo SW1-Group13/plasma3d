@@ -9,18 +9,20 @@ load_dotenv()
 
 
 # Configuración general
-RPC_URL = "https://rpc-amoy.polygon.technology"
+RPC_URLS = [
+    "https://rpc-amoy.polygon.technology",
+    "https://polygon-amoy-bor-rpc.publicnode.com",
+    "https://polygon-amoy.drpc.org",
+]
 CONTRACT_ADDR = os.getenv("CONTRACT_ADDR")  # Dirección del contrato desplegado
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")      # Clave privada de tu wallet
 CHAIN_ID = 80002  # Polygon Amoy testnet
 
 # === CONEXIÓN WEB3 ===
-w3 = Web3(Web3.HTTPProvider(RPC_URL))
-if not w3.is_connected():
-    raise RuntimeError("❌ No se pudo conectar a Polygon Amoy RPC")
-
-# === CARGAR CUENTA ===
-acct = w3.eth.account.from_key(PRIVATE_KEY)
+w3 = None
+acct = None
+contract = None
+connected = False
 
 # === ABI DEL CONTRATO ===
 ABI = [
@@ -69,12 +71,37 @@ ABI = [
     }
 ]
 
+if CONTRACT_ADDR and PRIVATE_KEY:
+    for url in RPC_URLS:
+        try:
+            temp_w3 = Web3(Web3.HTTPProvider(url))
+            if temp_w3.is_connected():
+                w3 = temp_w3
+                connected = True
+                print(f"✅ Conectado a Polygon Amoy RPC vía {url}")
+                break
+        except Exception as e:
+            print(f"⚠️ Error al conectar con {url}: {e}")
+            continue
 
-# Crear objeto del contrato
-contract = w3.eth.contract(
-    address=w3.to_checksum_address(CONTRACT_ADDR),
-    abi=ABI
-)
+if not connected or w3 is None:
+    print("⚠️ No se pudo conectar a ningún nodo RPC de Polygon Amoy o faltan variables (CONTRACT_ADDR/PRIVATE_KEY). Blockchain deshabilitada.")
+    w3 = None
+else:
+    try:
+        # === CARGAR CUENTA ===
+        acct = w3.eth.account.from_key(PRIVATE_KEY)
+        # Crear objeto del contrato
+        contract = w3.eth.contract(
+            address=w3.to_checksum_address(CONTRACT_ADDR),
+            abi=ABI
+        )
+        print("✅ Cuenta y contrato Blockchain cargados con éxito.")
+    except Exception as e:
+        print(f"⚠️ Error al inicializar cuenta o contrato Blockchain: {e}. Blockchain deshabilitada.")
+        w3 = None
+        acct = None
+        contract = None
 
 
 def register_on_chain(job_id, cid_img, cid_json, cid_glb,
@@ -91,6 +118,10 @@ def register_on_chain(job_id, cid_img, cid_json, cid_glb,
     Returns:
         Hash de transacción o None en caso de error
     """
+    if not w3 or not acct or not contract:
+        print("⚠️ Registro en blockchain deshabilitado. Omitiendo paso de blockchain.")
+        return None
+
     try:
         print("🔗 Iniciando registro en blockchain...")
 
@@ -150,6 +181,10 @@ def get_asset(job_id: int):
     Returns:
         Diccionario con datos del asset o None en caso de error
     """
+    if not contract:
+        print("⚠️ Lectura de blockchain deshabilitada.")
+        return None
+
     try:
         data = contract.functions.getAsset(int(job_id)).call()
         return {

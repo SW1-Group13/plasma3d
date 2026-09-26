@@ -101,7 +101,7 @@ DATABASES = {
         'NAME': 'plan_risk_db',      # nombre de tu base de datos
         'USER': 'postgres',          # tu usuario de PostgreSQL
         'PASSWORD': '071104',   # la contraseña de ese usuario
-        'HOST': 'postgres',         # o la IP del servidor si es remoto
+        'HOST': os.getenv('POSTGRES_HOST', 'postgres'),         # o la IP del servidor si es remoto
         'PORT': '5432',              # puerto por defecto de PostgreSQL
     }
 }
@@ -166,9 +166,10 @@ MEDIA_ROOT = BASE_DIR / 'media'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 CORS_ALLOW_ALL_ORIGINS = True
-CSRF_TRUSTED_ORIGINS = ['http://localhost:4200','http://127.0.0.1:4200']
-CSRF_COOKIE_SECURE = False
+CSRF_TRUSTED_ORIGINS = os.getenv('CSRF_TRUSTED_ORIGINS', 'http://localhost:4200,http://127.0.0.1:4200,http://localhost:4000').split(',')
+CSRF_COOKIE_SECURE = os.getenv('CSRF_COOKIE_SECURE', 'False') == 'True'
 CORS_ALLOW_CREDENTIALS = True
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # AUTH_USER_MODEL = 'view_url_3D.Usuario'
 
 # Gemini API Configuration
