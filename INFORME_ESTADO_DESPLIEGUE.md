@@ -1,4 +1,4 @@
-# Informe de Estado de Despliegue - Plan Risk 3D
+# Informe de Estado de Despliegue - Plasma 3D
 
 Este informe resume el estado actual del despliegue en tu máquina virtual (`192.168.0.97`) tras la ejecución de las tareas de compilación, levantamiento y configuración del firewall.
 
@@ -6,7 +6,7 @@ Este informe resume el estado actual del despliegue en tu máquina virtual (`192
 
 ## 1. Estado de los Contenedores (Docker status)
 
-Todos los contenedores del ecosistema de Plan Risk 3D se encuentran **activos y estables (Up 3 minutes)**:
+Todos los contenedores del ecosistema de Plasma 3D se encuentran **activos y estables (Up 3 minutes)**:
 
 | Contenedor | Imagen | Estado | Puertos Mapeados | Propósito |
 | :--- | :--- | :--- | :--- | :--- |

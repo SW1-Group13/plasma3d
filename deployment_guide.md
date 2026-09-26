@@ -1,4 +1,4 @@
-# Guía de Despliegue con Nginx Proxy Manager (NPM) - Plan Risk 3D
+# Guía de Despliegue con Nginx Proxy Manager (NPM) - Plasma 3D
 
 Esta guía detalla la configuración paso a paso para desplegar y enrutar la aplicación usando **Nginx Proxy Manager** (alojado en tu Proxmox) para apuntar a la máquina virtual de la aplicación (`192.168.0.97`) usando un único dominio (`app.bratox.me`) y rutas `/api/`.
 
@@ -7,7 +7,7 @@ Esta guía detalla la configuración paso a paso para desplegar y enrutar la apl
 ## Paso 1: Configurar el código localmente
 
 1. **Modificar el Frontend**:
-   Abre [front_plan_risk_3d/src/environments/environment.ts](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/front_plan_risk_3d/src/environments/environment.ts) y [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/front_plan_risk_3d/.env.ts):
+   Abre [plasma3d_frontend/src/environments/environment.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_frontend/src/environments/environment.ts) y [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_frontend/.env.ts):
    ```typescript
    export const environment = {
      endpoint: 'https://app.bratox.me/', // Tu dominio con HTTPS sin /api/ al final
@@ -15,7 +15,7 @@ Esta guía detalla la configuración paso a paso para desplegar y enrutar la apl
    }
    ```
 2. **Configurar el archivo `.env` del Backend**:
-   En tu archivo `.env` del backend (dentro de [back_plan_risk_3d/.env](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/back_plan_risk_3d/.env)), agrega y configura las variables:
+   En tu archivo `.env` del backend (dentro de [plasma3d_api/.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_api/.env)), agrega y configura las variables:
    ```env
    CSRF_TRUSTED_ORIGINS=https://app.bratox.me,http://app.bratox.me
    CSRF_COOKIE_SECURE=True
@@ -34,7 +34,7 @@ En tu máquina virtual, asegúrate de levantar los servicios exponiendo los puer
    ```bash
    docker-compose -f docker-compose.db.yml up -d
    ```
-2. Levanta Django y Angular (los cuales ya tienen los puertos expuestos `8000` y `4000` en tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/docker-compose.app.yml)):
+2. Levanta Django y Angular (los cuales ya tienen los puertos expuestos `8000` y `4000` en tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.app.yml)):
    ```bash
    docker compose -f docker-compose.app.yml up --build -d
    ```

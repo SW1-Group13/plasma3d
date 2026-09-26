@@ -1,4 +1,4 @@
-# Documentación de Endpoints de la API - Plan Risk 3D
+# Documentación de Endpoints de la API - Plasma 3D
 
 Esta guía contiene la lista de todas las rutas configuradas en la API del backend para realizar pruebas desde clientes como **Postman**, **Bruno** o **Insomnia**.
 

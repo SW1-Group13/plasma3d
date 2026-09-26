@@ -41,7 +41,7 @@ export class LoginPageComponent {
       next: (response: any) => {
         console.log(response);
         this.router.navigate(['/private']);
-        this.toastr.success('Inicio de sesion exitoso.', 'Bienvenido a PlanRisk 3D !!', {
+        this.toastr.success('Inicio de sesion exitoso.', 'Bienvenido a Plasma 3D !!', {
           timeOut: 3000,
         });
       },

@@ -48,7 +48,7 @@ export class RegisterPageComponent {
       next: (response: any) => {
         console.log(response);
         this.router.navigate(['/login']);
-        this.toastr.success('Registro de usuario Exitoso.', 'Bienvenido a PlanRisk 3D !!', {
+        this.toastr.success('Registro de usuario Exitoso.', 'Bienvenido a Plasma 3D !!', {
           timeOut: 3000,
         });
       }, error: (e: HttpErrorResponse) => {

@@ -3,7 +3,7 @@
   "version": 1,
   "newProjectRoot": "projects",
   "projects": {
-    "front_plan_risk_3d": {
+    "plasma3d_frontend": {
       "projectType": "application",
       "schematics": {},
       "root": "",
@@ -59,10 +59,10 @@
           "builder": "@angular/build:dev-server",
           "configurations": {
             "production": {
-              "buildTarget": "front_plan_risk_3d:build:production"
+              "buildTarget": "plasma3d_frontend:build:production"
             },
             "development": {
-              "buildTarget": "front_plan_risk_3d:build:development"
+              "buildTarget": "plasma3d_frontend:build:development"
             }
           },
           "defaultConfiguration": "development"

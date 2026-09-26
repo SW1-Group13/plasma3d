@@ -27,7 +27,7 @@ En tu arquitectura, Nginx Proxy Manager (NPM) es el intermediario (Gateway) entr
 Dado que el error es en el puerto `8000`, el contenedor de Django en tu VM (`192.168.0.97`) probablemente se ha detenido o ha fallado al iniciar. Las tres causas más comunes son:
 
 ### A. Fallo en las Migraciones de la Base de Datos
-En tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/docker-compose.app.yml), el comando de inicio ejecuta las migraciones antes de arrancar el servidor:
+En tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.app.yml), el comando de inicio ejecuta las migraciones antes de arrancar el servidor:
 ```bash
 python manage.py makemigrations && python manage.py migrate && python manage.py runserver
 ```

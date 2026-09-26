@@ -1,5 +1,5 @@
 {
-  "name": "front-plan-risk-3d",
+  "name": "plasma3d-frontend",
   "version": "0.0.0",
   "scripts": {
     "ng": "ng",
@@ -7,7 +7,7 @@
     "build": "ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
-    "serve:ssr:front_plan_risk_3d": "node dist/front_plan_risk_3d/server/server.mjs"
+    "serve:ssr:plasma3d_frontend": "node dist/plasma3d_frontend/server/server.mjs"
   },
   "prettier": {
     "overrides": [

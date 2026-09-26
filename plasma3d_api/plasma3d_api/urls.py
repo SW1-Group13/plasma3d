@@ -1,5 +1,5 @@
 """
-URL configuration for api_plan_risk_3d project.
+URL configuration for plasma3d_api project.
 
 The `urlpatterns` list routes URLs to views. For more information please see:
     https://docs.djangoproject.com/en/5.2/topics/http/urls/
@@ -22,7 +22,7 @@ from django.conf.urls.static import static
 from django.http import JsonResponse
 
 def home(request):
-    return JsonResponse({"message": "API Plan Risk 3D activa..... Bienvenido!"})
+    return JsonResponse({"message": "API Plasma 3D activa..... Bienvenido!"})
 
 urlpatterns = [
     # path('admin/', admin.site.urls),

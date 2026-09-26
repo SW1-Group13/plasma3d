@@ -1,11 +1,11 @@
-# Plan Risk 3D - Backend
+# Plasma 3D - Backend
 
-Este es el backend del proyecto Plan Risk 3D, desarrollado en Django.
+Este es el backend del proyecto Plasma 3D, desarrollado en Django.
 
 ## Requisitos Previos
 
 1. **Pesos del Modelo (Weights)**:
-   Asegúrate de tener el archivo de pesos `maskrcnn_15_epochs.h5` en la carpeta `back_plan_risk_3d/weights/`. 
+   Asegúrate de tener el archivo de pesos `maskrcnn_15_epochs.h5` en la carpeta `plasma3d_api/weights/`. 
    Si no lo tienes, puedes descargarlo de este [enlace de Google Drive](https://drive.google.com/file/d/14fDV0b_sKDg0_DkQBTyO1UaT6mHrW9es/view) y guardarlo en dicha ruta.
 
 ---
@@ -54,7 +54,7 @@ Si prefieres correr el backend en tu entorno local sin usar el contenedor de Dja
    ```
 
 4. **Configurar el archivo `.env`**:
-   En el archivo [back_plan_risk_3d/.env](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/back_plan_risk_3d/.env), añade la variable `POSTGRES_HOST=localhost` para que Django se conecte localmente al puerto expuesto de PostgreSQL:
+   En el archivo [plasma3d_api/.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_api/.env), añade la variable `POSTGRES_HOST=localhost` para que Django se conecte localmente al puerto expuesto de PostgreSQL:
    ```env
    POSTGRES_HOST=localhost
    ```

@@ -1,4 +1,4 @@
-# Estructura de Archivos y Origen de Datos para Producción - Plan Risk 3D (con Nginx Proxy Manager)
+# Estructura de Archivos y Origen de Datos para Producción - Plasma 3D (con Nginx Proxy Manager)
 
 Este documento describe detalladamente la estructura de archivos que se debe subir al servidor y cómo cada contenedor lee y gestiona sus datos bajo un esquema de red administrado por **Nginx Proxy Manager** (NPM).
 
@@ -9,12 +9,12 @@ Este documento describe detalladamente la estructura de archivos que se debe sub
 Para desplegar el proyecto en la máquina virtual, debes transferir la siguiente estructura de archivos:
 
 ```text
-plan_risk_3d/                       # Directorio raíz del proyecto en la máquina virtual
+plasma3d/                       # Directorio raíz del proyecto en la máquina virtual
 ├── docker-compose.db.yml           # Orquestación de la Base de Datos y PgAdmin
 ├── docker-compose.app.yml          # Orquestación del Backend (Django) y Frontend (Angular)
 │
-├── back_plan_risk_3d/              # Código fuente del Backend
-│   ├── api_plan_risk_3d/           # Configuración principal de Django (settings.py, urls.py)
+├── plasma3d_api/              # Código fuente del Backend
+│   ├── plasma3d_api/           # Configuración principal de Django (settings.py, urls.py)
 │   ├── weights/                    # Pesos de Inteligencia Artificial (CRÍTICO)
 │   │   └── maskrcnn_15_epochs.h5   # Archivo de pesos descargado para inferencia 3D
 │   ├── media/                      # Almacenamiento de imágenes y planos subidos
@@ -22,7 +22,7 @@ plan_risk_3d/                       # Directorio raíz del proyecto en la máqui
 │   ├── requirements.txt            # Dependencias de Python
 │   └── .env                        # Variables de entorno secretas del Backend
 │
-└── front_plan_risk_3d/             # Código fuente del Frontend
+└── plasma3d_frontend/             # Código fuente del Frontend
     ├── src/                        # Código Angular (componentes, servicios, vistas)
     │   └── environments/
     │       └── environment.ts      # Endpoint por defecto compilado en Angular
@@ -35,18 +35,18 @@ plan_risk_3d/                       # Directorio raíz del proyecto en la máqui
 ## 2. Origen de Datos de cada Contenedor (VM: `192.168.0.97`)
 
 ### A. Contenedor de Base de Datos (`postgres_db`)
-* **Credenciales**: Lee de [docker-compose.db.yml](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/docker-compose.db.yml) (`POSTGRES_USER`, `POSTGRES_PASSWORD`, etc.) en tiempo de ejecución.
+* **Credenciales**: Lee de [docker-compose.db.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.db.yml) (`POSTGRES_USER`, `POSTGRES_PASSWORD`, etc.) en tiempo de ejecución.
 * **Persistencia**: Se almacena en el volumen de Docker `pgdata`.
 * **Puertos expuestos**: Puerto `5432` expuesto a la red local (para conexiones desde el Proxmox u otra máquina de desarrollo).
 
 ### B. Contenedor del Backend (`django_backend`)
 * **Código**: Copiado al contenedor mediante el Dockerfile del backend y mapeado en caliente mediante volumen en desarrollo/producción.
-* **Variables de Entorno**: Inyectadas desde [back_plan_risk_3d/.env](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/back_plan_risk_3d/.env) gracias a la propiedad `env_file` (incluye llaves blockchain, Gemini API, CSRF y `STRIPE_API_KEY`).
+* **Variables de Entorno**: Inyectadas desde [plasma3d_api/.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_api/.env) gracias a la propiedad `env_file` (incluye llaves blockchain, Gemini API, CSRF y `STRIPE_API_KEY`).
 * **Pesos del Modelo**: Lee localmente `/weights/maskrcnn_15_epochs.h5`.
 * **Puertos expuestos**: Puerto `8000` expuesto a la red local para recibir llamadas desde Nginx Proxy Manager.
 
 ### C. Contenedor del Frontend (`angular_frontend`)
-* **Endpoint API**: Toma `https://app.bratox.me/` desde [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/Plan_Risk_3D/front_plan_risk_3d/.env.ts) y lo compila estáticamente.
+* **Endpoint API**: Toma `https://app.bratox.me/` desde [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_frontend/.env.ts) y lo compila estáticamente.
 * **Puertos expuestos**: Puerto `4000` expuesto a la red local para recibir llamadas desde Nginx Proxy Manager.
 
 ---

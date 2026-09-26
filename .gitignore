@@ -1,6 +1,6 @@
 git-filter-repo.py
 
-back_plan_risk_3d/media/
+plasma3d_api/media/
 
 # Entornos virtuales
 venv/
@@ -38,3 +38,6 @@ db.sqlite3
 .pytest_cache/
 .coverage
 htmlcov/
+
+
+.ignore/**/*
