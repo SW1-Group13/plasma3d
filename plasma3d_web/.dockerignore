@@ -1,0 +1,15 @@
+# Node
+node_modules/
+dist/
+.angular/
+
+# Entorno / logs
+.env
+*.log
+
+# Git / IDEs / sistema
+.git/
+.gitignore
+.vscode/
+.idea/
+.DS_Store

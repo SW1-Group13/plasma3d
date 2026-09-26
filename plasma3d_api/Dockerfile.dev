@@ -1,0 +1,31 @@
+# ==========================================================
+# plasma3d-api - Desarrollo (Django + Mask R-CNN / TensorFlow 1.15)
+# ==========================================================
+FROM python:3.6.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Dependencias del sistema (psycopg2, git para mask-rcnn, archive para Buster)
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && sed -i '/deb.*buster-updates/d' /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       gcc \
+       libpq-dev \
+       git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependencias de Python (cache de capas)
+COPY requirements.txt /app/
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Codigo fuente
+COPY . /app/
+
+EXPOSE 8000
+
+# Servidor de desarrollo con autoreload
+CMD ["sh", "-c", "python manage.py migrate && python manage.py runserver 0.0.0.0:8000"]

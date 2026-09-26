@@ -1,0 +1,39 @@
+# ==========================================================
+# plasma3d-web - Produccion (build SSR de Angular + Node runtime)
+# ==========================================================
+
+# --- Etapa 1: build ---
+FROM node:20-alpine AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+# Endpoint/Cloudinary por build-arg. Si no se pasan, usa .env.ts.
+ARG ENDPOINT
+ARG CLOUDINARY=https://api.cloudinary.com/v1_1
+RUN if [ -n "$ENDPOINT" ]; then \
+      printf "export const environment = {\n  endpoint: '%s',\n  cloudinary: '%s'\n}\n" "$ENDPOINT" "$CLOUDINARY" > src/environments/environment.ts; \
+    elif [ -f .env.ts ]; then \
+      cp .env.ts src/environments/environment.ts; \
+    fi
+
+RUN npm run build
+
+# --- Etapa 2: runtime ---
+FROM node:20-alpine
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+COPY --from=build /app/dist ./dist
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/package*.json ./
+
+EXPOSE 4000
+
+CMD ["node", "dist/plasma3d_web/server/server.mjs"]

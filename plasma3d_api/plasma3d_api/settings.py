@@ -26,11 +26,14 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-bdjk-$ar=3f&70-^+0htn$%e-96&qy!m+++()4owbg=9en!f27'
+SECRET_KEY = os.getenv(
+    'SECRET_KEY',
+    'django-insecure-bdjk-$ar=3f&70-^+0htn$%e-96&qy!m+++()4owbg=9en!f27',
+)
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ['*']
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', '*').split(',')
 
 CORS_ALLOW_HEADERS = [
     'accept',
@@ -98,11 +101,11 @@ WSGI_APPLICATION = 'plasma3d_api.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
-        'NAME': 'plasma_db',      # nombre de tu base de datos
-        'USER': 'postgres',          # tu usuario de PostgreSQL
-        'PASSWORD': '071104',   # la contraseña de ese usuario
-        'HOST': os.getenv('POSTGRES_HOST', 'postgres'),         # o la IP del servidor si es remoto
-        'PORT': '5432',              # puerto por defecto de PostgreSQL
+        'NAME': os.getenv('POSTGRES_DB', 'plasma_db'),
+        'USER': os.getenv('POSTGRES_USER', 'postgres'),
+        'PASSWORD': os.getenv('POSTGRES_PASSWORD', '071104'),
+        'HOST': os.getenv('POSTGRES_HOST', 'postgres'),
+        'PORT': os.getenv('POSTGRES_PORT', '5432'),
     }
 }
 

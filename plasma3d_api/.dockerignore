@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Entorno / secretos
+.env
+*.log
+
+# Datos y artefactos no necesarios en la imagen
+media/
+.git/
+.gitignore
+
+# IDEs / sistema
+.vscode/
+.idea/
+.DS_Store

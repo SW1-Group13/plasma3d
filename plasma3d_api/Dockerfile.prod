@@ -1,0 +1,33 @@
+# ==========================================================
+# plasma3d-api - Produccion (Django + Gunicorn + Mask R-CNN / TF 1.15)
+# ==========================================================
+FROM python:3.6.13-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Dependencias del sistema (psycopg2, git para mask-rcnn, archive para Buster)
+RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && sed -i 's|security.debian.org|archive.debian.org|g' /etc/apt/sources.list \
+    && sed -i '/deb.*buster-updates/d' /etc/apt/sources.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+       gcc \
+       libpq-dev \
+       git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependencias de Python + Gunicorn (cache de capas)
+COPY requirements.txt /app/
+RUN pip install --upgrade pip \
+    && pip install -r requirements.txt \
+    && pip install gunicorn==20.1.0
+
+# Codigo fuente
+COPY . /app/
+
+EXPOSE 8000
+
+# Un solo worker: el modelo Mask R-CNN se carga en memoria una sola vez.
+CMD ["sh", "-c", "python manage.py migrate && gunicorn plasma3d_api.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 600 --access-logfile - --error-logfile -"]
