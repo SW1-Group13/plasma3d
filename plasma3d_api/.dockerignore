@@ -12,6 +12,7 @@ env/
 
 # Datos y artefactos no necesarios en la imagen
 media/
+staticfiles/
 .git/
 .gitignore
 

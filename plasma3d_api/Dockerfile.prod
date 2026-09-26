@@ -27,6 +27,9 @@ RUN pip install --upgrade pip \
 # Codigo fuente
 COPY . /app/
 
+# Reunir estaticos (admin/DRF) para que WhiteNoise los sirva
+RUN python manage.py collectstatic --noinput
+
 EXPOSE 8000
 
 # Un solo worker: el modelo Mask R-CNN se carga en memoria una sola vez.
