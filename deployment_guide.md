@@ -7,15 +7,15 @@ Esta guía detalla la configuración paso a paso para desplegar y enrutar la apl
 ## Paso 1: Configurar el código localmente
 
 1. **Modificar el Frontend**:
-   Abre [plasma3d_frontend/src/environments/environment.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_frontend/src/environments/environment.ts) y [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_frontend/.env.ts):
+   Abre [plasma3d_web/src/environments/environment.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_web/src/environments/environment.ts) y [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_web/.env.ts):
    ```typescript
    export const environment = {
      endpoint: 'https://app.bratox.me/', // Tu dominio con HTTPS sin /api/ al final
      cloudinary: 'https://api.cloudinary.com/v1_1'
    }
    ```
-2. **Configurar el archivo `.env` del Backend**:
-   En tu archivo `.env` del backend (dentro de [plasma3d_api/.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_api/.env)), agrega y configura las variables:
+2. **Configurar el archivo `.env` del proyecto** (raíz, compartido por backend y frontend):
+   En el archivo [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto, agrega y configura las variables:
    ```env
    CSRF_TRUSTED_ORIGINS=https://app.bratox.me,http://app.bratox.me
    CSRF_COOKIE_SECURE=True

@@ -1,4 +1,4 @@
-import { roleGuard } from './../../auth/guards/role.guard';
+import { roleGuard } from '../../auth/guards/role.guard';
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { environment } from '../../../../environments/environment';

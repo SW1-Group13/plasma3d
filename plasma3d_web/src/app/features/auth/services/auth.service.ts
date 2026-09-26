@@ -1,4 +1,4 @@
-import { UserRegister, Usuario } from './../../../models/interfaces/users/users.interface';
+import { UserRegister, Usuario } from '../../../models/interfaces/users/users.interface';
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { environment } from '../../../../environments/environment';

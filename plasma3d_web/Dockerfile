@@ -32,4 +32,4 @@ COPY --from=build /app/package*.json ./
 EXPOSE 4000
 
 # Comando para ejecutar el servidor SSR
-CMD ["node", "dist/plasma3d_frontend/server/server.mjs"]
+CMD ["node", "dist/plasma3d_web/server/server.mjs"]

@@ -8,5 +8,5 @@ import { RouterOutlet } from '@angular/router';
   styleUrl: './app.css'
 })
 export class App {
-  protected readonly title = signal('plasma3d_frontend');
+  protected readonly title = signal('plasma3d_web');
 }

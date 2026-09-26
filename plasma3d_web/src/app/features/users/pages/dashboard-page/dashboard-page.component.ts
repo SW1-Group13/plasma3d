@@ -1,5 +1,5 @@
 import { Validators } from '@angular/forms';
-import { Model3D } from './../../../../models/interfaces/model3D/model3D.interface';
+import { Model3D } from '../../../../models/interfaces/model3D/model3D.interface';
 import { ChangeDetectionStrategy, Component, computed, inject, OnInit, signal } from '@angular/core';
 import { ModelsService } from '../../../viewer3d/services/models.service';
 import { Router } from '@angular/router';

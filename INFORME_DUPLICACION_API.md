@@ -11,7 +11,7 @@ La duplicación del path `api/api/` ocurría por una superposición entre la con
 ### Punto A: Configuración del Entorno (`.env.ts` / `environment.ts`)
 En el archivo de configuración de producción, el endpoint estaba definido incluyendo `/api/` al final:
 ```typescript
-// Archivo: plasma3d_frontend/.env.ts (ANTERIOR)
+// Archivo: plasma3d_web/.env.ts (ANTERIOR)
 export const environment = {
   endpoint: 'https://app.bratox.me/api/', // <-- Aquí ya se incluía /api/
   cloudinary: 'https://api.cloudinary.com/v1_1'
@@ -21,7 +21,7 @@ export const environment = {
 ### Punto B: Concatenación en los Servicios de Angular (`auth.service.ts`, etc.)
 En los archivos de servicio, Angular realiza peticiones concatenando la variable `this.API` (que toma el valor de `environment.endpoint`) con la ruta del recurso, añadiendo manualmente `"api/"`:
 ```typescript
-// Archivo: plasma3d_frontend/src/app/features/auth/services/auth.service.ts
+// Archivo: plasma3d_web/src/app/features/auth/services/auth.service.ts
 public register(user: UserRegister): Observable<any> {
   // Se concatena: endpoint + "api/users/auth/registro/"
   return this.http.post<any>(`${this.API}api/users/auth/registro/`, { ... });
@@ -42,7 +42,7 @@ Se corrigió la URL base en el archivo de entorno eliminando el prefijo `/api/` 
 
 ### Configuración Corregida:
 ```typescript
-// Archivo: plasma3d_frontend/.env.ts (CORREGIDO)
+// Archivo: plasma3d_web/.env.ts (CORREGIDO)
 export const environment = {
   endpoint: 'https://app.bratox.me/', // <-- Sin /api/ al final
   cloudinary: 'https://api.cloudinary.com/v1_1'
