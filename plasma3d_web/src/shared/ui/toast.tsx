@@ -36,9 +36,9 @@ export const toast = {
 };
 
 const variantStyles: Record<ToastVariant, string> = {
-  success: 'border-emerald-200 bg-emerald-50 text-emerald-900',
-  error: 'border-red-200 bg-red-50 text-red-900',
-  info: 'border-slate-200 bg-white text-slate-800',
+  success: 'border-success/40 bg-success/10 text-success',
+  error: 'border-danger/40 bg-danger/10 text-danger',
+  info: 'border-border bg-surface text-foreground',
 };
 
 export function Toaster() {
@@ -50,12 +50,12 @@ export function Toaster() {
       {items.map((item) => (
         <ToastPrimitive.Root
           key={item.id}
-          duration={3200}
+          duration={3600}
           onOpenChange={(open) => {
             if (!open) dismiss(item.id);
           }}
           className={cn(
-            'relative rounded-lg border p-4 shadow-lg',
+            'p3d-fade-in relative rounded-xl border p-4 shadow-xl shadow-black/40 backdrop-blur',
             variantStyles[item.variant ?? 'info'],
           )}
         >

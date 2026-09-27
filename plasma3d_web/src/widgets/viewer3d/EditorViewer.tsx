@@ -7,9 +7,9 @@ import { useSession } from '@/entities/session/store';
 import { env } from '@/shared/config/env';
 import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
-import { Label } from '@/shared/ui/label';
 import { Spinner } from '@/shared/ui/spinner';
 import {
+  CalculatorIcon,
   CubeIcon,
   DownloadIcon,
   MoveIcon,
@@ -17,6 +17,8 @@ import {
   RotateIcon,
   SaveIcon,
   ScaleIcon,
+  SparklesIcon,
+  TagIcon,
   TrashIcon,
 } from '@/shared/ui/icons';
 import { cn } from '@/shared/lib/utils';
@@ -42,7 +44,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [rotSnap, setRotSnap] = useState(0);
   const [texturePart, setTexturePart] = useState('wall_internal');
   const [textureUrl, setTextureUrl] = useState(TEXTURES[0].url);
-  const [color, setColor] = useState('#ffffff');
+  const [color, setColor] = useState('#e2e8f0');
   const [isBusy, setIsBusy] = useState(false);
   const [createHint, setCreateHint] = useState<ElementType | null>(null);
 
@@ -59,9 +61,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     if (raw) {
       try {
         const model = JSON.parse(raw);
-        if (model?.glb_model) {
-          url = `${env.apiUrl}${String(model.glb_model).replace(/^\//, '')}`;
-        }
+        if (model?.glb_model) url = `${env.apiUrl}${String(model.glb_model).replace(/^\//, '')}`;
       } catch {
         localStorage.removeItem('modelo');
       }
@@ -74,21 +74,10 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     };
   }, []);
 
-  useEffect(() => {
-    engineRef.current?.setMode(mode);
-  }, [mode]);
-
-  useEffect(() => {
-    engineRef.current?.setSpace(space);
-  }, [space]);
-
-  useEffect(() => {
-    engineRef.current?.setTranslationSnap(snap || null);
-  }, [snap]);
-
-  useEffect(() => {
-    engineRef.current?.setRotationSnap(rotSnap || null);
-  }, [rotSnap]);
+  useEffect(() => void engineRef.current?.setMode(mode), [mode]);
+  useEffect(() => void engineRef.current?.setSpace(space), [space]);
+  useEffect(() => void engineRef.current?.setTranslationSnap(snap || null), [snap]);
+  useEffect(() => void engineRef.current?.setRotationSnap(rotSnap || null), [rotSnap]);
 
   const startCreate = useCallback((type: ElementType) => {
     engineRef.current?.startCreate(type);
@@ -99,10 +88,9 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   async function buildFile(): Promise<File | null> {
     const engine = engineRef.current;
     if (!engine) return null;
-    const raw = localStorage.getItem('modelo');
     let id = Date.now();
     try {
-      id = JSON.parse(raw || '{}').id ?? id;
+      id = JSON.parse(localStorage.getItem('modelo') || '{}').id ?? id;
     } catch {
       /* ignore */
     }
@@ -115,15 +103,14 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     if (!engine) return;
     setIsBusy(true);
     try {
-      const raw = localStorage.getItem('modelo');
-      const id = JSON.parse(raw || '{}').id ?? Date.now();
+      const id = JSON.parse(localStorage.getItem('modelo') || '{}').id ?? Date.now();
       const { blob, filename } = await engine.exportGlb(`job_${id}.glb`);
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
       link.download = filename.endsWith('.glb') ? filename : `${filename}.glb`;
       link.click();
       URL.revokeObjectURL(link.href);
-    } catch (error) {
+    } catch {
       toast.error('Error', 'No se pudo exportar el modelo.');
     } finally {
       setIsBusy(false);
@@ -138,7 +125,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       if (!file) throw new Error('Sin modelo');
       await updateGlb(file, user.id);
       toast.success('Exito', 'Modelo guardado correctamente.');
-    } catch (error) {
+    } catch {
       toast.error('Error', 'No se pudo guardar el modelo.');
     } finally {
       setIsBusy(false);
@@ -172,33 +159,34 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const scale = selected?.scale ?? { x: 1, y: 1, z: 1 };
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
+    <div className="grid gap-4 lg:grid-cols-[1fr_330px]">
       <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-200 bg-white p-2">
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-surface p-2">
           <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} title="Mover (W)">
-            <MoveIcon width={16} height={16} /> Mover
+            <MoveIcon width={15} height={15} /> Mover
           </ModeButton>
           <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} title="Rotar (E)">
-            <RotateIcon width={16} height={16} /> Rotar
+            <RotateIcon width={15} height={15} /> Rotar
           </ModeButton>
           <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} title="Escalar (R)">
-            <ScaleIcon width={16} height={16} /> Escalar
+            <ScaleIcon width={15} height={15} /> Escalar
           </ModeButton>
-          <span className="mx-1 h-6 w-px bg-slate-200" />
+
+          <span className="mx-1 h-6 w-px bg-border" />
+
           <button
-            className={cn(
-              'rounded-md px-2 py-1 text-xs',
-              space === 'local' ? 'bg-slate-800 text-white' : 'bg-slate-100 text-slate-600',
-            )}
             onClick={() => setSpace(space === 'local' ? 'world' : 'local')}
+            className="cursor-pointer rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-muted transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
           >
             {space === 'local' ? 'Local' : 'Mundo'}
           </button>
-          <span className="mx-1 h-6 w-px bg-slate-200" />
-          <label className="flex items-center gap-1 text-xs text-slate-500">
+
+          <span className="mx-1 h-6 w-px bg-border" />
+
+          <label className="flex items-center gap-1.5 text-xs text-muted">
             Snap
             <select
-              className="rounded border border-slate-300 px-1 py-0.5 text-xs"
+              className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
               value={snap}
               onChange={(e) => setSnap(Number(e.target.value))}
             >
@@ -208,10 +196,11 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
               <option value={1}>1</option>
             </select>
           </label>
-          <label className="flex items-center gap-1 text-xs text-slate-500">
-            Rot snap
+
+          <label className="flex items-center gap-1.5 text-xs text-muted">
+            Rot
             <select
-              className="rounded border border-slate-300 px-1 py-0.5 text-xs"
+              className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
               value={rotSnap}
               onChange={(e) => setRotSnap(Number(e.target.value))}
             >
@@ -223,10 +212,10 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </label>
         </div>
 
-        <div className="relative h-[60vh] min-h-[360px] overflow-hidden rounded-lg border border-slate-200 bg-slate-200">
+        <div className="relative h-[60vh] min-h-[360px] overflow-hidden rounded-xl border border-border bg-[#0a0e1a]">
           <canvas ref={canvasRef} className="h-full w-full" />
           {createHint && (
-            <div className="absolute left-3 top-3 rounded-md bg-slate-900/80 px-3 py-1.5 text-xs text-white">
+            <div className="absolute left-3 top-3 rounded-lg border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary backdrop-blur">
               Haz clic en el piso para colocar: {createHint}
             </div>
           )}
@@ -234,78 +223,54 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" size="sm" onClick={() => startCreate('wall')}>
-            <PlusIcon width={16} height={16} /> Muro
+            <PlusIcon width={15} height={15} /> Muro
           </Button>
           <Button variant="outline" size="sm" onClick={() => startCreate('door')}>
-            <PlusIcon width={16} height={16} /> Puerta
+            <PlusIcon width={15} height={15} /> Puerta
           </Button>
           <Button variant="outline" size="sm" onClick={() => startCreate('window')}>
-            <PlusIcon width={16} height={16} /> Ventana
+            <PlusIcon width={15} height={15} /> Ventana
           </Button>
-          <Button
-            variant="destructive"
-            size="sm"
-            onClick={() => engineRef.current?.deleteSelected()}
-            disabled={!selected}
-          >
-            <TrashIcon width={16} height={16} /> Eliminar
+          <Button variant="destructive" size="sm" onClick={() => engineRef.current?.deleteSelected()} disabled={!selected}>
+            <TrashIcon width={15} height={15} /> Eliminar
           </Button>
           <Button variant="outline" size="sm" onClick={onExport} disabled={isBusy}>
-            <DownloadIcon width={16} height={16} /> Exportar
+            <DownloadIcon width={15} height={15} /> Exportar
           </Button>
           <Button variant="outline" size="sm" onClick={onSave} disabled={isBusy || !user}>
-            <SaveIcon width={16} height={16} /> Guardar
+            <SaveIcon width={15} height={15} /> Guardar
           </Button>
           <Button variant="secondary" size="sm" onClick={onAnalyzeClick} disabled={isBusy}>
-            Analizar
+            <SparklesIcon width={15} height={15} /> Analizar
           </Button>
           <Button variant="secondary" size="sm" onClick={onBudgetClick}>
-            Presupuesto
+            <CalculatorIcon width={15} height={15} /> Presupuesto
           </Button>
           <Button variant="ghost" size="sm" onClick={onOpenPrices}>
-            Precios
+            <TagIcon width={15} height={15} /> Precios
           </Button>
         </div>
       </div>
 
-      <aside className="flex flex-col gap-4 rounded-lg border border-slate-200 bg-white p-4">
+      <aside className="flex h-fit flex-col gap-4 rounded-xl border border-border bg-surface p-4">
         <div>
-          <h3 className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-            <CubeIcon width={16} height={16} />
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+            <CubeIcon width={16} height={16} className="text-primary" />
             {selected ? selected.name : 'Sin seleccion'}
           </h3>
-          <p className="mt-1 text-xs text-slate-500">
+          <p className="mt-1 text-xs text-muted">
             {selected
               ? `Tamaño: ${selected.size.x.toFixed(2)} x ${selected.size.y.toFixed(2)} x ${selected.size.z.toFixed(2)}`
               : 'Selecciona una pieza en el visor.'}
           </p>
         </div>
 
-        <AxisGroup
-          label="Posicion"
-          values={position}
-          step={0.1}
-          disabled={!selected}
-          onChange={(axis, value) => engineRef.current?.updatePosition(axis, value)}
-        />
-        <AxisGroup
-          label="Rotacion (grados)"
-          values={rotation}
-          step={1}
-          disabled={!selected}
-          onChange={(axis, value) => engineRef.current?.updateRotation(axis, value)}
-        />
-        <AxisGroup
-          label="Escala"
-          values={scale}
-          step={0.1}
-          min={0.01}
-          disabled={!selected}
-          onChange={(axis, value) => engineRef.current?.updateScale(axis, value)}
-        />
+        <AxisGroup label="Posicion" values={position} step={0.1} disabled={!selected} onChange={(axis, value) => engineRef.current?.updatePosition(axis, value)} />
+        <AxisGroup label="Rotacion (grados)" values={rotation} step={1} disabled={!selected} onChange={(axis, value) => engineRef.current?.updateRotation(axis, value)} />
+        <AxisGroup label="Escala" values={scale} step={0.1} min={0.01} disabled={!selected} onChange={(axis, value) => engineRef.current?.updateScale(axis, value)} />
 
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium uppercase tracking-wide text-slate-500">Color</span>
+        <div className="flex items-center justify-between border-t border-border pt-3">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Color</span>
           <div className="flex items-center gap-2">
             <input
               type="color"
@@ -314,7 +279,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                 setColor(e.target.value);
                 engineRef.current?.setSelectedColor(e.target.value);
               }}
-              className="h-8 w-10 cursor-pointer rounded border border-slate-300"
+              className="h-9 w-11 cursor-pointer rounded-md border border-border bg-surface-2"
+              aria-label="Color del objeto"
             />
             <Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetScale()}>
               Reset escala
@@ -322,10 +288,10 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </div>
         </div>
 
-        <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
-          <Label className="text-xs uppercase tracking-wide text-slate-500">Textura</Label>
+        <div className="flex flex-col gap-2 border-t border-border pt-3">
+          <span className="text-xs font-medium uppercase tracking-wide text-muted">Textura</span>
           <select
-            className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+            className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
             value={texturePart}
             onChange={(e) => setTexturePart(e.target.value)}
           >
@@ -334,7 +300,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             <option value="window">Ventanas</option>
           </select>
           <select
-            className="rounded-md border border-slate-300 px-2 py-2 text-sm"
+            className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
             value={textureUrl}
             onChange={(e) => setTextureUrl(e.target.value)}
           >
@@ -356,7 +322,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         </div>
 
         {isBusy && (
-          <div className="flex items-center gap-2 text-sm text-slate-500">
+          <div className="flex items-center gap-2 text-sm text-muted">
             <Spinner className="h-4 w-4" /> Procesando...
           </div>
         )}
@@ -381,8 +347,8 @@ function ModeButton({
       title={title}
       onClick={onClick}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition',
-        active ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200',
+        'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+        active ? 'bg-primary text-white shadow-sm shadow-primary/25' : 'bg-surface-2 text-muted hover:text-foreground',
       )}
     >
       {children}
@@ -405,21 +371,26 @@ function AxisGroup({
   disabled?: boolean;
   onChange: (axis: 'x' | 'y' | 'z', value: number) => void;
 }) {
+  const axes = [
+    { key: 'x' as const, tint: 'text-danger' },
+    { key: 'y' as const, tint: 'text-success' },
+    { key: 'z' as const, tint: 'text-primary' },
+  ];
   return (
-    <div className="flex flex-col gap-2 border-t border-slate-100 pt-3">
-      <span className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</span>
+    <div className="flex flex-col gap-2 border-t border-border pt-3">
+      <span className="text-xs font-medium uppercase tracking-wide text-muted">{label}</span>
       <div className="grid grid-cols-3 gap-2">
-        {(['x', 'y', 'z'] as const).map((axis) => (
-          <div key={axis} className="flex flex-col gap-1">
-            <span className="text-[10px] uppercase text-slate-400">{axis}</span>
+        {axes.map(({ key, tint }) => (
+          <div key={key} className="flex flex-col gap-1">
+            <span className={cn('text-[10px] font-semibold uppercase', tint)}>{key}</span>
             <Input
               type="number"
               step={step}
               min={min}
               disabled={disabled}
-              value={Number(values[axis].toFixed(2))}
-              onChange={(e) => onChange(axis, Number(e.target.value))}
-              className="h-8 px-2 text-sm"
+              value={Number(values[key].toFixed(2))}
+              onChange={(e) => onChange(key, Number(e.target.value))}
+              className="h-9 px-2 text-sm tabular-nums"
             />
           </div>
         ))}

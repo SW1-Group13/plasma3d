@@ -13,15 +13,13 @@ export function HomeViewer() {
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     renderer.setSize(canvas.clientWidth, canvas.clientHeight);
-    renderer.setClearColor(0xdddddd);
+    renderer.setClearColor(0x0a0e1a);
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(
-      45,
-      canvas.clientWidth / canvas.clientHeight,
-      0.1,
-      1000,
-    );
+    const camera = new THREE.PerspectiveCamera(45, canvas.clientWidth / canvas.clientHeight, 0.1, 1000);
     camera.position.set(5, 5, 5);
     camera.lookAt(0, 0, 0);
 
@@ -31,9 +29,9 @@ export function HomeViewer() {
     controls.target.set(0, 0, 0);
     controls.update();
 
-    scene.add(new THREE.GridHelper(30, 30));
-    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    scene.add(new THREE.GridHelper(30, 30, 0x334155, 0x1e293b));
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 1.1);
     dirLight.position.set(5, 10, 5);
     scene.add(dirLight);
 
@@ -68,5 +66,5 @@ export function HomeViewer() {
     };
   }, []);
 
-  return <canvas ref={canvasRef} className="h-full w-full rounded-xl bg-slate-200" />;
+  return <canvas ref={canvasRef} className="h-full w-full bg-canvas" />;
 }

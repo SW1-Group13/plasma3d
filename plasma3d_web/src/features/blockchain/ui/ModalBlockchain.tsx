@@ -16,6 +16,7 @@ import {
 import { Input } from '@/shared/ui/input';
 import { Label } from '@/shared/ui/label';
 import { Spinner } from '@/shared/ui/spinner';
+import { ShieldIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 interface ModalBlockchainProps {
@@ -38,9 +39,7 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
     const reader = new FileReader();
     reader.onload = () => {
       const blob = new Blob([reader.result as ArrayBuffer], { type: 'image/png' });
-      const fixedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), {
-        type: 'image/png',
-      });
+      const fixedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.png'), { type: 'image/png' });
       setPreviewImage(URL.createObjectURL(fixedFile));
       setSelectedFile(fixedFile);
     };
@@ -49,7 +48,7 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
 
   async function onVerifyImage() {
     if (!selectedFile) {
-      toast.error('Error de verificacion', 'Selecciona una imagen para verificar.');
+      toast.error('Falta la imagen', 'Selecciona una imagen para verificar.');
       return;
     }
 
@@ -64,25 +63,20 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
         TEXTURES,
       );
       const { blob } = await emptyModel.exportAsGLB(`job_${Date.now()}.glb`);
-      const modelFile = new File([blob], `job_${Date.now()}.glb`, {
-        type: 'model/gltf-binary',
+      const modelFile = new File([blob], `job_${Date.now()}.glb`, { type: 'model/gltf-binary' });
+      const jsonFile = new File([JSON.stringify({}, null, 2)], `archivo_vacio_${Date.now()}.json`, {
+        type: 'application/json',
       });
-      const jsonFile = new File(
-        [JSON.stringify({}, null, 2)],
-        `archivo_vacio_${Date.now()}.json`,
-        { type: 'application/json' },
-      );
 
       const response = await verify(selectedFile, imageOriginal.id, jsonFile, modelFile);
 
       if (response.details.image.valid) {
-        toast.success('Verificacion exitosa', 'La imagen coincide con la original en la blockchain.');
+        toast.success('Verificacion exitosa', 'La imagen coincide con el registro on-chain.');
       } else {
-        toast.error('Verificacion fallida', 'La imagen no coincide con la original.');
+        toast.error('Verificacion fallida', 'La imagen no coincide con el registro on-chain.');
       }
       onClose();
-    } catch (error) {
-      console.error(error);
+    } catch {
       toast.error('Error de verificacion', 'Ocurrio un error durante la verificacion.');
     } finally {
       setIsVerifying(false);
@@ -93,7 +87,9 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
     <Dialog open={open} onOpenChange={(value) => !value && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Verificar en blockchain</DialogTitle>
+          <DialogTitle className="flex items-center gap-2">
+            <ShieldIcon width={18} height={18} className="text-accent" /> Verificar en blockchain
+          </DialogTitle>
           <DialogDescription>
             Compara una imagen con el registro original almacenado on-chain.
           </DialogDescription>
@@ -106,10 +102,10 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
               <img
                 src={`${env.apiUrl}${imageOriginal.url}`}
                 alt="Imagen original"
-                className="h-40 w-full rounded-md border border-slate-200 object-contain"
+                className="h-40 w-full rounded-lg border border-border bg-surface-2 object-contain"
               />
             ) : (
-              <span className="text-sm text-slate-400">Sin imagen de referencia.</span>
+              <span className="text-sm text-muted">Sin imagen de referencia.</span>
             )}
           </div>
 
@@ -122,7 +118,7 @@ export function ModalBlockchain({ open, onClose }: ModalBlockchainProps) {
             <img
               src={previewImage}
               alt="Vista previa"
-              className="h-40 w-full rounded-md border border-slate-200 object-contain"
+              className="h-40 w-full rounded-lg border border-border bg-surface-2 object-contain"
             />
           )}
         </div>

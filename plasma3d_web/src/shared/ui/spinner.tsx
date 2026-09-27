@@ -2,33 +2,22 @@ import { cn } from '@/shared/lib/utils';
 
 export function Spinner({ className }: { className?: string }) {
   return (
-    <svg
-      className={cn('h-5 w-5 animate-spin text-current', className)}
-      viewBox="0 0 24 24"
-      fill="none"
-    >
-      <circle
-        className="opacity-25"
-        cx="12"
-        cy="12"
-        r="10"
-        stroke="currentColor"
-        strokeWidth="4"
-      />
-      <path
-        className="opacity-75"
-        fill="currentColor"
-        d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z"
-      />
+    <svg className={cn('h-5 w-5 animate-spin text-current', className)} viewBox="0 0 24 24" fill="none">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-90" fill="currentColor" d="M4 12a8 8 0 0 1 8-8V0C5.373 0 0 5.373 0 12h4Z" />
     </svg>
   );
 }
 
 export function FullPageSpinner({ label = 'Cargando...' }: { label?: string }) {
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-3 py-16 text-slate-500">
-      <Spinner className="h-7 w-7 text-blue-600" />
+    <div className="flex h-full w-full flex-col items-center justify-center gap-3 py-16 text-muted">
+      <Spinner className="h-7 w-7 text-primary" />
       <span className="text-sm">{label}</span>
     </div>
   );
+}
+
+export function Skeleton({ className }: { className?: string }) {
+  return <div className={cn('animate-pulse rounded-md bg-surface-2', className)} />;
 }

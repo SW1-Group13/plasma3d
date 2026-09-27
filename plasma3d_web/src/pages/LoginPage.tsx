@@ -4,7 +4,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/sha
 export function LoginPage() {
   return (
     <div className="mx-auto flex max-w-md flex-col justify-center px-4 py-16">
-      <Card>
+      <Card className="p3d-fade-in">
         <CardHeader>
           <CardTitle>Iniciar sesion</CardTitle>
           <CardDescription>Accede a tu cuenta de Plasma3D.</CardDescription>

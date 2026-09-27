@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card';
 import { Input } from '@/shared/ui/input';
 import { Label } from '@/shared/ui/label';
 import { Spinner } from '@/shared/ui/spinner';
+import { ImageIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 interface ProfileForm {
@@ -101,28 +102,41 @@ export function PerfilPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold text-slate-900">Mi perfil</h1>
+      <h1 className="text-2xl font-bold tracking-tight text-foreground">Mi perfil</h1>
 
-      <div className="grid gap-6 lg:grid-cols-[300px_1fr]">
-        <Card>
+      <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
+        <Card className="h-fit">
           <CardContent className="flex flex-col items-center gap-4 p-6">
-            <div className="h-32 w-32 overflow-hidden rounded-full border-4 border-slate-100 bg-slate-100">
-              {user?.url ? (
-                <img src={user.url} alt="Avatar" className="h-full w-full object-cover" />
-              ) : (
-                <div className="flex h-full items-center justify-center text-2xl font-semibold text-slate-400">
-                  {user?.nombre?.charAt(0)?.toUpperCase() ?? '?'}
-                </div>
+            <div className="relative">
+              <div className="h-32 w-32 overflow-hidden rounded-full border-2 border-border bg-surface-2">
+                {user?.url ? (
+                  <img src={user.url} alt="Avatar" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full items-center justify-center text-3xl font-semibold text-muted">
+                    {user?.nombre?.charAt(0)?.toUpperCase() ?? '?'}
+                  </div>
+                )}
+              </div>
+              {isUploading && (
+                <span className="absolute inset-0 flex items-center justify-center rounded-full bg-black/60">
+                  <Spinner className="h-6 w-6 text-white" />
+                </span>
               )}
             </div>
+
             <input ref={fileRef} type="file" accept="image/*" hidden onChange={onImageSelected} />
-            <Button variant="outline" size="sm" onClick={() => fileRef.current?.click()} disabled={isUploading}>
-              {isUploading && <Spinner className="h-4 w-4" />}
-              Cambiar imagen
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => fileRef.current?.click()}
+              disabled={isUploading}
+            >
+              <ImageIcon width={15} height={15} /> Cambiar imagen
             </Button>
+
             <div className="text-center">
-              <p className="font-medium text-slate-800">{user?.nombre}</p>
-              <p className="text-sm text-slate-500">{user?.email}</p>
+              <p className="font-medium text-foreground">{user?.nombre}</p>
+              <p className="text-sm text-muted">{user?.email}</p>
             </div>
           </CardContent>
         </Card>
@@ -137,8 +151,8 @@ export function PerfilPage() {
           <CardContent>
             <div className="grid gap-4 sm:grid-cols-2">
               <Field label="Nombre" value={form.nombre} disabled={isReadOnly} onChange={(v) => setForm({ ...form, nombre: v })} />
-              <Field label="Email" value={form.email} disabled={isReadOnly} onChange={(v) => setForm({ ...form, email: v })} />
-              <Field label="Telefono" value={form.telefono} disabled={isReadOnly} onChange={(v) => setForm({ ...form, telefono: v })} />
+              <Field label="Email" type="email" value={form.email} disabled={isReadOnly} onChange={(v) => setForm({ ...form, email: v })} />
+              <Field label="Telefono" type="tel" value={form.telefono} disabled={isReadOnly} onChange={(v) => setForm({ ...form, telefono: v })} />
               <Field label="Plan / Rol" value={form.rol} disabled={isReadOnly} onChange={(v) => setForm({ ...form, rol: v })} />
               <Field label="Fecha expiracion" type="date" value={form.fechaExpiracion} disabled={isReadOnly} onChange={(v) => setForm({ ...form, fechaExpiracion: v })} />
               <Field label="Fecha registro" type="date" value={form.fechaRegistro} disabled={isReadOnly} onChange={(v) => setForm({ ...form, fechaRegistro: v })} />
@@ -173,7 +187,13 @@ function Field({
   return (
     <div className="flex flex-col gap-1.5">
       <Label>{label}</Label>
-      <Input type={type} value={value} disabled={disabled} onChange={(e) => onChange(e.target.value)} />
+      <Input
+        type={type}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className={disabled ? 'border-transparent bg-surface-2/40 text-muted' : undefined}
+      />
     </div>
   );
 }

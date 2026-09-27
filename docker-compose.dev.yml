@@ -21,6 +21,7 @@ services:
       - plasma3d
 
   plasma3d-api:
+    image: sebastiandevjs/plasma3d_api:dev
     build:
       context: ./plasma3d_api
       dockerfile: Dockerfile.dev
@@ -47,6 +48,7 @@ services:
              python manage.py runserver 0.0.0.0:8000"
 
   plasma3d-web:
+    image: sebastiandevjs/plasma3d_web:dev
     build:
       context: ./plasma3d_web
       dockerfile: Dockerfile.dev

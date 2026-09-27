@@ -47,7 +47,7 @@ export class EditorEngine {
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     this.renderer.setSize(w, h);
-    this.renderer.setClearColor(0xdddddd);
+    this.renderer.setClearColor(0x0a0e1a);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1;
@@ -64,8 +64,8 @@ export class EditorEngine {
     this.orbit.update();
 
     // Luces y helpers
-    this.scene.add(new THREE.GridHelper(30, 30));
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    this.scene.add(new THREE.GridHelper(30, 30, 0x334155, 0x1e293b));
+    this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
     const intensity = 0.6;
     const target = new THREE.Vector3(0, 0, 0);

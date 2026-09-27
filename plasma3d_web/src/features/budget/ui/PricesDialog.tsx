@@ -1,10 +1,6 @@
 import { useState } from 'react';
 import axios from 'axios';
-import {
-  DEFAULT_CATEGORIES,
-  DEFAULT_MATERIALS,
-  type MaterialInterface,
-} from '@/entities/budget/materials';
+import { DEFAULT_CATEGORIES, DEFAULT_MATERIALS, type MaterialInterface } from '@/entities/budget/materials';
 import { budgetApi } from '@/entities/budget/api';
 import { Button } from '@/shared/ui/button';
 import {
@@ -25,9 +21,7 @@ interface PricesDialogProps {
 }
 
 export function PricesDialog({ open, onClose }: PricesDialogProps) {
-  const [materials, setMaterials] = useState<MaterialInterface[]>(
-    DEFAULT_MATERIALS.map((m) => ({ ...m })),
-  );
+  const [materials, setMaterials] = useState<MaterialInterface[]>(DEFAULT_MATERIALS.map((m) => ({ ...m })));
   const [isSaving, setIsSaving] = useState(false);
 
   function updatePrice(index: number, value: string) {
@@ -65,23 +59,21 @@ export function PricesDialog({ open, onClose }: PricesDialogProps) {
 
         <div className="flex flex-col gap-3">
           {materials.map((material, index) => (
-            <div
-              key={material.nombre}
-              className="grid grid-cols-[1fr_auto_7rem] items-center gap-3"
-            >
+            <div key={material.nombre} className="grid grid-cols-[1fr_auto_7rem] items-center gap-3">
               <div>
-                <p className="text-sm font-medium text-slate-800">{material.nombre}</p>
-                <p className="text-xs text-slate-500">
+                <p className="text-sm font-medium text-foreground">{material.nombre}</p>
+                <p className="text-xs text-muted">
                   {material.categoria} · {material.unidad}
                 </p>
               </div>
-              <span className="text-sm text-slate-500">$/unidad</span>
+              <span className="text-sm text-muted">$/unidad</span>
               <Input
                 type="number"
                 step="0.1"
                 min="0"
                 value={material.precio_unitario}
                 onChange={(e) => updatePrice(index, e.target.value)}
+                className="h-10 tabular-nums"
               />
             </div>
           ))}

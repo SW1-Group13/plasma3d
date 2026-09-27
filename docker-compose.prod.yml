@@ -19,6 +19,7 @@ services:
       - plasma3d
 
   plasma3d-api:
+    image: sebastiandevjs/plasma3d_api:prod
     build:
       context: ./plasma3d_api
       dockerfile: Dockerfile.prod
@@ -38,6 +39,7 @@ services:
       - plasma3d
 
   plasma3d-web:
+    image: sebastiandevjs/plasma3d_web:prod
     build:
       context: ./plasma3d_web
       dockerfile: Dockerfile.prod

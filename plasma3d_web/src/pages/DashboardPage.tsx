@@ -9,9 +9,9 @@ import { TEXTURES } from '@/entities/model3D/three/textures';
 import { env } from '@/shared/config/env';
 import { ModalBlockchain } from '@/features/blockchain/ui/ModalBlockchain';
 import { Button } from '@/shared/ui/button';
-import { Card, CardContent } from '@/shared/ui/card';
-import { FullPageSpinner, Spinner } from '@/shared/ui/spinner';
-import { CubeIcon, PlusIcon } from '@/shared/ui/icons';
+import { Badge } from '@/shared/ui/badge';
+import { Skeleton } from '@/shared/ui/spinner';
+import { CubeIcon, LayersIcon, PlusIcon, ShieldIcon, UploadIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 export function DashboardPage() {
@@ -23,7 +23,6 @@ export function DashboardPage() {
   const fetchModels = useModelStore((s) => s.fetch);
   const uploadPlan = useModelStore((s) => s.uploadPlan);
   const uploadGlb = useModelStore((s) => s.saveGlb);
-
   const setImageToVerify = useBlockchainStore((s) => s.setImageToVerify);
 
   const planInputRef = useRef<HTMLInputElement>(null);
@@ -97,36 +96,52 @@ export function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Mis modelos</h1>
-          <p className="text-sm text-slate-500">Sube un plano o un GLB y editelo en 3D.</p>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">Mis modelos</h1>
+          <p className="mt-1 text-sm text-muted">Sube un plano o un GLB y editalo en 3D.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <input ref={planInputRef} type="file" accept="image/*" hidden onChange={onPlanSelected} />
           <input ref={glbInputRef} type="file" accept=".glb,.gltf" hidden onChange={onGlbSelected} />
           <Button variant="outline" onClick={() => planInputRef.current?.click()} disabled={isLoading}>
-            Subir plano
+            <UploadIcon width={16} height={16} /> Subir plano
           </Button>
           <Button variant="outline" onClick={() => glbInputRef.current?.click()} disabled={isLoading}>
-            Subir GLB
+            <UploadIcon width={16} height={16} /> Subir GLB
           </Button>
           <Button onClick={onCreateModel} disabled={creating || isLoading}>
-            {creating ? <Spinner className="h-4 w-4" /> : <PlusIcon width={16} height={16} />}
-            Crear modelo
+            <PlusIcon width={16} height={16} /> Crear modelo
           </Button>
         </div>
       </div>
 
       {isLoading && list.length === 0 ? (
-        <FullPageSpinner label="Cargando modelos..." />
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface">
+              <Skeleton className="h-40 w-full rounded-none" />
+              <div className="flex flex-col gap-3 p-4">
+                <Skeleton className="h-4 w-24" />
+                <Skeleton className="h-3 w-40" />
+                <Skeleton className="h-9 w-full" />
+              </div>
+            </div>
+          ))}
+        </div>
       ) : list.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 p-12 text-center text-slate-500">
-            <CubeIcon className="h-10 w-10 text-slate-300" />
-            <p>No tienes modelos todavia. Sube un plano para empezar.</p>
-          </CardContent>
-        </Card>
+        <div className="flex flex-col items-center gap-4 rounded-[var(--radius-card)] border border-dashed border-border bg-surface/50 p-12 text-center">
+          <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-surface-2 text-muted">
+            <CubeIcon className="h-7 w-7" />
+          </span>
+          <div>
+            <p className="font-medium text-foreground">No tienes modelos todavia</p>
+            <p className="mt-1 text-sm text-muted">Sube un plano o crea un modelo vacio para empezar.</p>
+          </div>
+          <Button onClick={onCreateModel} disabled={creating}>
+            <PlusIcon width={16} height={16} /> Crear modelo
+          </Button>
+        </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((model) => {
@@ -134,29 +149,39 @@ export function DashboardPage() {
               ? `${env.apiUrl}${model.plan_image.replace(/^\//, '')}`
               : null;
             return (
-              <Card key={model.id} className="flex flex-col overflow-hidden">
-                <div className="h-40 w-full bg-slate-100">
-                  {image ? (
-                    <img
-                      src={image}
-                      alt={`Modelo ${model.id}`}
-                      className="h-full w-full cursor-pointer object-cover"
-                      onClick={() => setPreview(image)}
-                    />
-                  ) : (
-                    <div className="flex h-full items-center justify-center text-slate-300">
-                      <CubeIcon className="h-12 w-12" />
-                    </div>
-                  )}
-                </div>
-                <CardContent className="flex flex-1 flex-col gap-3 p-4">
+              <article
+                key={model.id}
+                className="group flex flex-col overflow-hidden rounded-[var(--radius-card)] border border-border bg-surface shadow-lg shadow-black/20 transition-all duration-150 hover:border-border-strong hover:shadow-xl hover:shadow-black/30"
+              >
+                <button
+                  type="button"
+                  onClick={() => image && setPreview(image)}
+                  className="relative h-40 w-full cursor-pointer overflow-hidden border-b border-border bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/70"
+                  aria-label={`Ver plano del modelo ${model.id}`}
+                  disabled={!image}
+                >
+                  <img
+                    src={image ?? '/assets/imagen-defecto.jpg'}
+                    alt={`Plano del modelo ${model.id}`}
+                    loading="lazy"
+                    className="h-full w-full object-cover transition-transform duration-200 group-hover:scale-[1.03]"
+                  />
+                  <span className="absolute left-2 top-2">
+                    <Badge className="bg-black/60 text-white backdrop-blur">
+                      <LayersIcon width={12} height={12} /> #{model.id}
+                    </Badge>
+                  </span>
+                </button>
+
+                <div className="flex flex-1 flex-col gap-3 p-4">
                   <div>
-                    <p className="font-semibold text-slate-800">Modelo #{model.id}</p>
-                    <p className="text-xs text-slate-500">
+                    <p className="font-semibold text-foreground">Modelo #{model.id}</p>
+                    <p className="mt-0.5 text-xs tabular-nums text-muted">
                       {model.widht ?? '-'} x {model.height ?? '-'} ·{' '}
                       {model.created_at ? new Date(model.created_at).toLocaleDateString() : '-'}
                     </p>
                   </div>
+
                   <div className="mt-auto flex flex-wrap gap-2">
                     <Button size="sm" onClick={() => openModel(model)}>
                       Abrir editor
@@ -167,11 +192,11 @@ export function DashboardPage() {
                       onClick={() => openBlockchain(model.id, model.plan_image ?? '')}
                       disabled={!model.plan_image}
                     >
-                      Blockchain
+                      <ShieldIcon width={15} height={15} /> Blockchain
                     </Button>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </article>
             );
           })}
         </div>
@@ -181,10 +206,12 @@ export function DashboardPage() {
 
       {preview && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/70 p-4"
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
           onClick={() => setPreview(null)}
+          role="dialog"
+          aria-modal="true"
         >
-          <img src={preview} alt="Vista previa" className="max-h-[85vh] max-w-[90vw] rounded-lg" />
+          <img src={preview} alt="Vista previa del plano" className="max-h-[85vh] max-w-[90vw] rounded-xl border border-border" />
         </div>
       )}
     </div>

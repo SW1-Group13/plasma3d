@@ -1,45 +1,22 @@
 import type { TextureRef } from '@/entities/model3D/types';
 
+// Texturas locales servidas desde /public/textures (sin Cloudinary).
 export const TEXTURES: TextureRef[] = [
-  {
-    name: 'Ladrillo',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1757453080/ladrillo_e3xocf.jpg',
-  },
-  {
-    name: 'Piedra',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759883265/plaster_brick_pattern_disp_1k_awiqtc.png',
-  },
-  {
-    name: 'Cemento',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759883245/cracked_concrete_wall_disp_1k_sstfyd.png',
-  },
-  {
-    name: 'Madera tajibo',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759894564/plywood_diff_1k_yle5d5.jpg',
-  },
-  {
-    name: 'Madera ochoo',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759894554/wooden_gate_diff_1k_wjzhjf.jpg',
-  },
-  {
-    name: 'Madera roble',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759894546/worn_planks_diff_1k_k9xbdg.jpg',
-  },
-  {
-    name: 'Vidrio simple',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1759888245/depositphotos_153541450-stock-photo-glass-texture-background_ueykra.webp',
-  },
-  {
-    name: 'Vidrio escandinavo',
-    url: 'https://res.cloudinary.com/diqqfka6g/image/upload/v1761688251/Ice001_1K-JPG_Color_mcmksd.jpg',
-  },
+  { name: 'Ladrillo', url: '/textures/ladrillo.jpg' },
+  { name: 'Piedra', url: '/textures/patron-ladrillo-yeso.png' },
+  { name: 'Cemento', url: '/textures/concreto.png' },
+  { name: 'Madera tajibo', url: '/textures/madera-lisa.jpg' },
+  { name: 'Madera ochoo', url: '/textures/puerta-madera.jpg' },
+  { name: 'Madera roble', url: '/textures/tablas-desgastadas.jpg' },
+  { name: 'Vidrio simple', url: '/textures/hielo.jpg' },
+  { name: 'Vidrio escandinavo', url: '/textures/hielo.jpg' },
 ];
 
-export const FLOOR_TEXTURE =
-  'https://res.cloudinary.com/diqqfka6g/image/upload/v1757453080/piedra_a4zfx4.jpg';
+// Textura del suelo del editor (local).
+export const FLOOR_TEXTURE = '/textures/textura_suelo.jpg';
 
-export const EMPTY_MODEL_URL =
-  'https://res.cloudinary.com/diqqfka6g/image/upload/v1763521878/vacio_wama55.glb';
+// Modelo vacio para "crear modelo" (local).
+export const EMPTY_MODEL_URL = '/models/vacio_wama55.glb';
 
-export const HOME_MODEL_URL =
-  'https://cdn.jsdelivr.net/gh/BrayanQuispe24/mis-modelos-3d@main/models/cartoon_cyberpunk_building.glb';
+// Modelo del visor de inicio (local).
+export const HOME_MODEL_URL = '/models/cartoon_cyberpunk_building.glb';
