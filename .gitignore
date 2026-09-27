@@ -1,7 +1,5 @@
 git-filter-repo.py
 
-plasma3d_api/media/
-plasma3d_api/staticfiles/
 
 # Entornos virtuales
 venv/

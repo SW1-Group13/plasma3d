@@ -1,18 +1,15 @@
 # ==========================================================
-# plasma3d-web - Desarrollo (Angular dev-server con hot reload)
+# plasma3d-web - Desarrollo (Vite dev server con HMR)
 # ==========================================================
 FROM node:20-alpine
 
 WORKDIR /app
 
-# Dependencias (se cachean en la imagen y siembran el volumen node_modules)
 COPY package*.json ./
 RUN npm install
 
-# Codigo fuente (en compose se monta el directorio encima)
 COPY . .
 
-EXPOSE 4000
+EXPOSE 5173
 
-# ng serve accesible desde el host
-CMD ["npm", "run", "start", "--", "--host", "0.0.0.0", "--port", "4000"]
+CMD ["npm", "run", "dev"]

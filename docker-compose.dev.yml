@@ -21,6 +21,7 @@ services:
       - plasma3d
 
   plasma3d-api:
+    image: sebastiandevjs/plasma3d_api:dev
     build:
       context: ./plasma3d_api
       dockerfile: Dockerfile.dev
@@ -47,16 +48,23 @@ services:
              python manage.py runserver 0.0.0.0:8000"
 
   plasma3d-web:
+    image: sebastiandevjs/plasma3d_web:dev
     build:
       context: ./plasma3d_web
       dockerfile: Dockerfile.dev
     environment:
-      PORT: 4000
+      FRONTEND_PORT: 5173
+      VITE_API_URL: http://plasma3d-api:8000
+      VITE_API_BASE: /
+      VITE_CLOUDINARY: ${VITE_CLOUDINARY:-https://api.cloudinary.com/v1_1}
+      VITE_CLOUDINARY_CLOUD_NAME: ${VITE_CLOUDINARY_CLOUD_NAME:-diqqfka6g}
+      VITE_CLOUDINARY_UPLOAD_PRESET: ${VITE_CLOUDINARY_UPLOAD_PRESET:-profiles}
+      VITE_STRIPE_PK: ${VITE_STRIPE_PK:-}
     volumes:
       - ./plasma3d_web:/app
       - web_node_modules:/app/node_modules
     ports:
-      - "4000:4000"
+      - "5173:5173"
     depends_on:
       - plasma3d-api
     networks:
