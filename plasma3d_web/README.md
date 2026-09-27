@@ -1,59 +1,51 @@
-# Plasma3D
+# plasma3d-web
 
-This project was generated using [Angular CLI](https://github.com/angular/angular-cli) version 20.1.3.
+Frontend de Plasma3D — **React + TypeScript + Vite** con **Tailwind CSS** y **Radix UI**.
+Consume la API de `plasma3d-api` (Django REST) y sigue la organización
+**Feature-Sliced Design**.
 
-## Development server
+## Requisitos
+- Node 20+
+- Backend `plasma3d-api` disponible (el proxy de Vite apunta a `VITE_API_URL`)
 
-To start a local development server, run:
-
+## Desarrollo
 ```bash
-ng serve
+npm install
+npm run dev        # http://localhost:FRONTEND_PORT (5173 por defecto)
+```
+El dev server **usa proxies** hacia el backend:
+- `/api`, `/media`, `/static` → `VITE_API_URL` (por defecto `http://localhost:8000`)
+- `/ws` → `VITE_WS_URL` (opcional, websockets)
+
+Por eso la app usa una base relativa (`VITE_API_BASE=/`) y no hay problemas de CORS.
+
+## Produccion
+```bash
+npm run build
+npm run preview
 ```
 
-Once the server is running, open your browser and navigate to `http://localhost:4200/`. The application will automatically reload whenever you modify any of the source files.
+## Variables de entorno
+El `vite.config.ts` carga el `.env` de **la raiz del proyecto** (`envDir: '..'`), no un
+`.env` local. Define ahí:
+- `FRONTEND_PORT` — puerto del dev server / preview
+- `VITE_API_URL` — target del proxy hacia Django
+- `VITE_WS_URL` — target del proxy de websockets (opcional)
+- `VITE_API_BASE` — base relativa que usa la app (`/`)
+- `VITE_CLOUDINARY` / `VITE_CLOUDINARY_CLOUD_NAME` / `VITE_CLOUDINARY_UPLOAD_PRESET`
+- `VITE_STRIPE_PK` — clave publica de Stripe
 
-## Code scaffolding
+Ver `.env.sample` en la raiz del proyecto.
 
-Angular CLI includes powerful code scaffolding tools. To generate a new component, run:
-
-```bash
-ng generate component component-name
+## Estructura (FSD)
+```
+src/
+├── app/        # bootstrap, router, providers
+├── pages/      # pantallas por ruta
+├── widgets/    # layout y visor/editor 3D
+├── features/   # auth, payment, blockchain, budget
+├── entities/   # session, user, model3D, budget, blockchain, cloudinary
+└── shared/     # ui kit (Radix), api, config, lib
 ```
 
-For a complete list of available schematics (such as `components`, `directives`, or `pipes`), run:
-
-```bash
-ng generate --help
-```
-
-## Building
-
-To build the project run:
-
-```bash
-ng build
-```
-
-This will compile your project and store the build artifacts in the `dist/` directory. By default, the production build optimizes your application for performance and speed.
-
-## Running unit tests
-
-To execute unit tests with the [Karma](https://karma-runner.github.io) test runner, use the following command:
-
-```bash
-ng test
-```
-
-## Running end-to-end tests
-
-For end-to-end (e2e) testing, run:
-
-```bash
-ng e2e
-```
-
-Angular CLI does not come with an end-to-end testing framework by default. You can choose one that suits your needs.
-
-## Additional Resources
-
-For more information on using the Angular CLI, including detailed command references, visit the [Angular CLI Overview and Command Reference](https://angular.dev/tools/cli) page.
+Ver [`docs/frontend-architecture.md`](../docs/frontend-architecture.md).

@@ -1,15 +1,12 @@
-# Node
 node_modules/
 dist/
 .angular/
-
-# Entorno / logs
-.env
-*.log
-
-# Git / IDEs / sistema
 .git/
 .gitignore
+.env
+.env.*
+!.env.sample
+*.log
 .vscode/
 .idea/
 .DS_Store

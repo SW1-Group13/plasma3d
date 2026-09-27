@@ -1,89 +1,60 @@
 # Guía de Despliegue con Nginx Proxy Manager (NPM) - Plasma 3D
 
-Esta guía detalla la configuración paso a paso para desplegar y enrutar la aplicación usando **Nginx Proxy Manager** (alojado en tu Proxmox) para apuntar a la máquina virtual de la aplicación (`192.168.0.97`) usando un único dominio (`app.bratox.me`) y rutas `/api/`.
+Esta guía detalla la configuración paso a paso para desplegar y enrutar la aplicación usando **Nginx Proxy Manager** (alojado en tu Proxmox) para apuntar a la máquina virtual de la aplicación (`192.168.0.97`) usando un único dominio (`<TU_DOMINIO>`).
 
 ---
 
-## Paso 1: Configurar el código localmente
+## Arquitectura
 
-1. **Modificar el Frontend**:
-   Abre [plasma3d_web/src/environments/environment.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_web/src/environments/environment.ts) y [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_web/.env.ts):
-   ```typescript
-   export const environment = {
-     endpoint: 'https://app.bratox.me/', // Tu dominio con HTTPS sin /api/ al final
-     cloudinary: 'https://api.cloudinary.com/v1_1'
-   }
-   ```
-2. **Configurar el archivo `.env` del proyecto** (raíz, compartido por backend y frontend):
-   En el archivo [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto, agrega y configura las variables:
-   ```env
-   CSRF_TRUSTED_ORIGINS=https://app.bratox.me,http://app.bratox.me
-   CSRF_COOKIE_SECURE=True
-   
-   # Clave secreta de Stripe para producción (sk_live_...)
-   STRIPE_API_KEY=tu_clave_secreta_stripe_aqui
-   ```
+El stack de producción (`docker-compose.prod.yml`) expone un único punto de entrada: **`plasma3d-nginx`** (puerto `80`), que enruta:
+
+- `/` → `plasma3d-web` (React + Vite, SPA servida por su Nginx interno en `5173`)
+- `/api`, `/media`, `/static` → `plasma3d-api` (Django, `8000`)
+
+El frontend usa una base relativa (`VITE_API_BASE=/`), por lo que no hay dominio ni endpoint hardcodeados.
+
+---
+
+## Paso 1: Configurar el `.env` (raíz del proyecto)
+
+En el archivo [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz, define para tu dominio:
+
+```env
+CSRF_TRUSTED_ORIGINS=https://<TU_DOMINIO>,http://<TU_DOMINIO>
+CSRF_COOKIE_SECURE=True
+
+# Clave secreta de Stripe para producción (sk_live_...)
+STRIPE_API_KEY=tu_clave_secreta_stripe_aqui
+```
+
+El backend permite todos los hosts (`ALLOWED_HOSTS=['*']` en `settings.py`).
 
 ---
 
 ## Paso 2: Iniciar los Contenedores en la Máquina Virtual (`192.168.0.97`)
 
-En tu máquina virtual, asegúrate de levantar los servicios exponiendo los puertos locales `8000` (Backend) y `4000` (Frontend) al host:
+```bash
+docker compose -f docker-compose.prod.yml up --build -d
+```
 
-1. Levanta la Base de Datos:
-   ```bash
-   docker-compose -f docker-compose.db.yml up -d
-   ```
-2. Levanta Django y Angular (los cuales ya tienen los puertos expuestos `8000` y `4000` en tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.app.yml)):
-   ```bash
-   docker compose -f docker-compose.app.yml up --build -d
-   ```
+Servicios y puertos host: `plasma3d-nginx` (`80`), `plasma3d-api` (`8000`), `plasma3d-web` (`5173`), `postgres` (solo red interna).
 
 ---
 
 ## Paso 3: Configurar Nginx Proxy Manager (NPM) en Proxmox
 
-Entra al panel web de tu Nginx Proxy Manager y edita/crea el host de proxy para `app.bratox.me`:
+Entra al panel web de tu Nginx Proxy Manager y crea/edita el Proxy Host para `<TU_DOMINIO>`:
 
-### A. Pestaña "Details" (Configurar Frontend por defecto)
-* **Domain Names**: `app.bratox.me`
+### A. Pestaña "Details"
+* **Domain Names**: `<TU_DOMINIO>`
 * **Scheme**: `http`
 * **Forward Hostname / IP**: `192.168.0.97` *(IP de la máquina virtual)*
-* **Forward Port**: `4000` *(Puerto de Angular SSR)*
-* Activa **Websockets Support** (Requerido para la actualización en vivo de Angular y desarrollo).
+* **Forward Port**: `80` *(plasma3d-nginx)*
+* Activa **Websockets Support**
 
-*Cualquier petición general al dominio sin ruta `/api/` cargará el frontend.*
-
----
-
-### B. Pestaña "Custom Locations" (Enrutar al Backend)
-Añade las siguientes ubicaciones para redirigir las llamadas de la API y administración al backend de Django:
-
-1. **Location: `/api/`**
-   * **Scheme**: `http`
-   * **Forward Hostname / IP**: `192.168.0.97`
-   * **Forward Port**: `8000` *(Puerto de Django)*
-2. **Location: `/admin/`**
-   * **Scheme**: `http`
-   * **Forward Hostname / IP**: `192.168.0.97`
-   * **Forward Port**: `8000`
-3. **Location: `/static/`**
-   * **Scheme**: `http`
-   * **Forward Hostname / IP**: `192.168.0.97`
-   * **Forward Port**: `8000`
-4. **Location: `/media/`**
-   * **Scheme**: `http`
-   * **Forward Hostname / IP**: `192.168.0.97`
-   * **Forward Port**: `8000`
-
----
-
-### C. Pestaña "SSL"
-* Selecciona tu certificado SSL de **Let's Encrypt** para `app.bratox.me`.
-* Activa **Force SSL** para forzar HTTPS.
+### B. Pestaña "SSL"
+* Selecciona tu certificado SSL de **Let's Encrypt** para `<TU_DOMINIO>`.
+* Activa **Force SSL**.
 * Activa **HTTP/2 Support**.
 
----
-
-## Paso 4: Eliminar archivos innecesarios
-Ya no necesitas el archivo `nginx.conf` en la raíz de tu proyecto, ya que Nginx Proxy Manager se encarga de todo el enrutamiento visualmente desde Proxmox. Puedes borrarlo con seguridad.
+No necesitas **Custom Locations**: `plasma3d-nginx` ya enruta `/api`, `/media`, `/static` y `/` hacia los servicios correspondientes.

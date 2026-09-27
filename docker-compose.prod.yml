@@ -29,7 +29,6 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       DEBUG: "False"
-      ALLOWED_HOSTS: "*"
     volumes:
       - media_data:/app/media
     depends_on:
@@ -43,12 +42,14 @@ services:
       context: ./plasma3d_web
       dockerfile: Dockerfile.prod
       args:
-        ENDPOINT: ${PROD_ENDPOINT:-https://app.bratox.me/}
-        CLOUDINARY: ${CLOUDINARY:-https://api.cloudinary.com/v1_1}
+        VITE_API_BASE: /
+        VITE_CLOUDINARY: ${VITE_CLOUDINARY:-https://api.cloudinary.com/v1_1}
+        VITE_CLOUDINARY_CLOUD_NAME: ${VITE_CLOUDINARY_CLOUD_NAME:-diqqfka6g}
+        VITE_CLOUDINARY_UPLOAD_PRESET: ${VITE_CLOUDINARY_UPLOAD_PRESET:-profiles}
+        VITE_STRIPE_PK: ${VITE_STRIPE_PK:-}
     restart: always
-    environment:
-      PORT: 4000
-      API_URL: http://plasma3d-api:8000
+    ports:
+      - "5173:5173"
     depends_on:
       - plasma3d-api
     networks:

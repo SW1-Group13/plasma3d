@@ -9,45 +9,52 @@ Este documento describe detalladamente la estructura de archivos que se debe sub
 Para desplegar el proyecto en la máquina virtual, debes transferir la siguiente estructura de archivos:
 
 ```text
-plasma3d/                       # Directorio raíz del proyecto en la máquina virtual
+plasma3d/                           # Directorio raíz del proyecto en la máquina virtual
 ├── .env                            # Variables de entorno del proyecto (backend + frontend)
-├── docker-compose.db.yml           # Orquestación de la Base de Datos y PgAdmin
-├── docker-compose.app.yml          # Orquestación del Backend (Django) y Frontend (Angular)
+├── docker-compose.dev.yml          # Orquestación de desarrollo (postgres + api + web)
+├── docker-compose.prod.yml         # Orquestación de producción (postgres + api + web + nginx)
+├── nginx/
+│   └── default.conf                # Reverse proxy (API + SPA)
 │
-├── plasma3d_api/              # Código fuente del Backend
-│   ├── plasma3d_api/           # Configuración principal de Django (settings.py, urls.py)
+├── plasma3d_api/                   # Código fuente del Backend
+│   ├── plasma3d_api/               # Configuración principal de Django (settings.py, urls.py)
 │   ├── weights/                    # Pesos de Inteligencia Artificial (CRÍTICO)
 │   │   └── maskrcnn_15_epochs.h5   # Archivo de pesos descargado para inferencia 3D
 │   ├── media/                      # Almacenamiento de imágenes y planos subidos
-│   ├── Dockerfile                  # Receta de construcción de la imagen Python/Django
+│   ├── static/                     # Estáticos del backend
+│   ├── Dockerfile.dev              # Imagen de desarrollo (runserver)
+│   ├── Dockerfile.prod             # Imagen de producción (gunicorn)
 │   └── requirements.txt            # Dependencias de Python
 │
-└── plasma3d_web/             # Código fuente del Frontend
-    ├── src/                        # Código Angular (componentes, servicios, vistas)
-    │   └── environments/
-    │       └── environment.ts      # Endpoint por defecto compilado en Angular
-    ├── .env.ts                     # Configuración del dominio de producción para Angular
-    └── Dockerfile                  # Receta de construcción de Angular SSR (Node.js)
+└── plasma3d_web/                   # Código fuente del Frontend (React + Vite)
+    ├── src/                        # Código fuente (FSD)
+    ├── Dockerfile.dev              # Dev server de Vite
+    ├── Dockerfile.prod             # Build + Nginx sirviendo la SPA
+    ├── nginx.conf                  # Config del Nginx interno (puerto 5173)
+    └── vite.config.ts              # Config de Vite (proxy + envDir)
 ```
 
 ---
 
 ## 2. Origen de Datos de cada Contenedor (VM: `192.168.0.97`)
 
-### A. Contenedor de Base de Datos (`postgres_db`)
-* **Credenciales**: Lee de [docker-compose.db.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.db.yml) (`POSTGRES_USER`, `POSTGRES_PASSWORD`, etc.) en tiempo de ejecución.
+### A. Contenedor de Base de Datos (`postgres`)
+* **Credenciales**: Lee del [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) (`POSTGRES_USER`, `POSTGRES_PASSWORD`, etc.) en tiempo de ejecución.
 * **Persistencia**: Se almacena en el volumen de Docker `pgdata`.
-* **Puertos expuestos**: Puerto `5432` expuesto a la red local (para conexiones desde el Proxmox u otra máquina de desarrollo).
 
-### B. Contenedor del Backend (`django_backend`)
-* **Código**: Copiado al contenedor mediante el Dockerfile del backend y mapeado en caliente mediante volumen en desarrollo/producción.
+### B. Contenedor del Backend (`plasma3d-api`)
+* **Código**: Copiado al contenedor mediante `Dockerfile.dev`/`Dockerfile.prod`.
 * **Variables de Entorno**: Inyectadas desde el [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto gracias a la propiedad `env_file` (incluye llaves blockchain, Gemini API, CSRF y `STRIPE_API_KEY`).
 * **Pesos del Modelo**: Lee localmente `/weights/maskrcnn_15_epochs.h5`.
 * **Puertos expuestos**: Puerto `8000` expuesto a la red local para recibir llamadas desde Nginx Proxy Manager.
 
-### C. Contenedor del Frontend (`angular_frontend`)
-* **Endpoint API**: Toma `https://app.bratox.me/` desde [.env.ts](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/plasma3d_web/.env.ts) y lo compila estáticamente.
-* **Puertos expuestos**: Puerto `4000` expuesto a la red local para recibir llamadas desde Nginx Proxy Manager.
+### C. Contenedor del Frontend (`plasma3d-web`)
+* **App**: React + TypeScript + Vite (SPA), servida por Nginx en el puerto `5173`.
+* **Endpoint API**: relativo (`VITE_API_BASE=/`), así que hereda el origen (`/api/...`).
+* **Puertos expuestos**: Puerto `5173` expuesto a la red local.
+
+### D. Contenedor Reverse Proxy (`plasma3d-nginx`)
+* **Puertos expuestos**: Puerto `80`; enruta `/` al frontend y `/api`, `/media`, `/static` al backend.
 
 ---
 
@@ -58,13 +65,13 @@ Nginx Proxy Manager es el único punto de contacto público que tiene certificad
 ```text
                   ┌──────────────────────────────────────────────┐
                   │          Nginx Proxy Manager (Host)          │
-                  │              (app.bratox.me)                 │
+                  │              (<TU_DOMINIO>)                 │
                   └──────────────┬────────────────┬──────────────┘
                                  │                │
                     (Ruta / o assets)         (Ruta /api/)
                                  │                │
                         ┌────────▼────────┐    ┌──▼──────────────┐
-                        │  Front Angular  │    │  Back Django    │
-                        │ 192.168.0.97:4000│    │192.168.0.97:8000 │
+                        │ Front React SPA │    │  Back Django    │
+                        │192.168.0.97:5173│    │192.168.0.97:8000│
                         └─────────────────┘    └─────────────────┘
 ```

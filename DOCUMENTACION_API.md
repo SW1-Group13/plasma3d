@@ -4,7 +4,7 @@ Esta guía contiene la lista de todas las rutas configuradas en la API del backe
 
 ## Configuración Base
 
-* **Dominio en Producción (con SSL/Nginx Proxy Manager)**: `https://app.bratox.me`
+* **Dominio en Producción (con SSL/Nginx Proxy Manager)**: `https://<TU_DOMINIO>`
 * **Entorno de Red Local (Directo al Backend)**: `http://192.168.0.97:8000`
 
 ---

@@ -1,78 +1,77 @@
 # Informe de Análisis: Error 502 Bad Gateway en `/api/users/auth/registro/`
 
-Este informe detalla las causas del error **`502 Bad Gateway`** al intentar realizar peticiones POST a la ruta del backend y describe los pasos necesarios para diagnosticarlo y corregirlo en tu servidor.
+Este informe detalla las causas del error **`502 Bad Gateway`** al realizar peticiones POST a la ruta del backend y los pasos para diagnosticarlo y corregirlo.
 
 ---
 
 ## 1. ¿Qué significa un error "502 Bad Gateway"?
 
-En tu arquitectura, Nginx Proxy Manager (NPM) es el intermediario (Gateway) entre internet y tus contenedores. El error 502 significa:
+Nginx Proxy Manager (NPM) es el intermediario (Gateway) entre internet y los contenedores. El error 502 significa:
 
-> **"Nginx Proxy Manager recibió tu petición correctamente, pero al intentar redirigirla a la máquina virtual (`http://192.168.0.97:8000`), el servidor del backend no respondió o está apagado."**
+> **"Nginx Proxy Manager recibió la petición, pero al redirigirla a `plasma3d-nginx`/`plasma3d-api`, el backend no respondió o está apagado."**
 
 ```text
 [Cliente en Internet]
         │
-        ▼ (POST a https://app.bratox.me/api/users/auth/registro/)
+        ▼ (POST a https://<TU_DOMINIO>/api/users/auth/registro/)
 [Nginx Proxy Manager (192.168.0.210)]
         │
-        ▼ (Intenta conectar a http://192.168.0.97:8000)
-    [ ERROR 502: El backend no responde / está apagado ]
+        ▼ (http://192.168.0.97:80 → plasma3d-nginx)
+[ plasma3d-nginx ] ──► /api/ ──► [ plasma3d-api :8000 ]
+        │
+        ▼ (si el backend no responde)
+    [ ERROR 502 ]
 ```
 
 ---
 
 ## 2. Causas más probables del fallo de Django
 
-Dado que el error es en el puerto `8000`, el contenedor de Django en tu VM (`192.168.0.97`) probablemente se ha detenido o ha fallado al iniciar. Las tres causas más comunes son:
+El contenedor `plasma3d-api` en la VM (`192.168.0.97`) probablemente se detuvo o falló al iniciar. Causas comunes:
 
 ### A. Fallo en las Migraciones de la Base de Datos
-En tu [docker-compose.app.yml](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/docker-compose.app.yml), el comando de inicio ejecuta las migraciones antes de arrancar el servidor:
+En `docker-compose.prod.yml`, el comando de inicio ejecuta las migraciones antes de arrancar gunicorn:
 ```bash
-python manage.py makemigrations && python manage.py migrate && python manage.py runserver
+python manage.py migrate && gunicorn plasma3d_api.wsgi:application ...
 ```
-Si la base de datos PostgreSQL no estaba lista aún para recibir conexiones cuando se inició Django, el comando `migrate` falló y provocó que el contenedor de Django **se apagara de forma inmediata**.
+Si PostgreSQL no estaba listo para recibir conexiones, `migrate` falló y el contenedor se apagó.
 
-### B. El contenedor de Django no está corriendo
-Si hubo algún error de dependencias, falta de archivo de pesos, o variables en el `.env`, el contenedor se habrá cerrado.
+### B. El contenedor no está corriendo
+Si hubo un error de dependencias, falta del archivo de pesos o variables en el `.env`, el contenedor se habrá cerrado.
 
-### C. Bloqueo de Firewall en la VM
-El firewall del sistema operativo de tu VM (`192.168.0.97`) no permite conexiones externas al puerto `8000` desde el exterior (Nginx Proxy Manager).
+### C. Bloqueo de Firewall
+El firewall de la VM no permite conexiones al puerto `80` (o `8000`) desde Nginx Proxy Manager.
 
 ---
 
 ## 3. Guía Paso a Paso para Diagnosticar y Solucionar
 
-Para resolver el problema, conéctate por SSH a tu máquina virtual (`192.168.0.97`) y ejecuta los siguientes comandos de diagnóstico:
+Conéctate por SSH a la máquina virtual (`192.168.0.97`):
 
-### Paso A: Verificar si el contenedor de Django está corriendo
-Ejecuta:
+### Paso A: Verificar si el contenedor está corriendo
 ```bash
 docker ps
 ```
-* **Si `django_backend` no aparece en la lista**: Significa que el contenedor se detuvo debido a un error de arranque.
-* **Si aparece**: Pasa directamente al Paso C.
+* Si `plasma3d-api` no aparece: se detuvo por un error de arranque.
 
 ### Paso B: Leer los logs de error de Django
-Si el contenedor se detuvo, puedes ver el motivo exacto de la caída leyendo los últimos logs del contenedor:
 ```bash
-docker logs django_backend
+docker logs plasma3d-api
 ```
-*(Aquí verás si falló la conexión a la base de datos, si falta una variable de entorno en el `.env`, o si hay un error de sintaxis en Python).*
+*(Aquí verás si falló la conexión a la base de datos, si falta una variable en el `.env`, o un error de sintaxis en Python).*
 
 ### Paso C: Forzar reinicio y recreación
-Si el error fue debido a la base de datos no estando lista en el primer arranque, un reinicio del contenedor resolverá el problema ya con la base de datos en línea:
 ```bash
-docker compose -f docker-compose.app.yml restart web
+docker compose -f docker-compose.prod.yml restart plasma3d-api
 ```
-Si realizaste modificaciones en el `.env` del backend, es mejor reconstruir los contenedores:
+Si modificaste el `.env`, reconstruye:
 ```bash
-docker compose -f docker-compose.app.yml up --build -d
+docker compose -f docker-compose.prod.yml up --build -d
 ```
 
 ### Paso D: Verificar el firewall de la VM
-Asegúrate de que la VM acepte peticiones desde tu red local en el puerto `8000`. Si usas Ubuntu, puedes habilitarlo con:
 ```bash
+sudo ufw allow 80/tcp
 sudo ufw allow 8000/tcp
-sudo ufw allow 4000/tcp
+sudo ufw allow 5173/tcp
 ```

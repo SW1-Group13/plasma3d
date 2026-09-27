@@ -5,30 +5,27 @@ Este es el backend del proyecto Plasma 3D, desarrollado en Django.
 ## Requisitos Previos
 
 1. **Pesos del Modelo (Weights)**:
-   Asegúrate de tener el archivo de pesos `maskrcnn_15_epochs.h5` en la carpeta `plasma3d_api/weights/`. 
+   Asegúrate de tener el archivo de pesos `maskrcnn_15_epochs.h5` en la carpeta `plasma3d_api/weights/`.
    Si no lo tienes, puedes descargarlo de este [enlace de Google Drive](https://drive.google.com/file/d/14fDV0b_sKDg0_DkQBTyO1UaT6mHrW9es/view) y guardarlo en dicha ruta.
 
 ---
 
 ## Opción 1: Ejecución con Docker (Recomendado)
 
-Esta opción levanta automáticamente la base de datos PostgreSQL, el backend en Django y el frontend en Angular en contenedores Docker independientes.
+Levanta la base de datos PostgreSQL, el backend Django y el frontend React + Vite.
 
-1. **Crear la red externa de Docker** (requerido por la configuración de red compartida):
+1. **Desarrollo**:
    ```bash
-   docker network create backend
+   docker compose -f docker-compose.dev.yml up --build
    ```
+   *Nota: Las migraciones y el arranque del servidor de desarrollo se realizan automáticamente.*
+   - Backend: http://localhost:8000
+   - Frontend: http://localhost:5173
 
-2. **Levantar la base de datos**:
+2. **Producción** (incluye `plasma3d-nginx` en el puerto 80):
    ```bash
-   docker-compose -f docker-compose.db.yml up -d
+   docker compose -f docker-compose.prod.yml up --build -d
    ```
-
-3. **Construir y levantar la aplicación (Backend y Frontend)**:
-   ```bash
-   docker-compose -f docker-compose.app.yml up --build
-   ```
-   *Nota: Las migraciones y el arranque del servidor de desarrollo se realizarán automáticamente.*
 
 ---
 
@@ -50,7 +47,7 @@ Si prefieres correr el backend en tu entorno local sin usar el contenedor de Dja
 
 3. **Iniciar la base de datos PostgreSQL en Docker** (para evitar la instalación local de Postgres):
    ```bash
-   docker-compose -f docker-compose.db.yml up -d postgres
+   docker compose -f docker-compose.dev.yml up -d postgres
    ```
 
 4. **Configurar el archivo `.env`**:
