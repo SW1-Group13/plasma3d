@@ -1,4 +1,4 @@
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
 import { Button } from '@/shared/ui/button';
 import { CubeIcon, CreditCardIcon, LayoutDashboardIcon, LogOutIcon, UserIcon } from '@/shared/ui/icons';
@@ -12,6 +12,8 @@ const links = [
 
 export function PrivateLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const fullBleed = location.pathname.startsWith('/private/editor');
   const user = useSession((s) => s.user);
   const logout = useSession((s) => s.logout);
 
@@ -81,9 +83,13 @@ export function PrivateLayout() {
       </header>
 
       <main className="flex-1">
-        <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+        {fullBleed ? (
           <Outlet />
-        </div>
+        ) : (
+          <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+            <Outlet />
+          </div>
+        )}
       </main>
     </section>
   );

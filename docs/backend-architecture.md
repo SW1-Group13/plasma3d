@@ -31,7 +31,7 @@ delgados. Es una adaptación de la *HackSoft Django Styleguide*.
 | **Services** | `services.py` | Casos de uso de **escritura**, transacciones, orquestación | Conocer `request`/`response` HTTP |
 | **Selectors** | `selectors.py` | Consultas de **lectura** reutilizables | Modificar datos |
 | **Models** | `models.py` | Esquema, invariantes, helpers mínimos | Orquestación entre apps, acceso a servicios externos |
-| **Clients / Gateways** | `clients.py`, `gateways/` | Integraciones externas (Stripe, Web3/Polygon, Gemini, Cloudinary) | Reglas de negocio |
+| **Clients / Gateways** | `clients.py`, `gateways/` | Integraciones externas (Stripe, Gemini, Cloudinary) | Reglas de negocio |
 | **Tasks** | `tasks.py` | Trabajo asíncrono/pesado (inferencia, on-chain) | Lógica de presentación |
 | **Exceptions** | `core/exceptions.py` | Errores de dominio | Códigos HTTP (se mapean en la capa API) |
 
@@ -107,7 +107,6 @@ orquestar varias apps ni llamar servicios externos.
 Encapsulan lo externo y lo hacen **mockeable** en tests:
 
 - `suggestion_risk/services_gemini.py` → cliente de Google Gemini.
-- `plans/onchain.py` → Web3 / Polygon (contrato, wallet).
 - `users/pagues.py` → Stripe.
 
 ### 2.7 Tasks
@@ -136,7 +135,7 @@ HTTP Request
                  [ Models / Repos ]  ◄────►  [ Postgres ]
                         │
                         ▼
-                 [ Clients externos ]  (Stripe, Web3, Gemini, Cloudinary)
+                 [ Clients externos ]  (Stripe, Gemini, Cloudinary)
                         │
                         ▼
                   [ Response (HTTP) ]
@@ -185,7 +184,7 @@ plans/
 
 | App | Responsabilidad | Mover a |
 |-----|-----------------|---------|
-| `plans` | subir plano, inferencia Mask R-CNN, generar GLB | `services.py`, `selectors.py`; `inference.py`/`three.py` como dominio/gateway; `onchain.py` como client |
+| `plans` | subir plano, inferencia Mask R-CNN, generar GLB | `services.py`, `selectors.py`; `inference.py`/`three.py` como dominio/gateway |
 | `users` | registro, login JWT, planes, pagos | `services.py`, `selectors.py`; `auth.py` (JWT) y `pagues.py` (Stripe) como clients |
 | `presupuesto` | cálculo de materiales y costos | `services.py` (cálculo) + `selectors.py` |
 | `suggestion_risk` | sugerencias con IA | `services.py`; `services_gemini.py` como client |
@@ -203,7 +202,7 @@ plans/
   solo cuando aporte; sin HTTP.
 - **Selectors**: probar forma/filtros del queryset.
 - **Views**: `APIClient` para permisos, validación y códigos de estado.
-- **Clients externos**: mockear (Stripe, Web3, Gemini, Cloudinary).
+- **Clients externos**: mockear (Stripe, Gemini, Cloudinary).
 
 ---
 

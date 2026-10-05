@@ -35,7 +35,6 @@ Gestiona la subida de planos 2D para ser procesados por la red neuronal Mask R-C
 | **POST** | `/api/set_plan/plans_json/` | JSON | `{ "detections": { ... }, "usuario": id }` | Registra directamente los resultados de inferencia en formato JSON (omitiendo procesamiento). |
 | **GET** | `/api/set_plan/lista_modelos/` | - | - | Retorna la lista de todos los trabajos y modelos 3D generados. |
 | **POST** | `/api/set_plan/generate_dynamic_glb/` | JSON | `{ "detections": { ... } }` | Genera y devuelve un modelo 3D GLB al vuelo en base a un listado JSON de detecciones (paredes, puertas, etc). |
-| **POST** | `/api/set_plan/validar_plano/` | **form-data** | `file` (Archivo plano 2D) | Valida si un archivo de plano tiene una extensión y formato compatible antes de cargarlo formalmente. |
 | **POST** | `/api/set_plan/reemplazar_glb/` | **form-data** | `job_id` (ID del Job)<br>`glb_file` (Archivo .glb real) | Sobrescribe manualmente el modelo GLB generado por la IA con un archivo .glb local personalizado. |
 
 ---

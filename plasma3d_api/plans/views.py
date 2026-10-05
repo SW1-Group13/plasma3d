@@ -1,10 +1,7 @@
 # plans/views.py
-import hashlib
 import io
 import json
-import os
 import re
-import tempfile
 import time
 
 from django.conf import settings
@@ -27,7 +24,7 @@ from .serializers import Plan3DJobSerializer
 
 def process_and_save_glb(job, det):
     """
-    Generar GLB en memoria, guardar metadatos y registrar en blockchain.
+    Generar GLB en memoria y guardar metadatos.
 
     Args:
         job: Instancia de Plan3DJob
@@ -37,7 +34,6 @@ def process_and_save_glb(job, det):
         job: Instancia actualizada de Plan3DJob
     """
     from .three import build_scene_mesh, export_glb
-    from .onchain import register_on_chain
 
     # Generar el modelo 3D (GLB)
     mesh = build_scene_mesh(det, min_score=0.0, cut_openings=True)
@@ -55,55 +51,6 @@ def process_and_save_glb(job, det):
     job.width = det.get("Width", 0)
     job.height = det.get("Height", 0)
 
-    # Calcular hashes SHA256
-    json_bytes = json.dumps(det, ensure_ascii=False).encode('utf-8')
-    sha_json = hashlib.sha256(json_bytes).hexdigest()
-    sha_glb = (
-        hashlib.sha256(glb_buf.getvalue()).hexdigest()
-        if mesh is not None
-        else ""
-    )
-
-    # Calcular hash real de la imagen
-    sha_img = ""
-    if job.plan_image:
-        # Abrir y leer el archivo guardado en disco para asegurar consistencia
-        job.plan_image.open('rb')
-        img_bytes = job.plan_image.read()
-        job.plan_image.close()
-        sha_img = hashlib.sha256(img_bytes).hexdigest()
-        
-        print(f"🔍 Hash de imagen calculado: {sha_img}")
-        print(f"📏 Tamaño de imagen: {len(img_bytes)} bytes")
-
-    # (Opcional) Subir a IPFS
-    # TODO: Integrar ipfs_client.py para CIDs reales
-    cid_img = "bafy-placeholder-img"
-    cid_json = "bafy-placeholder-json"
-    cid_glb = "bafy-placeholder-glb"
-    cid_meta = "bafy-placeholder-meta"
-
-    # Registrar en la blockchain Polygon Amoy
-    try:
-        tx_hash = register_on_chain(
-            job.id,
-            cid_img,
-            cid_json,
-            cid_glb,
-            "0x" + sha_img,
-            "0x" + sha_json,
-            "0x" + sha_glb,
-            cid_meta
-        )
-        if tx_hash:
-            print(f"✅ Modelo registrado en blockchain. Tx: {tx_hash}")
-            print(
-                f"🔍 Ver en: https://amoy.polygonscan.com/tx/{tx_hash}"
-            )
-            job.blockchain_tx = tx_hash
-    except Exception as e:
-        print(f"⚠️ No se pudo registrar en blockchain: {e}")
-
     # Guardar job
     job.save()
     return job
@@ -115,7 +62,7 @@ def create_plan3d_job(request):
     """
     Crear un job de Plan3D a partir de un archivo subido.
 
-    Procesa el archivo, ejecuta inferencia, genera GLB y registra en blockchain.
+    Procesa el archivo, ejecuta inferencia y genera el GLB.
     """
     # Guardar el archivo de entrada
     serializer = Plan3DJobSerializer(data=request.data)
@@ -172,7 +119,7 @@ def create_plan3d_job(request):
     job.usuario = usuario_instance
     job.save()
 
-    # Generar GLB y registrar en blockchain
+    # Generar el GLB
     process_and_save_glb(job, det)
 
     return Response(
@@ -234,7 +181,7 @@ def create_plan_json(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    # Generar GLB y registrar en blockchain
+    # Generar el GLB
     process_and_save_glb(job, det)
 
     return Response(
@@ -298,41 +245,6 @@ def get_lista_modelos(request, format=None):
     serializer = Plan3DJobSerializer(jobs, many=True)
     return Response(serializer.data, status=status.HTTP_200_OK)
 
-
-
-@api_view(['POST'])
-def validar_plano(request):
-    """
-    Validar autenticidad de un plano contra blockchain.
-
-    Recibe un job_id y los archivos (JSON, GLB, imagen)
-    para verificar sus hashes contra los registrados en blockchain.
-    """
-    from .validator import validate_plan
-
-    job_id = request.data.get("job_id")
-    json_file = request.FILES.get("json_file")
-    glb_file = request.FILES.get("glb_file")
-    img_file = request.FILES.get("img_file")
-
-    # Guardar temporalmente los archivos recibidos
-    tmp_dir = tempfile.gettempdir()
-    temp_json = os.path.join(tmp_dir, "tmp_json.json") if json_file else None
-    temp_glb = os.path.join(tmp_dir, "tmp_model.glb") if glb_file else None
-    temp_img = os.path.join(tmp_dir, "tmp_image.png") if img_file else None
-
-    if json_file:
-        with open(temp_json, 'wb') as f:
-            f.write(json_file.read())
-    if glb_file:
-        with open(temp_glb, 'wb') as f:
-            f.write(glb_file.read())
-    if img_file:
-        with open(temp_img, 'wb') as f:
-            f.write(img_file.read())
-
-    result = validate_plan(job_id, temp_json, temp_glb, temp_img)
-    return Response(result)
 
 
 @api_view(['POST'])

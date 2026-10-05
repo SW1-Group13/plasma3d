@@ -3,15 +3,14 @@ import { useNavigate } from 'react-router-dom';
 import * as THREE from 'three';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
-import { useBlockchainStore } from '@/entities/blockchain/store';
 import { Modelo3D } from '@/entities/model3D/three/Modelo3D';
 import { TEXTURES } from '@/entities/model3D/three/textures';
 import { env } from '@/shared/config/env';
-import { ModalBlockchain } from '@/features/blockchain/ui/ModalBlockchain';
+import { BackgroundTask } from '@/shared/ui/loader';
 import { Button } from '@/shared/ui/button';
 import { Badge } from '@/shared/ui/badge';
 import { Skeleton } from '@/shared/ui/spinner';
-import { CubeIcon, LayersIcon, PlusIcon, ShieldIcon, UploadIcon } from '@/shared/ui/icons';
+import { CubeIcon, LayersIcon, PlusIcon, UploadIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 export function DashboardPage() {
@@ -23,14 +22,13 @@ export function DashboardPage() {
   const fetchModels = useModelStore((s) => s.fetch);
   const uploadPlan = useModelStore((s) => s.uploadPlan);
   const uploadGlb = useModelStore((s) => s.saveGlb);
-  const setImageToVerify = useBlockchainStore((s) => s.setImageToVerify);
 
   const planInputRef = useRef<HTMLInputElement>(null);
   const glbInputRef = useRef<HTMLInputElement>(null);
 
   const [preview, setPreview] = useState<string | null>(null);
-  const [blockchainOpen, setBlockchainOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [task, setTask] = useState<string | null>(null);
 
   useEffect(() => {
     fetchModels().catch(() => toast.error('Error', 'No se pudieron cargar los modelos.'));
@@ -40,11 +38,14 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    setTask('Subiendo y procesando plano...');
     try {
       await uploadPlan(file, user.id);
       toast.success('Exito', 'Modelo subido con exito.');
     } catch {
       toast.error('Error', 'No se pudo subir el modelo.');
+    } finally {
+      setTask(null);
     }
   }
 
@@ -52,17 +53,21 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    setTask('Subiendo modelo 3D...');
     try {
       await uploadGlb(file, user.id);
       toast.success('Exito', 'Modelo 3D subido con exito.');
     } catch {
       toast.error('Error', 'No se pudo subir el modelo 3D.');
+    } finally {
+      setTask(null);
     }
   }
 
   async function onCreateModel() {
     if (!user) return;
     setCreating(true);
+    setTask('Creando modelo 3D...');
     try {
       const random = Math.floor(Math.random() * 1000);
       const empty = new Modelo3D(
@@ -81,17 +86,13 @@ export function DashboardPage() {
       toast.error('Error', 'No se pudo crear el modelo 3D.');
     } finally {
       setCreating(false);
+      setTask(null);
     }
   }
 
   function openModel(model: (typeof list)[number]) {
     localStorage.setItem('modelo', JSON.stringify(model));
     navigate('/private/editor');
-  }
-
-  function openBlockchain(id: number, url: string) {
-    setImageToVerify({ id, url: url.replace(/^\//, '') });
-    setBlockchainOpen(true);
   }
 
   return (
@@ -186,14 +187,6 @@ export function DashboardPage() {
                     <Button size="sm" onClick={() => openModel(model)}>
                       Abrir editor
                     </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => openBlockchain(model.id, model.plan_image ?? '')}
-                      disabled={!model.plan_image}
-                    >
-                      <ShieldIcon width={15} height={15} /> Blockchain
-                    </Button>
                   </div>
                 </div>
               </article>
@@ -202,7 +195,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      <ModalBlockchain open={blockchainOpen} onClose={() => setBlockchainOpen(false)} />
+      <BackgroundTask show={!!task} label={task ?? ''} />
 
       {preview && (
         <div

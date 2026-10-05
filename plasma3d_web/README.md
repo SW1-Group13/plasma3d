@@ -43,8 +43,8 @@ src/
 ├── app/        # bootstrap, router, providers
 ├── pages/      # pantallas por ruta
 ├── widgets/    # layout y visor/editor 3D
-├── features/   # auth, payment, blockchain, budget
-├── entities/   # session, user, model3D, budget, blockchain, cloudinary
+├── features/   # auth, payment, budget
+├── entities/   # session, user, model3D, budget, cloudinary
 └── shared/     # ui kit (Radix), api, config, lib
 ```
 

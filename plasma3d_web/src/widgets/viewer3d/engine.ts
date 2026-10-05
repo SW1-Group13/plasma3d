@@ -32,6 +32,7 @@ export class EditorEngine {
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
   private floor!: THREE.Mesh;
+  private grid!: THREE.GridHelper;
 
   public model: Modelo3D | null = null;
   public selected: THREE.Mesh | null = null;
@@ -64,7 +65,8 @@ export class EditorEngine {
     this.orbit.update();
 
     // Luces y helpers
-    this.scene.add(new THREE.GridHelper(30, 30, 0x334155, 0x1e293b));
+    this.grid = new THREE.GridHelper(30, 30, 0x334155, 0x1e293b);
+    this.scene.add(this.grid);
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
     const intensity = 0.6;
@@ -243,6 +245,10 @@ export class EditorEngine {
 
   setSpace(space: 'local' | 'world') {
     this.transformControls.setSpace(space);
+  }
+
+  setGridVisible(visible: boolean) {
+    this.grid.visible = visible;
   }
 
   setTranslationSnap(value: number | null) {

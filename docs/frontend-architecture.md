@@ -64,7 +64,6 @@ src/
 ├── features/
 │   ├── auth/             # api + ui (LoginForm, RegisterForm)
 │   ├── payment/          # api + ui (PaymentForm)
-│   ├── blockchain/       # ui (ModalBlockchain)
 │   └── budget/           # ui (BudgetDialog, PricesDialog)
 ├── entities/
 │   ├── session/          # store de sesión (tokens + usuario)
@@ -72,7 +71,6 @@ src/
 │   ├── model3D/          # types, api, store, three/{Modelo3D,textures}
 │   ├── budget/           # types, api, store, materials
 │   ├── structural/       # types + api
-│   ├── blockchain/       # types + store
 │   ├── cloudinary/       # types + api
 │   └── payment/          # types
 └── shared/

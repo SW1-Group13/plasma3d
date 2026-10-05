@@ -101,6 +101,30 @@ docker volume prune
 
   - ¡Listo!
 
+
+# Alternativa Instalar backend con conda
+
+```sh
+# Crear el entorno virtual de pythonv3.6.13 en conda
+conda create -n plasma3d python=3.6.13
+conda activate plasma3d
+
+
+# Actualizar pip version inferior importante "pip<24" para que funcione
+pip install --upgrade "pip<24" "setuptools<60" wheel
+
+# Instalar dependencias
+pip install -r requirements.txt
+
+# O usa Conda para instalar: 
+conda env create -f environment.yml
+conda activate plasma3d
+
+
+# Exportar 
+conda env export > environment.yml
+```
+
 ---
 
 ## ⚙️ Configuración previa del Backend

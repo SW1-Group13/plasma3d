@@ -1,6 +1,17 @@
 # plans/inference.py
 import os
 
+# Silenciar logs informativos (C++) y avisos de deprecacion (TF 1.x + Keras 2.x)
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
+import logging
+import warnings
+
+logging.getLogger("tensorflow").setLevel(logging.ERROR)
+logging.getLogger("keras").setLevel(logging.ERROR)
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
 import numpy as np
 import tensorflow as tf
 from PIL import Image
