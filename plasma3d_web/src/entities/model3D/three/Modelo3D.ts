@@ -293,17 +293,30 @@ export class Modelo3D {
         return;
       }
 
+      const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
+      this.objeto.traverse((child) => {
+        if (child.name === '__edges' && child.parent) {
+          detached.push({ parent: child.parent, child });
+        }
+      });
+      detached.forEach(({ child }) => child.removeFromParent());
+      const restore = () => detached.forEach(({ parent, child }) => parent.add(child));
+
       const exporter = new GLTFExporter();
       exporter.parse(
         this.objeto,
         (result) => {
+          restore();
           const blob =
             result instanceof ArrayBuffer
               ? new Blob([result], { type: 'model/gltf-binary' })
               : new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
           resolve({ blob, filename });
         },
-        (error) => reject(error),
+        (error) => {
+          restore();
+          reject(error);
+        },
         { binary: true },
       );
     });

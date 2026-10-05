@@ -2,6 +2,8 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { Modelo3D, type ElementType, type ModelSummary } from '@/entities/model3D/three/Modelo3D';
+import type { Layer } from '@/entities/layers/types';
+import type { Material } from '@/entities/materials/types';
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
 export type ViewName = 'planta' | 'alzado' | 'perfil' | 'isometrica' | '3d';
@@ -13,6 +15,21 @@ export interface SelectedInfo {
   rotation: { x: number; y: number; z: number };
   scale: { x: number; y: number; z: number };
   size: { x: number; y: number; z: number };
+  kind: string;
+  layerId: string;
+  color: string;
+  effectiveColor: string;
+  lineType: string;
+  lineWidth: number;
+  transparency: number;
+  materialId: string;
+  elevation: number;
+  length: number;
+  angle: number;
+  thickness: number;
+  height: number;
+  width: number;
+  sill: number;
 }
 
 type SelectionListener = (info: SelectedInfo | null) => void;
@@ -36,6 +53,12 @@ export class EditorEngine {
   private pointer = new THREE.Vector2();
   private grid!: THREE.GridHelper;
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  private layers: Layer[] = [];
+  private materials: Material[] = [];
+  private currentLayerId = '';
+  private showTextures = true;
+  private textureLoader = new THREE.TextureLoader();
+  private textureCache = new Map<string, THREE.Texture>();
   private viewSize = 20;
   private view: ViewName = 'planta';
   private tween: {
@@ -206,7 +229,7 @@ export class EditorEngine {
       this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
       this.raycaster.setFromCamera(this.pointer, this.camera);
-      const hit = this.raycaster.intersectObjects(this.allMeshes(), true);
+      const hit = this.raycaster.intersectObjects(this.selectableMeshes(), false);
       if (hit.length === 0) {
         this.marqueeStart = { x: event.clientX, y: event.clientY };
         this.marqueeActive = false;
@@ -306,7 +329,7 @@ export class EditorEngine {
       });
     };
 
-    const found = this.allMeshes().filter(inside);
+    const found = this.selectableMeshes().filter(inside);
     const next = additive ? Array.from(new Set([...this.selection, ...found])) : found;
     this.setSelection(next);
   }
@@ -409,7 +432,12 @@ export class EditorEngine {
     if (end.distanceTo(start) < 0.2) return;
     const dims = this.elementDims(type);
     const mesh = this.model.createElementSegment(type, start, end, dims.thickness, dims.height, dims.sill);
-    if (mesh) this.select(mesh);
+    if (mesh) {
+      this.initMesh(mesh, this.currentLayerId);
+      this.refreshVisibility();
+      this.refreshAppearance();
+      this.select(mesh);
+    }
   }
 
   cancelDraft() {
@@ -427,7 +455,7 @@ export class EditorEngine {
     this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
     this.raycaster.setFromCamera(this.pointer, this.camera);
 
-    const intersects = this.raycaster.intersectObjects(this.allMeshes(), true);
+    const intersects = this.raycaster.intersectObjects(this.selectableMeshes(), false);
 
     if (intersects.length > 0) {
       const mesh = intersects[0].object as THREE.Mesh;
@@ -497,6 +525,15 @@ export class EditorEngine {
     const size = new THREE.Vector3();
     box.getSize(size);
 
+    const layer = this.layerById(mesh.userData.layerId);
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    const effectiveColor = raw && raw !== 'bylayer' ? raw : layer?.color ?? '#9aa4b2';
+    const base = (mesh.userData.baseDims as { thickness: number; height: number; length: number }) ?? {
+      thickness: size.x,
+      height: size.y,
+      length: size.z,
+    };
+
     this.onSelection({
       name: this.selection.length > 1 ? `${this.selection.length} elementos` : mesh.name,
       count: this.selection.length,
@@ -508,6 +545,21 @@ export class EditorEngine {
       },
       scale: { x: mesh.scale.x, y: mesh.scale.y, z: mesh.scale.z },
       size: { x: size.x, y: size.y, z: size.z },
+      kind: (mesh.userData.kind as string) ?? 'mesh',
+      layerId: (mesh.userData.layerId as string) ?? '',
+      color: raw,
+      effectiveColor,
+      lineType: layer?.tipoLinea ?? 'continuous',
+      lineWidth: layer?.grosorLinea ?? 0.25,
+      transparency: layer?.transparencia ?? 0,
+      materialId: (mesh.userData.materialId as string) ?? '',
+      elevation: (mesh.userData.elevation as number) ?? 0,
+      length: base.length,
+      angle: THREE.MathUtils.radToDeg(mesh.rotation.y),
+      thickness: base.thickness,
+      height: base.height * mesh.scale.y,
+      width: base.length * mesh.scale.z,
+      sill: (mesh.userData.elevation as number) ?? 0,
     });
   }
 
@@ -549,6 +601,9 @@ export class EditorEngine {
       textures,
       () => {
         if (this.model) this.model.getObject3D().add(this.pivot);
+        this.initAllMeshes();
+        this.refreshVisibility();
+        this.refreshAppearance();
         onLoaded?.();
       },
     );
@@ -695,6 +750,213 @@ export class EditorEngine {
       MIDDLE: THREE.MOUSE.DOLLY,
       RIGHT: THREE.MOUSE.PAN,
     };
+  }
+
+  // ============================ Capas / Materiales / Color ============================
+
+  private layerById(id: string): Layer | undefined {
+    return this.layers.find((l) => l.id === id);
+  }
+
+  private materialById(id: string): Material | undefined {
+    return this.materials.find((m) => m.id === id);
+  }
+
+  setLayers(layers: Layer[], currentLayerId: string) {
+    this.layers = layers;
+    this.currentLayerId = currentLayerId;
+    this.refreshVisibility();
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  setCurrentLayer(id: string) {
+    this.currentLayerId = id;
+  }
+
+  setMaterials(materials: Material[]) {
+    this.materials = materials;
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  setShowTextures(value: boolean) {
+    this.showTextures = value;
+    this.refreshAppearance();
+  }
+
+  private kindOf(mesh: THREE.Mesh): 'wall' | 'door' | 'window' | 'mesh' {
+    const n = mesh.name.toLowerCase();
+    if (n.startsWith('wall_internal') || n.includes('wall')) return 'wall';
+    if (n.includes('door')) return 'door';
+    if (n.includes('window')) return 'window';
+    return 'mesh';
+  }
+
+  private defaultLayerForKind(kind: string): string {
+    if (kind === 'wall') return 'layer-paredes';
+    if (kind === 'door') return 'layer-puertas';
+    if (kind === 'window') return 'layer-ventanas';
+    return 'layer-0';
+  }
+
+  private initMesh(mesh: THREE.Mesh, layerIdOverride?: string) {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    mesh.userData.kind = kind;
+    if (layerIdOverride) mesh.userData.layerId = layerIdOverride;
+    else if (!mesh.userData.layerId) mesh.userData.layerId = this.defaultLayerForKind(kind);
+    if (mesh.userData.color === undefined) mesh.userData.color = 'bylayer';
+    if (mesh.userData.materialId === undefined) {
+      const name = kind === 'wall' ? 'Ladrillo rojo' : kind === 'door' ? 'Roble' : kind === 'window' ? 'Vidrio transparente' : '';
+      mesh.userData.materialId = name ? this.materials.find((m) => m.nombre === name)?.id ?? '' : '';
+    }
+    if (mesh.userData.elevation === undefined) mesh.userData.elevation = 0;
+    if (!mesh.userData.baseDims) {
+      mesh.updateMatrixWorld(true);
+      const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
+      mesh.userData.baseDims = {
+        thickness: size.x || 0.2,
+        height: size.y || 1,
+        length: size.z || 1,
+      };
+    }
+    this.ensureEdges(mesh);
+  }
+
+  private ensureEdges(mesh: THREE.Mesh) {
+    mesh.children.filter((c) => c.name === '__edges').forEach((c) => mesh.remove(c));
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(mesh.geometry as THREE.BufferGeometry, 30),
+      new THREE.LineBasicMaterial({ color: 0x0b1220, transparent: true, opacity: 0.9 }),
+    );
+    edges.name = '__edges';
+    edges.renderOrder = 2;
+    mesh.add(edges);
+  }
+
+  private initAllMeshes() {
+    this.allMeshes().forEach((mesh) => this.initMesh(mesh));
+  }
+
+  private isLocked(mesh: THREE.Mesh): boolean {
+    return Boolean(this.layerById(mesh.userData.layerId)?.bloqueada);
+  }
+
+  private selectableMeshes(): THREE.Mesh[] {
+    return this.allMeshes().filter((mesh) => mesh.visible && !this.isLocked(mesh));
+  }
+
+  private refreshVisibility() {
+    this.allMeshes().forEach((mesh) => {
+      const layer = this.layerById(mesh.userData.layerId);
+      mesh.visible = layer ? layer.visible && !layer.congelada : true;
+    });
+  }
+
+  private textureFor(url?: string): THREE.Texture | null {
+    if (!url) return null;
+    const cached = this.textureCache.get(url);
+    if (cached) return cached;
+    const texture = this.textureLoader.load(url);
+    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
+    texture.colorSpace = THREE.SRGBColorSpace;
+    this.textureCache.set(url, texture);
+    return texture;
+  }
+
+  private applyMeshAppearance(mesh: THREE.Mesh) {
+    const layer = this.layerById(mesh.userData.layerId);
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    const effectiveColor = raw !== 'bylayer' ? raw : layer?.color ?? '#9aa4b2';
+    const transparency = layer?.transparencia ?? 0;
+    const material = this.showTextures ? this.materialById(mesh.userData.materialId) : undefined;
+
+    if (material) {
+      const map = this.textureFor(material.textura_url);
+      if (map) map.repeat.set(material.escala_textura[0], material.escala_textura[1]);
+      mesh.material = new THREE.MeshStandardMaterial({
+        map: map ?? null,
+        color: new THREE.Color(map ? '#ffffff' : material.color_difuso),
+        roughness: material.rugosidad,
+        metalness: material.metalico,
+        transparent: material.opacidad < 1 || transparency > 0,
+        opacity: material.opacidad * (1 - transparency / 100),
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      });
+    } else {
+      mesh.material = new THREE.MeshStandardMaterial({
+        color: new THREE.Color(effectiveColor),
+        roughness: 0.9,
+        metalness: 0.05,
+        transparent: transparency > 0,
+        opacity: 1 - transparency / 100,
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      });
+    }
+    (mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
+  }
+
+  private refreshAppearance() {
+    this.allMeshes().forEach((mesh) => this.applyMeshAppearance(mesh));
+  }
+
+  setSelectedLayer(id: string) {
+    if (this.selection.length === 0) return;
+    this.selection.forEach((mesh) => (mesh.userData.layerId = id));
+    this.refreshVisibility();
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  setSelectedColorOverride(value: string) {
+    if (this.selection.length === 0) return;
+    this.selection.forEach((mesh) => (mesh.userData.color = value));
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  setSelectedMaterial(id: string) {
+    if (this.selection.length === 0) return;
+    this.selection.forEach((mesh) => (mesh.userData.materialId = id));
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  setSelectedElevation(y: number) {
+    if (this.selection.length === 0) return;
+    const first = this.selected as THREE.Mesh;
+    const delta = y - ((first.userData.elevation as number) ?? 0);
+    this.selection.forEach((mesh) => {
+      mesh.position.y += delta;
+      mesh.userData.elevation = y;
+      mesh.updateMatrix();
+    });
+    this.clampSelectionToFloor();
+    this.syncPivot();
+    this.emitSelection();
+  }
+
+  setSelectedDimension(field: 'height' | 'thickness' | 'length' | 'width', value: number) {
+    if (!this.selected) return;
+    const mesh = this.selected;
+    const base = (mesh.userData.baseDims as { thickness: number; height: number; length: number }) ?? {
+      thickness: 1,
+      height: 1,
+      length: 1,
+    };
+    if (field === 'height') mesh.scale.y = value / (base.height || 1);
+    else if (field === 'thickness') mesh.scale.x = value / (base.thickness || 1);
+    else mesh.scale.z = value / (base.length || 1);
+    mesh.updateMatrix();
+    this.clampSelectionToFloor();
+    this.syncPivot();
+    this.emitSelection();
   }
 
   setDraftListener(listener: (info: { type: ElementType; length: number } | null) => void) {

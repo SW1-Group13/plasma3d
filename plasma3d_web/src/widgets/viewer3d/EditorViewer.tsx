@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { EditorEngine, type SelectedInfo, type TransformMode, type ViewName } from '@/widgets/viewer3d/engine';
 import { ViewCube } from '@/widgets/viewer3d/ViewCube';
+import { LayersDialog } from '@/widgets/viewer3d/LayersDialog';
+import { MaterialsDialog } from '@/widgets/viewer3d/MaterialsDialog';
 import { TEXTURES, EMPTY_MODEL_URL } from '@/entities/model3D/three/textures';
+import { useLayerStore } from '@/entities/layers/store';
+import { useMaterialStore } from '@/entities/materials/store';
 import type { ElementType, ModelSummary } from '@/entities/model3D/three/Modelo3D';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
@@ -22,6 +26,7 @@ import {
   CubeIcon,
   DownloadIcon,
   GridIcon,
+  ImageIcon,
   KeyboardIcon,
   LayersIcon,
   MoveIcon,
@@ -101,15 +106,17 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
   const updateGlb = useModelStore((s) => s.updateGlb);
   const user = useSession((s) => s.user);
+  const layers = useLayerStore((s) => s.layers);
+  const currentLayerId = useLayerStore((s) => s.currentLayerId);
+  const materials = useMaterialStore((s) => s.materials);
+  const showTextures = useMaterialStore((s) => s.showTextures);
+  const setShowTextures = useMaterialStore((s) => s.setShowTextures);
 
   const [selected, setSelected] = useState<SelectedInfo | null>(null);
   const [mode, setMode] = useState<TransformMode>('translate');
   const [space, setSpace] = useState<'local' | 'world'>('local');
   const [snap, setSnap] = useState(0);
   const [rotSnap, setRotSnap] = useState(0);
-  const [texturePart, setTexturePart] = useState('wall_internal');
-  const [textureUrl, setTextureUrl] = useState(TEXTURES[0].url);
-  const [color, setColor] = useState('#e2e8f0');
   const [isBusy, setIsBusy] = useState(false);
   const [createHint, setCreateHint] = useState<ElementType | null>(null);
   const [modelLoading, setModelLoading] = useState(true);
@@ -120,6 +127,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [draft, setDraft] = useState<{ type: ElementType; length: number } | null>(null);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [layersOpen, setLayersOpen] = useState(false);
+  const [materialsOpen, setMaterialsOpen] = useState(false);
   const [tool, setTool] = useState<'select' | 'hand'>('select');
   const [modelId] = useState<number | string>(() => {
     try {
@@ -187,6 +196,15 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => void engineRef.current?.setGridVisible(gridVisible), [gridVisible]);
   useEffect(() => void engineRef.current?.setOrthoMode(ortho), [ortho]);
   useEffect(() => void engineRef.current?.setToolMode(tool), [tool]);
+  useEffect(() => {
+    engineRef.current?.setLayers(layers, currentLayerId);
+  }, [layers, currentLayerId]);
+  useEffect(() => {
+    engineRef.current?.setMaterials(materials);
+  }, [materials]);
+  useEffect(() => {
+    engineRef.current?.setShowTextures(showTextures);
+  }, [showTextures]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -340,6 +358,12 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </RibbonAction>
 
           <div className="ml-auto flex items-center gap-1">
+            <RibbonAction onClick={() => setLayersOpen(true)} title="Administrar capas">
+              <LayersIcon width={15} height={15} /> Capas
+            </RibbonAction>
+            <RibbonAction onClick={() => setMaterialsOpen(true)} title="Biblioteca de materiales">
+              <ImageIcon width={15} height={15} /> Materiales
+            </RibbonAction>
             <RibbonAction onClick={() => setShortcutsOpen(true)} title="Ver atajos de teclado">
               <KeyboardIcon width={15} height={15} /> Atajos
             </RibbonAction>
@@ -419,6 +443,16 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             Orto
           </button>
+          <button
+            onClick={() => setShowTextures(!showTextures)}
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+              showTextures ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+            )}
+            title="Mostrar texturas (Realista) / colores planos (Sombreado)"
+          >
+            Texturas: {showTextures ? 'ON' : 'OFF'}
+          </button>
         </div>
       </div>
 
@@ -496,61 +530,117 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
               </p>
             </div>
 
-            <AxisGroup label="Posicion" values={position} step={0.1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updatePosition(axis, value)} />
-            <AxisGroup label="Rotacion (grados)" values={rotation} step={1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateRotation(axis, value)} />
-            <AxisGroup label="Escala" values={scale} step={0.1} min={0.01} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateScale(axis, value)} />
+            {selected && (
+              <>
+                {/* General */}
+                <div className="flex flex-col gap-2 border-t border-border pt-3">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted">General</span>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted">Capa</span>
+                    <select
+                      value={selected.layerId}
+                      onChange={(e) => engineRef.current?.setSelectedLayer(e.target.value)}
+                      className="w-40 cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-foreground"
+                    >
+                      {layers.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.nombre}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted">Color</span>
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="color"
+                        value={selected.color !== 'bylayer' ? selected.color : selected.effectiveColor}
+                        onChange={(e) => engineRef.current?.setSelectedColorOverride(e.target.value)}
+                        className="h-7 w-9 cursor-pointer rounded border border-border bg-surface-2"
+                        aria-label="Color del objeto"
+                      />
+                      <button
+                        onClick={() => engineRef.current?.setSelectedColorOverride('bylayer')}
+                        className={cn(
+                          'rounded px-1.5 py-1 text-[10px]',
+                          selected.color === 'bylayer' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2',
+                        )}
+                      >
+                        ByLayer
+                      </button>
+                    </div>
+                  </div>
+                  <PropRow label="Tipo línea" value={selected.lineType} />
+                  <PropRow label="Grosor" value={`${selected.lineWidth.toFixed(2)} mm`} />
+                  <PropRow label="Transparencia" value={`${selected.transparency}%`} />
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs text-muted">Elevación</span>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={Number(selected.elevation.toFixed(2))}
+                      onChange={(e) => engineRef.current?.setSelectedElevation(Number(e.target.value))}
+                      className="w-20 rounded-md border border-border bg-surface-2 px-2 py-1 text-xs tabular-nums text-foreground"
+                    />
+                  </div>
+                </div>
 
-            <div className="flex items-center justify-between border-t border-border pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">Color</span>
-              <div className="flex items-center gap-2">
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => {
-                    setColor(e.target.value);
-                    engineRef.current?.setSelectedColor(e.target.value);
-                  }}
-                  className="h-9 w-11 cursor-pointer rounded-md border border-border bg-surface-2"
-                  aria-label="Color del objeto"
-                />
+                {/* Transformar */}
+                <AxisGroup label="Posicion" values={position} step={0.1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updatePosition(axis, value)} />
+                <AxisGroup label="Rotacion (grados)" values={rotation} step={1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateRotation(axis, value)} />
+                <AxisGroup label="Escala" values={scale} step={0.1} min={0.01} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateScale(axis, value)} />
                 <Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetScale()}>
-                  Reset
+                  Reset escala
                 </Button>
-              </div>
-            </div>
 
-            <div className="flex flex-col gap-2 border-t border-border pt-3">
-              <span className="text-xs font-medium uppercase tracking-wide text-muted">Textura</span>
-              <select
-                className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-                value={texturePart}
-                onChange={(e) => setTexturePart(e.target.value)}
-              >
-                <option value="wall_internal">Paredes</option>
-                <option value="door">Puertas</option>
-                <option value="window">Ventanas</option>
-              </select>
-              <select
-                className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-                value={textureUrl}
-                onChange={(e) => setTextureUrl(e.target.value)}
-              >
-                {TEXTURES.map((texture) => (
-                  <option key={texture.name} value={texture.url}>
-                    {texture.name}
-                  </option>
-                ))}
-              </select>
-              <Button
-                size="sm"
-                onClick={() => {
-                  engineRef.current?.applyTexture(texturePart, textureUrl);
-                  toast.success('Textura aplicada', 'Se aplico la textura seleccionada.');
-                }}
-              >
-                Aplicar textura
-              </Button>
-            </div>
+                {/* Geometria */}
+                {(selected.kind === 'wall' || selected.kind === 'door' || selected.kind === 'window') && (
+                  <div className="flex flex-col gap-2 border-t border-border pt-3">
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted">Geometria</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <DimField label="Longitud" value={selected.length} onChange={(v) => engineRef.current?.setSelectedDimension('length', v)} />
+                      <DimField label="Angulo" value={selected.angle} onChange={(v) => engineRef.current?.updateRotation('y', v)} />
+                      {selected.kind === 'wall' ? (
+                        <DimField label="Grosor" value={selected.thickness} onChange={(v) => engineRef.current?.setSelectedDimension('thickness', v)} />
+                      ) : (
+                        <DimField label="Ancho" value={selected.width} onChange={(v) => engineRef.current?.setSelectedDimension('width', v)} />
+                      )}
+                      <DimField label="Altura" value={selected.height} onChange={(v) => engineRef.current?.setSelectedDimension('height', v)} />
+                      {selected.kind === 'window' && (
+                        <DimField label="Alfeizar" value={selected.sill} onChange={(v) => engineRef.current?.setSelectedElevation(v)} />
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Visualizacion 3D */}
+                <div className="flex flex-col gap-2 border-t border-border pt-3">
+                  <span className="text-xs font-medium uppercase tracking-wide text-muted">Visualizacion 3D</span>
+                  <select
+                    value={selected.materialId}
+                    onChange={(e) => engineRef.current?.setSelectedMaterial(e.target.value)}
+                    className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+                  >
+                    <option value="">(sin material)</option>
+                    {materials.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.nombre}
+                      </option>
+                    ))}
+                  </select>
+                  {(() => {
+                    const mat = materials.find((m) => m.id === selected.materialId);
+                    if (!mat) return null;
+                    return mat.textura_url ? (
+                      <img src={mat.textura_url} alt={mat.nombre} className="h-20 w-full rounded-lg border border-border object-cover" />
+                    ) : (
+                      <div className="h-20 w-full rounded-lg border border-border" style={{ backgroundColor: mat.color_difuso }} />
+                    );
+                  })()}
+                  <p className="text-[10px] text-muted">El material se ve con Texturas ON (Realista).</p>
+                </div>
+              </>
+            )}
           </aside>
         )}
       </div>
@@ -612,6 +702,16 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </div>
         </DialogContent>
       </Dialog>
+
+      <LayersDialog open={layersOpen} onClose={() => setLayersOpen(false)} />
+      <MaterialsDialog
+        open={materialsOpen}
+        onClose={() => setMaterialsOpen(false)}
+        onAssign={(id) => {
+          engineRef.current?.setSelectedMaterial(id);
+          toast.success('Material asignado', 'Se aplico a la seleccion.');
+        }}
+      />
     </div>
   );
 }
@@ -730,6 +830,38 @@ function ToolButton({
     >
       {children}
     </button>
+  );
+}
+
+function PropRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-xs text-muted">{label}</span>
+      <span className="text-xs text-foreground/80">{value}</span>
+    </div>
+  );
+}
+
+function DimField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="text-[10px] uppercase tracking-wide text-muted">{label}</span>
+      <input
+        type="number"
+        step="0.05"
+        value={Number(value.toFixed(2))}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="h-8 rounded-md border border-border bg-surface-2 px-2 text-xs tabular-nums text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+      />
+    </label>
   );
 }
 
