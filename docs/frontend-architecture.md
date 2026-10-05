@@ -71,7 +71,7 @@ src/
 │   ├── model3D/          # types, api, store, three/{Modelo3D,textures}
 │   ├── budget/           # types, api, store, materials
 │   ├── structural/       # types + api
-│   ├── cloudinary/       # types + api
+│   ├── media/            # types + api (upload via backend)
 │   └── payment/          # types
 └── shared/
     ├── api/              # http (axios + interceptor de token)
@@ -86,7 +86,7 @@ src/
 
 - Componentes de **función** + hooks; estado global con **zustand** (`store.ts` por entidad).
 - **HTTP solo** en `entities/*/api.ts` o `features/*/api.ts`; el cliente axios vive en
-  `shared/api/http.ts` e inyecta el `Bearer` token (excluyendo login/registro/cloudinary).
+  `shared/api/http.ts` e inyecta el `Bearer` token (excluyendo login/registro).
 - **Datos del servidor** vía `api.ts`; **estado** en `store.ts`.
 - **UI reutilizable** en `shared/ui` (Radix + `class-variance-authority` + Tailwind).
 - Rutas en `app/AppRouter.tsx`; rutas privadas protegidas con `RequireAuth`.

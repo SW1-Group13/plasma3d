@@ -5,7 +5,7 @@ import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
 import { Modelo3D } from '@/entities/model3D/three/Modelo3D';
 import { TEXTURES } from '@/entities/model3D/three/textures';
-import { env } from '@/shared/config/env';
+import { assetUrl } from '@/shared/lib/assetUrl';
 import { BackgroundTask } from '@/shared/ui/loader';
 import { Button } from '@/shared/ui/button';
 import { Badge } from '@/shared/ui/badge';
@@ -146,9 +146,7 @@ export function DashboardPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((model) => {
-            const image = model.plan_image
-              ? `${env.apiUrl}${model.plan_image.replace(/^\//, '')}`
-              : null;
+            const image = model.plan_image ? assetUrl(model.plan_image) : null;
             return (
               <article
                 key={model.id}

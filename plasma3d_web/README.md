@@ -32,7 +32,6 @@ El `vite.config.ts` carga el `.env` de **la raiz del proyecto** (`envDir: '..'`)
 - `VITE_API_URL` — target del proxy hacia Django
 - `VITE_WS_URL` — target del proxy de websockets (opcional)
 - `VITE_API_BASE` — base relativa que usa la app (`/`)
-- `VITE_CLOUDINARY` / `VITE_CLOUDINARY_CLOUD_NAME` / `VITE_CLOUDINARY_UPLOAD_PRESET`
 - `VITE_STRIPE_PK` — clave publica de Stripe
 
 Ver `.env.sample` en la raiz del proyecto.
@@ -44,7 +43,7 @@ src/
 ├── pages/      # pantallas por ruta
 ├── widgets/    # layout y visor/editor 3D
 ├── features/   # auth, payment, budget
-├── entities/   # session, user, model3D, budget, cloudinary
+├── entities/   # session, user, model3D, budget, media
 └── shared/     # ui kit (Radix), api, config, lib
 ```
 

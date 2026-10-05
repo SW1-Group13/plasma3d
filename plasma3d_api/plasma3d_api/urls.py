@@ -20,6 +20,7 @@ from django.urls import include, path, re_path
 from django.conf import settings
 from django.views.static import serve
 from django.http import JsonResponse
+from users.uploads import upload_image
 
 def home(request):
     return JsonResponse({"message": "API Plasma 3D activa..... Bienvenido!"})
@@ -32,6 +33,7 @@ urlpatterns = [
     path('api/users/', include('users.urls')),
     path('api/presupuesto/', include('presupuesto.urls')),
     path('api/suggestion_risk/', include('suggestion_risk.urls')),
+    path('api/media/upload/', upload_image, name='media-upload'),
 ]
 
 # Servir archivos media (tambien cuando DEBUG=False, p. ej. en produccion)

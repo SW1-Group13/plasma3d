@@ -56,9 +56,6 @@ services:
       FRONTEND_PORT: 5173
       VITE_API_URL: http://plasma3d-api:8000
       VITE_API_BASE: /
-      VITE_CLOUDINARY: ${VITE_CLOUDINARY:-https://api.cloudinary.com/v1_1}
-      VITE_CLOUDINARY_CLOUD_NAME: ${VITE_CLOUDINARY_CLOUD_NAME:-diqqfka6g}
-      VITE_CLOUDINARY_UPLOAD_PRESET: ${VITE_CLOUDINARY_UPLOAD_PRESET:-profiles}
       VITE_STRIPE_PK: ${VITE_STRIPE_PK:-}
     volumes:
       - ./plasma3d_web:/app

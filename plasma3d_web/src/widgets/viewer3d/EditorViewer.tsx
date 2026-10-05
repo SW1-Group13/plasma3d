@@ -9,7 +9,7 @@ import { useMaterialStore } from '@/entities/materials/store';
 import type { ElementType, ModelSummary } from '@/entities/model3D/three/Modelo3D';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
-import { env } from '@/shared/config/env';
+import { assetUrl } from '@/shared/lib/assetUrl';
 import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
 import { Spinner } from '@/shared/ui/spinner';
@@ -171,7 +171,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     if (raw) {
       try {
         const model = JSON.parse(raw);
-        if (model?.glb_model) url = `${env.apiUrl}${String(model.glb_model).replace(/^\//, '')}`;
+        if (model?.glb_model) url = assetUrl(String(model.glb_model));
       } catch {
         localStorage.removeItem('modelo');
       }
