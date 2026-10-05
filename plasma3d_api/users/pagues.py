@@ -12,9 +12,7 @@ from .models import Usuario
 
 
 stripe.api_key = os.getenv(
-    "STRIPE_API_KEY",
-    "sk_test_51SPXgBHisFNi9cpHBLgCrW8rHFZRokvF7AFGUkecGdlwYMu"
-    "crehmGjPf1234LhfK8JNdyaLgUgeIx9HQvMecEl7Y001l5EOsBa"
+    "STRIPE_API_KEY"
 )
 
 @api_view(['POST'])

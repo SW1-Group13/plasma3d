@@ -21,7 +21,7 @@ interface MaterialsDialogProps {
 
 export function MaterialsDialog({ open, onClose, onAssign }: MaterialsDialogProps) {
   const materials = useMaterialStore((s) => s.materials);
-  const addMaterial = useMaterialStore((s) => s.add);
+  const createMaterial = useMaterialStore((s) => s.create);
   const updateMaterial = useMaterialStore((s) => s.update);
   const duplicateMaterial = useMaterialStore((s) => s.duplicate);
   const removeMaterial = useMaterialStore((s) => s.remove);
@@ -118,7 +118,7 @@ export function MaterialsDialog({ open, onClose, onAssign }: MaterialsDialogProp
 
                 <div>
                   <Label>Textura (URL)</Label>
-                  <Input value={selected.textura_url ?? ''} onChange={(e) => patch({ textura_url: e.target.value })} className="h-9" placeholder="/textures/..." />
+                  <Input value={selected.textura_url ?? ''} onChange={(e) => patch({ textura_url: e.target.value })} className="h-9" placeholder="/static/textures/..." />
                 </div>
 
                 <div className="flex items-center gap-3">
@@ -182,9 +182,9 @@ export function MaterialsDialog({ open, onClose, onAssign }: MaterialsDialogProp
             <Button
               variant="secondary"
               size="sm"
-              onClick={() => {
-                const id = addMaterial({
-                  nombre: 'Nuevo material',
+              onClick={async () => {
+                const id = await createMaterial({
+                  nombre: `Material ${Math.floor(Math.random() * 1000)}`,
                   categoria: 'Personalizado',
                   color_difuso: '#cccccc',
                   rugosidad: 0.8,

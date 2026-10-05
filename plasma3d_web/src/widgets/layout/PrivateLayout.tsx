@@ -2,6 +2,7 @@ import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-do
 import { useSession } from '@/entities/session/store';
 import { Button } from '@/shared/ui/button';
 import { CubeIcon, CreditCardIcon, LayoutDashboardIcon, LogOutIcon, UserIcon } from '@/shared/ui/icons';
+import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
 
 const links = [
@@ -59,9 +60,17 @@ export function PrivateLayout() {
           <div className="flex items-center gap-3">
             {user && (
               <div className="hidden items-center gap-2 sm:flex">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-sm font-semibold text-foreground ring-1 ring-inset ring-border">
-                  {user.nombre?.charAt(0)?.toUpperCase() ?? '?'}
-                </span>
+                {user.url ? (
+                  <img
+                    src={assetUrl(user.url)}
+                    alt={user.nombre ?? 'Avatar'}
+                    className="h-8 w-8 rounded-full object-cover ring-1 ring-inset ring-border"
+                  />
+                ) : (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-sm font-semibold text-foreground ring-1 ring-inset ring-border">
+                    {user.nombre?.charAt(0)?.toUpperCase() ?? '?'}
+                  </span>
+                )}
                 <div className="text-right leading-tight">
                   <p className="text-sm font-medium text-foreground">{user.nombre}</p>
                   <p className="text-xs text-muted">{user.rol}</p>

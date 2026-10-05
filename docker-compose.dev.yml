@@ -43,7 +43,7 @@ services:
     networks:
       - plasma3d
     command: >
-      sh -c "python manage.py makemigrations users plans presupuesto suggestion_risk view_url_3D &&
+      sh -c "python manage.py makemigrations users plans presupuesto suggestion_risk view_url_3D catalog &&
              python manage.py migrate &&
              python manage.py runserver 0.0.0.0:8000"
 

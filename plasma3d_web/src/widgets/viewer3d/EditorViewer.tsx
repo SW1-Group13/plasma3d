@@ -3,7 +3,8 @@ import { EditorEngine, type SelectedInfo, type TransformMode, type ViewName } fr
 import { ViewCube } from '@/widgets/viewer3d/ViewCube';
 import { LayersDialog } from '@/widgets/viewer3d/LayersDialog';
 import { MaterialsDialog } from '@/widgets/viewer3d/MaterialsDialog';
-import { TEXTURES, EMPTY_MODEL_URL } from '@/entities/model3D/three/textures';
+import { NewMaterialDialog } from '@/widgets/viewer3d/NewMaterialDialog';
+import { TEXTURES } from '@/entities/model3D/three/textures';
 import { useLayerStore } from '@/entities/layers/store';
 import { useMaterialStore } from '@/entities/materials/store';
 import type { ElementType, ModelSummary } from '@/entities/model3D/three/Modelo3D';
@@ -14,6 +15,7 @@ import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
 import { Spinner } from '@/shared/ui/spinner';
 import { LoadingOverlay } from '@/shared/ui/loader';
+import { MaskIcon } from '@/shared/ui/MaskIcon';
 import {
   Dialog,
   DialogContent,
@@ -30,7 +32,6 @@ import {
   KeyboardIcon,
   LayersIcon,
   MoveIcon,
-  PlusIcon,
   PointerIcon,
   RotateIcon,
   SaveIcon,
@@ -129,6 +130,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [materialsOpen, setMaterialsOpen] = useState(false);
+  const [newMaterialOpen, setNewMaterialOpen] = useState(false);
   const [tool, setTool] = useState<'select' | 'hand'>('select');
   const [modelId] = useState<number | string>(() => {
     try {
@@ -167,7 +169,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     engine.setMarqueeListener(setMarquee);
 
     const raw = localStorage.getItem('modelo');
-    let url = EMPTY_MODEL_URL;
+    let url: string | null = null;
     if (raw) {
       try {
         const model = JSON.parse(raw);
@@ -205,6 +207,11 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => {
     engineRef.current?.setShowTextures(showTextures);
   }, [showTextures]);
+
+  useEffect(() => {
+    useLayerStore.getState().fetch().catch(() => undefined);
+    useMaterialStore.getState().fetch().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -487,13 +494,13 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             </ToolButton>
             <span className="my-0.5 h-px w-full bg-border" />
             <ToolButton title="Dibujar muro" onClick={() => startCreate('wall')}>
-              <PlusIcon width={18} height={18} />
+              <MaskIcon src="/icons/wall.svg" className="h-[18px] w-[18px]" />
             </ToolButton>
             <ToolButton title="Dibujar puerta" onClick={() => startCreate('door')}>
-              <LayersIcon width={18} height={18} />
+              <MaskIcon src="/icons/door.svg" className="h-[18px] w-[18px]" />
             </ToolButton>
             <ToolButton title="Dibujar ventana" onClick={() => startCreate('window')}>
-              <GridIcon width={18} height={18} />
+              <MaskIcon src="/icons/window.svg" className="h-[18px] w-[18px]" />
             </ToolButton>
             <span className="my-0.5 h-px w-full bg-border" />
             <ToolButton
@@ -618,7 +625,13 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                   <span className="text-xs font-medium uppercase tracking-wide text-muted">Visualizacion 3D</span>
                   <select
                     value={selected.materialId}
-                    onChange={(e) => engineRef.current?.setSelectedMaterial(e.target.value)}
+                    onChange={(e) => {
+                      if (e.target.value === '__new__') {
+                        setNewMaterialOpen(true);
+                        return;
+                      }
+                      engineRef.current?.setSelectedMaterial(e.target.value);
+                    }}
                     className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
                   >
                     <option value="">(sin material)</option>
@@ -627,6 +640,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                         {m.nombre}
                       </option>
                     ))}
+                    <option value="__new__">＋ Nuevo material…</option>
                   </select>
                   {(() => {
                     const mat = materials.find((m) => m.id === selected.materialId);
@@ -704,6 +718,11 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       </Dialog>
 
       <LayersDialog open={layersOpen} onClose={() => setLayersOpen(false)} />
+      <NewMaterialDialog
+        open={newMaterialOpen}
+        onClose={() => setNewMaterialOpen(false)}
+        onCreated={(id) => engineRef.current?.setSelectedMaterial(id)}
+      />
       <MaterialsDialog
         open={materialsOpen}
         onClose={() => setMaterialsOpen(false)}

@@ -44,9 +44,8 @@ def upload_glb(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    job = Plan3DJob.objects.create(
-        glb_model=glb_file,
-        usuario=usuario_instance
-    )
+    # Crear el job y luego guardar el archivo (para conocer su carpeta en media)
+    job = Plan3DJob.objects.create(usuario=usuario_instance)
+    job.glb_model.save(glb_file.name, glb_file, save=True)
 
     return Response({'url': job.glb_model.url}, status=status.HTTP_201_CREATED)

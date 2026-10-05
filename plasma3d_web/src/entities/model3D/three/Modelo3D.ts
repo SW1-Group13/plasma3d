@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { ModelJson, TextureRef } from '@/entities/model3D/types';
+import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
 
 export type ElementType = 'wall' | 'door' | 'window';
 
@@ -196,34 +197,15 @@ export class Modelo3D {
     return this.windows;
   }
 
-  private ensureUVs(mesh: THREE.Mesh, axis: 'xz' | 'xy' = 'xz') {
-    const geom = mesh.geometry as THREE.BufferGeometry;
-    if (geom.attributes.uv) return;
-
-    geom.computeBoundingBox();
-    const bbox = geom.boundingBox!;
-    const size = new THREE.Vector3();
-    bbox.getSize(size);
-    const pos = geom.attributes.position as THREE.BufferAttribute;
-
-    const uvArray: number[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      const a = (pos.getX(i) - bbox.min.x) / (size.x || 1);
-      const b =
-        axis === 'xz'
-          ? (pos.getZ(i) - bbox.min.z) / (size.z || 1)
-          : (pos.getY(i) - bbox.min.y) / (size.y || 1);
-      uvArray.push(a, b);
-    }
-    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvArray, 2));
+  private ensureUVs(mesh: THREE.Mesh) {
+    ensurePlanarUVs(mesh);
   }
 
   setTexture(url: string) {
     if (!this.objeto) return;
 
-    const texture = this.loader.load(url, (tex) => {
+    const baseTexture = this.loader.load(url, (tex) => {
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(4, 4);
       tex.colorSpace = THREE.SRGBColorSpace;
     });
 
@@ -231,8 +213,13 @@ export class Modelo3D {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         this.ensureUVs(mesh);
+        const map = baseTexture.clone();
+        map.needsUpdate = true;
+        map.wrapS = map.wrapT = THREE.RepeatWrapping;
+        const [u, v] = textureRepeatFor(mesh);
+        map.repeat.set(u, v);
         mesh.material = new THREE.MeshStandardMaterial({
-          map: texture,
+          map,
           color: 0xffffff,
           metalness: 0,
           roughness: 1,
@@ -250,9 +237,9 @@ export class Modelo3D {
     const lowerName = partialName.toLowerCase();
     const textureName = this.textures.find((t) => t.url === url)?.name ?? 'Personalizado';
 
-    const texture = this.loader.load(url);
-    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.colorSpace = THREE.SRGBColorSpace;
+    const baseTexture = this.loader.load(url);
+    baseTexture.wrapS = baseTexture.wrapT = THREE.RepeatWrapping;
+    baseTexture.colorSpace = THREE.SRGBColorSpace;
 
     this.objeto.traverse((child) => {
       if (!(child as THREE.Mesh).isMesh) return;
@@ -264,13 +251,16 @@ export class Modelo3D {
       const isWindow = lowerName === 'window' && lname.includes('window');
       if (!isWall && !isDoor && !isWindow) return;
 
-      if (isWindow) texture.repeat.set(1, 1);
-      else texture.repeat.set(2, 2);
-
       this.ensureUVs(mesh);
 
+      const map = baseTexture.clone();
+      map.needsUpdate = true;
+      map.wrapS = map.wrapT = THREE.RepeatWrapping;
+      const [u, v] = textureRepeatFor(mesh);
+      map.repeat.set(u, v);
+
       const newMat = new THREE.MeshStandardMaterial({
-        map: texture,
+        map,
         color: 0xffffff,
         metalness: 0.1,
         roughness: 0.9,

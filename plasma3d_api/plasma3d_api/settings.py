@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'users',
     'presupuesto',
     'suggestion_risk',
+    'catalog',
 ]
 
 MIDDLEWARE = [

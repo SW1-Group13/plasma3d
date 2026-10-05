@@ -9,6 +9,8 @@ interface ModelStore {
   uploadPlan: (file: File, usuario: number) => Promise<Model3D>;
   updateGlb: (file: File, usuario: number) => Promise<void>;
   saveGlb: (file: File, usuario: number) => Promise<void>;
+  createEmpty: (usuario: number) => Promise<void>;
+  remove: (id: number) => Promise<void>;
 }
 
 export const useModelStore = create<ModelStore>((set, get) => ({
@@ -45,6 +47,26 @@ export const useModelStore = create<ModelStore>((set, get) => ({
     set({ isLoading: true });
     try {
       await model3DApi.saveGlb(file, usuario);
+      await get().fetch();
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  createEmpty: async (usuario) => {
+    set({ isLoading: true });
+    try {
+      await model3DApi.createEmpty(usuario);
+      await get().fetch();
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
+  remove: async (id) => {
+    set({ isLoading: true });
+    try {
+      await model3DApi.remove(id);
       await get().fetch();
     } finally {
       set({ isLoading: false });

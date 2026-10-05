@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { Modelo3D, type ElementType, type ModelSummary } from '@/entities/model3D/three/Modelo3D';
+import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
 import type { Layer } from '@/entities/layers/types';
 import type { Material } from '@/entities/materials/types';
 
@@ -590,7 +591,7 @@ export class EditorEngine {
     this.emitSelection();
   }
 
-  loadModel(url: string, textures: { name: string; url: string }[], onLoaded?: () => void) {
+  loadModel(url: string | null, textures: { name: string; url: string }[], onLoaded?: () => void) {
     this.model?.dispose();
     this.model = new Modelo3D(
       this.scene,
@@ -794,10 +795,9 @@ export class EditorEngine {
   }
 
   private defaultLayerForKind(kind: string): string {
-    if (kind === 'wall') return 'layer-paredes';
-    if (kind === 'door') return 'layer-puertas';
-    if (kind === 'window') return 'layer-ventanas';
-    return 'layer-0';
+    const name = kind === 'wall' ? 'Paredes' : kind === 'door' ? 'Puertas' : kind === 'window' ? 'Ventanas' : '';
+    const layer = this.layers.find((l) => l.nombre === name);
+    return layer?.id ?? this.currentLayerId ?? '';
   }
 
   private initMesh(mesh: THREE.Mesh, layerIdOverride?: string) {
@@ -870,12 +870,21 @@ export class EditorEngine {
     const effectiveColor = raw !== 'bylayer' ? raw : layer?.color ?? '#9aa4b2';
     const transparency = layer?.transparencia ?? 0;
     const material = this.showTextures ? this.materialById(mesh.userData.materialId) : undefined;
+    const prevMaterial = mesh.material as THREE.MeshStandardMaterial | undefined;
 
     if (material) {
-      const map = this.textureFor(material.textura_url);
-      if (map) map.repeat.set(material.escala_textura[0], material.escala_textura[1]);
+      const base = this.textureFor(material.textura_url);
+      let map: THREE.Texture | null = null;
+      if (base) {
+        ensurePlanarUVs(mesh);
+        map = base.clone();
+        map.needsUpdate = true;
+        map.wrapS = map.wrapT = THREE.RepeatWrapping;
+        const [u, v] = textureRepeatFor(mesh);
+        map.repeat.set(u * material.escala_textura[0], v * material.escala_textura[1]);
+      }
       mesh.material = new THREE.MeshStandardMaterial({
-        map: map ?? null,
+        map,
         color: new THREE.Color(map ? '#ffffff' : material.color_difuso),
         roughness: material.rugosidad,
         metalness: material.metalico,
@@ -899,7 +908,13 @@ export class EditorEngine {
         polygonOffsetUnits: 1,
       });
     }
-    (mesh.material as THREE.MeshStandardMaterial).needsUpdate = true;
+    const nextMaterial = mesh.material as THREE.MeshStandardMaterial;
+    nextMaterial.needsUpdate = true;
+    if (prevMaterial && prevMaterial !== nextMaterial) {
+      const prevMap = prevMaterial.map;
+      if (prevMap && !Array.from(this.textureCache.values()).includes(prevMap)) prevMap.dispose();
+      prevMaterial.dispose();
+    }
   }
 
   private refreshAppearance() {
