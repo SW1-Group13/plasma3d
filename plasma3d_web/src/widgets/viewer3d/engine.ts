@@ -3,6 +3,13 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { Modelo3D, type ElementType, type ModelSummary } from '@/entities/model3D/three/Modelo3D';
 import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
+import {
+  DOOR_HEIGHT_M,
+  WALL_HEIGHT_M,
+  WALL_THICKNESS_M,
+  WINDOW_HEIGHT_M,
+  WINDOW_SILL_M,
+} from '@/entities/model3D/three/dimensions';
 import type { Layer } from '@/entities/layers/types';
 import type { Material } from '@/entities/materials/types';
 
@@ -81,6 +88,7 @@ export class EditorEngine {
   private drafting: { type: ElementType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
   private preview: THREE.Mesh | null = null;
   private orthoMode = false;
+  private lockVertical = false;
   private translationSnap: number | null = null;
   private pivot = new THREE.Object3D();
   private dragStart: { pivot: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrix: THREE.Matrix4 }[] } | null = null;
@@ -396,9 +404,9 @@ export class EditorEngine {
   }
 
   private elementDims(type: ElementType) {
-    if (type === 'wall') return { thickness: 0.3, height: 3, sill: 0 };
-    if (type === 'door') return { thickness: 0.2, height: 2.1, sill: 0 };
-    return { thickness: 0.2, height: 1.2, sill: 0.9 };
+    if (type === 'wall') return { thickness: WALL_THICKNESS_M, height: WALL_HEIGHT_M, sill: 0 };
+    if (type === 'door') return { thickness: 0.2, height: DOOR_HEIGHT_M, sill: 0 };
+    return { thickness: 0.2, height: WINDOW_HEIGHT_M, sill: WINDOW_SILL_M };
   }
 
   private updatePreview() {
@@ -432,9 +440,24 @@ export class EditorEngine {
 
     if (end.distanceTo(start) < 0.2) return;
     const dims = this.elementDims(type);
-    const mesh = this.model.createElementSegment(type, start, end, dims.thickness, dims.height, dims.sill);
+    // Los puntos vienen en coordenadas de mundo, pero los elementos se agregan
+    // como hijos del objeto del modelo (que puede tener offset/escala).
+    const parent = this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    const startLocal = parent.worldToLocal(start.clone());
+    const endLocal = parent.worldToLocal(end.clone());
+    const mesh = this.model.createElementSegment(
+      type,
+      startLocal,
+      endLocal,
+      dims.thickness,
+      dims.height,
+      dims.sill,
+    );
     if (mesh) {
-      this.initMesh(mesh, this.currentLayerId);
+      // Asignar la capa segun el tipo (Paredes/Puertas/Ventanas) para que
+      // `bylayer` tome el color correcto desde el momento de dibujarlo.
+      this.initMesh(mesh);
       this.refreshVisibility();
       this.refreshAppearance();
       this.select(mesh);
@@ -526,7 +549,7 @@ export class EditorEngine {
     const size = new THREE.Vector3();
     box.getSize(size);
 
-    const layer = this.layerById(mesh.userData.layerId);
+    const layer = this.resolveLayer(mesh);
     const raw = (mesh.userData.color as string) ?? 'bylayer';
     const effectiveColor = raw && raw !== 'bylayer' ? raw : layer?.color ?? '#9aa4b2';
     const base = (mesh.userData.baseDims as { thickness: number; height: number; length: number }) ?? {
@@ -581,6 +604,15 @@ export class EditorEngine {
     this.pivot.updateMatrix();
     const inverse = new THREE.Matrix4().copy(this.dragStart.pivot).invert();
     const delta = new THREE.Matrix4().multiplyMatrices(this.pivot.matrix, inverse);
+    // Shift: bloquear el movimiento vertical (arriba/abajo) al trasladar.
+    if (this.lockVertical && this.transformControls.mode === 'translate') {
+      const pos = new THREE.Vector3();
+      const quat = new THREE.Quaternion();
+      const scale = new THREE.Vector3();
+      delta.decompose(pos, quat, scale);
+      pos.y = 0;
+      delta.compose(pos, quat, scale);
+    }
     this.dragStart.meshes.forEach(({ mesh, matrix }) => {
       const next = new THREE.Matrix4().multiplyMatrices(delta, matrix);
       next.decompose(mesh.position, mesh.quaternion, mesh.scale);
@@ -612,6 +644,14 @@ export class EditorEngine {
 
   setMode(mode: TransformMode) {
     this.transformControls.setMode(mode);
+    this.transformControls.showY = !(this.lockVertical && mode === 'translate');
+  }
+
+  setLockVertical(value: boolean) {
+    this.lockVertical = value;
+    if (this.transformControls.mode === 'translate') {
+      this.transformControls.showY = !value;
+    }
   }
 
   setSpace(space: 'local' | 'world') {
@@ -759,6 +799,32 @@ export class EditorEngine {
     return this.layers.find((l) => l.id === id);
   }
 
+  private layerNameForKind(kind: string): string {
+    if (kind === 'wall') return 'Paredes';
+    if (kind === 'door') return 'Puertas';
+    if (kind === 'window') return 'Ventanas';
+    return '';
+  }
+
+  /**
+   * Resuelve la capa de una malla. Si su id quedo obsoleto (p.ej. tras
+   * reemplazar las capas fallback por las del backend), la reasigna por
+   * nombre para que `bylayer` siga tomando el color correcto.
+   */
+  private resolveLayer(mesh: THREE.Mesh): Layer | undefined {
+    const direct = this.layerById(mesh.userData.layerId);
+    if (direct) return direct;
+
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    const name = (mesh.userData.layerName as string) || this.layerNameForKind(kind);
+    const found = this.layers.find((l) => l.nombre === name);
+    if (found) {
+      mesh.userData.layerId = found.id;
+      mesh.userData.layerName = found.nombre;
+    }
+    return found;
+  }
+
   private materialById(id: string): Material | undefined {
     return this.materials.find((m) => m.id === id);
   }
@@ -805,6 +871,8 @@ export class EditorEngine {
     mesh.userData.kind = kind;
     if (layerIdOverride) mesh.userData.layerId = layerIdOverride;
     else if (!mesh.userData.layerId) mesh.userData.layerId = this.defaultLayerForKind(kind);
+    const layer = this.layerById(mesh.userData.layerId);
+    if (layer) mesh.userData.layerName = layer.nombre;
     if (mesh.userData.color === undefined) mesh.userData.color = 'bylayer';
     if (mesh.userData.materialId === undefined) {
       const name = kind === 'wall' ? 'Ladrillo rojo' : kind === 'door' ? 'Roble' : kind === 'window' ? 'Vidrio transparente' : '';
@@ -839,7 +907,7 @@ export class EditorEngine {
   }
 
   private isLocked(mesh: THREE.Mesh): boolean {
-    return Boolean(this.layerById(mesh.userData.layerId)?.bloqueada);
+    return Boolean(this.resolveLayer(mesh)?.bloqueada);
   }
 
   private selectableMeshes(): THREE.Mesh[] {
@@ -848,7 +916,7 @@ export class EditorEngine {
 
   private refreshVisibility() {
     this.allMeshes().forEach((mesh) => {
-      const layer = this.layerById(mesh.userData.layerId);
+      const layer = this.resolveLayer(mesh);
       mesh.visible = layer ? layer.visible && !layer.congelada : true;
     });
   }
@@ -865,9 +933,10 @@ export class EditorEngine {
   }
 
   private applyMeshAppearance(mesh: THREE.Mesh) {
-    const layer = this.layerById(mesh.userData.layerId);
+    const layer = this.resolveLayer(mesh);
     const raw = (mesh.userData.color as string) ?? 'bylayer';
-    const effectiveColor = raw !== 'bylayer' ? raw : layer?.color ?? '#9aa4b2';
+    const hasOverride = raw !== 'bylayer';
+    const effectiveColor = hasOverride ? raw : layer?.color ?? '#9aa4b2';
     const transparency = layer?.transparencia ?? 0;
     const material = this.showTextures ? this.materialById(mesh.userData.materialId) : undefined;
     const prevMaterial = mesh.material as THREE.MeshStandardMaterial | undefined;
@@ -885,7 +954,7 @@ export class EditorEngine {
       }
       mesh.material = new THREE.MeshStandardMaterial({
         map,
-        color: new THREE.Color(map ? '#ffffff' : material.color_difuso),
+        color: new THREE.Color(effectiveColor),
         roughness: material.rugosidad,
         metalness: material.metalico,
         transparent: material.opacidad < 1 || transparency > 0,
@@ -898,8 +967,7 @@ export class EditorEngine {
     } else {
       mesh.material = new THREE.MeshStandardMaterial({
         color: new THREE.Color(effectiveColor),
-        roughness: 0.9,
-        metalness: 0.05,
+        roughness: 0.9,        metalness: 0.05,
         transparent: transparency > 0,
         opacity: 1 - transparency / 100,
         side: THREE.DoubleSide,
@@ -923,7 +991,11 @@ export class EditorEngine {
 
   setSelectedLayer(id: string) {
     if (this.selection.length === 0) return;
-    this.selection.forEach((mesh) => (mesh.userData.layerId = id));
+    const layer = this.layerById(id);
+    this.selection.forEach((mesh) => {
+      mesh.userData.layerId = id;
+      if (layer) mesh.userData.layerName = layer.nombre;
+    });
     this.refreshVisibility();
     this.refreshAppearance();
     this.emitSelection();

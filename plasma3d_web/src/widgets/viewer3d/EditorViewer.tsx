@@ -225,6 +225,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       ) {
         return;
       }
+      if (e.key === 'Shift') engineRef.current?.setLockVertical(true);
       if (e.key === 'w' || e.key === 'W') setMode('translate');
       else if (e.key === 'e' || e.key === 'E') setMode('rotate');
       else if (e.key === 'r' || e.key === 'R') setMode('scale');
@@ -242,7 +243,17 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       } else if (e.key === 'Delete' || e.key === 'Backspace') engineRef.current?.deleteSelected();
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.key === 'Shift') engineRef.current?.setLockVertical(false);
+    };
+    const onBlur = () => engineRef.current?.setLockVertical(false);
+    window.addEventListener('keyup', onKeyUp);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
+    };
   }, [applyView]);
 
   const startCreate = useCallback((type: ElementType) => {
@@ -675,7 +686,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <span className="hidden sm:inline">Herramienta: {tool === 'hand' ? 'Mano' : 'Seleccionar'}</span>
           <span className="hidden sm:inline">Vista: {VIEWS.find((v) => v.id === view)?.label ?? view}</span>
           <span className="hidden md:inline">Modo: {mode === 'translate' ? 'Mover' : mode === 'rotate' ? 'Rotar' : 'Escalar'}</span>
-          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · Ctrl+clic/marco multi · Shift orto · Supr borrar</span>
+          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · Supr borrar</span>
         </div>
       </div>
 

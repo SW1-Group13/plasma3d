@@ -3,6 +3,46 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { ModelJson, TextureRef } from '@/entities/model3D/types';
 import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
+import {
+  WINDOW_BAR_THICK_M,
+  WINDOW_SILL_M,
+  WINDOW_TOP_THICK_M,
+} from '@/entities/model3D/three/dimensions';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+/**
+ * Marco de ventana hueco (bloque de alfeizar + cruz fina + tapa superior),
+ * replicando el diseño del backend (`_window_mesh_from_roi`).
+ */
+function buildWindowFrameGeometry(
+  thickness: number,
+  height: number,
+  length: number,
+): THREE.BufferGeometry {
+  const sill = WINDOW_SILL_M;
+  const centerY = sill + height / 2;
+  const totalTop = sill + height;
+  const parts: THREE.BufferGeometry[] = [];
+
+  if (sill > 0) {
+    const bottom = new THREE.BoxGeometry(thickness, sill, length);
+    bottom.translate(0, sill / 2 - centerY, 0);
+    parts.push(bottom);
+  }
+
+  // Cruz: montante vertical (fino en el largo) + travesaño (fino en alto).
+  parts.push(new THREE.BoxGeometry(thickness, height, WINDOW_BAR_THICK_M));
+  parts.push(new THREE.BoxGeometry(thickness, WINDOW_BAR_THICK_M, length));
+
+  // Tapa superior, justo por debajo del techo del vano.
+  const top = new THREE.BoxGeometry(thickness, WINDOW_TOP_THICK_M, length);
+  top.translate(0, totalTop - WINDOW_TOP_THICK_M / 2 - centerY, 0);
+  parts.push(top);
+
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((part) => part.dispose());
+  return merged ?? new THREE.BoxGeometry(thickness, height, length);
+}
 
 export type ElementType = 'wall' | 'door' | 'window';
 
@@ -463,9 +503,12 @@ export class Modelo3D {
       });
     }
 
-    const geometry = new THREE.BoxGeometry(thickness, height, length);
+    const geometry =
+      type === 'window'
+        ? buildWindowFrameGeometry(thickness, height, length)
+        : new THREE.BoxGeometry(thickness, height, length);
     const mesh = new THREE.Mesh(geometry, baseMaterial);
-    mesh.position.set(mid.x, sill + height / 2, mid.z);
+    mesh.position.set(mid.x, a.y + sill + height / 2, mid.z);
     mesh.rotation.y = Math.atan2(dir.x, dir.z);
 
     if (type === 'wall') {

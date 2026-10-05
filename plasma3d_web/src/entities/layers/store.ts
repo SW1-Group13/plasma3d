@@ -33,7 +33,7 @@ export const useLayerStore = create<LayerStore>((set, get) => ({
       set({ loaded: true });
       return;
     }
-    const current = get().layers.some((l) => l.id === get().currentLayerId)
+    const current = layers.some((l) => l.id === get().currentLayerId)
       ? get().currentLayerId
       : layers.find((l) => l.nombre === 'Paredes')?.id ?? layers[0].id;
     set({ layers, currentLayerId: current, loaded: true });
