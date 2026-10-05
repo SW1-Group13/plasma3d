@@ -161,6 +161,19 @@ export const GridIcon = (props: IconProps) => (
   </svg>
 );
 
+export const PointerIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M5 3l6.5 17 2.3-6.8L20.5 11 5 3Z" />
+  </svg>
+);
+
+export const KeyboardIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <rect x="2" y="6" width="20" height="12" rx="2" />
+    <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
+  </svg>
+);
+
 export const AlertTriangleIcon = (props: IconProps) => (
   <svg {...base(props)}>
     <path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z" />

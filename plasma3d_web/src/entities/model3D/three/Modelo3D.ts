@@ -426,6 +426,62 @@ export class Modelo3D {
     return mesh;
   }
 
+  createElementSegment(
+    type: ElementType,
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    thickness: number,
+    height: number,
+    sill = 0,
+  ): THREE.Mesh | null {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const length = dir.length();
+    if (length < 0.05) return null;
+
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+
+    let refArray: THREE.Mesh[] = [];
+    if (type === 'wall') refArray = this.walls;
+    else if (type === 'door') refArray = this.doors;
+    else if (type === 'window') refArray = this.windows;
+
+    let baseMaterial: THREE.MeshStandardMaterial;
+    if (refArray.length > 0) {
+      baseMaterial = (refArray[0].material as THREE.MeshStandardMaterial).clone();
+    } else {
+      let color = 0x9aa4b2;
+      if (type === 'door') color = 0x8a6b4a;
+      if (type === 'window') color = 0x6ea0d8;
+      baseMaterial = new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.85,
+        metalness: 0.1,
+        side: THREE.DoubleSide,
+      });
+    }
+
+    const geometry = new THREE.BoxGeometry(thickness, height, length);
+    const mesh = new THREE.Mesh(geometry, baseMaterial);
+    mesh.position.set(mid.x, sill + height / 2, mid.z);
+    mesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+    if (type === 'wall') {
+      mesh.name = `wall_internal_${Date.now()}`;
+      this.walls.push(mesh);
+    } else if (type === 'door') {
+      mesh.name = `door_${Date.now()}`;
+      this.doors.push(mesh);
+    } else {
+      mesh.name = `window_${Date.now()}`;
+      this.windows.push(mesh);
+    }
+
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.objeto.add(mesh);
+    return mesh;
+  }
+
   removeElement(mesh: THREE.Mesh) {
     if (!this.objeto) return;
     // No disponer del material: puede estar compartido entre varias mallas.

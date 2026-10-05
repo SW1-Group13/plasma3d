@@ -12,9 +12,6 @@ export const TEXTURES: TextureRef[] = [
   { name: 'Vidrio escandinavo', url: '/textures/hielo.jpg' },
 ];
 
-// Textura del suelo del editor (local).
-export const FLOOR_TEXTURE = '/textures/textura_suelo.jpg';
-
 // Modelo vacio para "crear modelo" (local).
 export const EMPTY_MODEL_URL = '/models/vacio_wama55.glb';
 
