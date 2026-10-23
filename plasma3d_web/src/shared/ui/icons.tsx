@@ -154,10 +154,23 @@ export const SparklesIcon = (props: IconProps) => (
   </svg>
 );
 
-export const ShieldIcon = (props: IconProps) => (
+export const GridIcon = (props: IconProps) => (
   <svg {...base(props)}>
-    <path d="M12 3l7 3v5c0 5-3.5 8-7 10-3.5-2-7-5-7-10V6l7-3Z" />
-    <path d="m9.5 12 1.8 1.8L15 10" />
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <path d="M3 9h18M3 15h18M9 3v18M15 3v18" />
+  </svg>
+);
+
+export const PointerIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M5 3l6.5 17 2.3-6.8L20.5 11 5 3Z" />
+  </svg>
+);
+
+export const KeyboardIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <rect x="2" y="6" width="20" height="12" rx="2" />
+    <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
   </svg>
 );
 

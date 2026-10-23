@@ -1,18 +1,27 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import * as THREE from 'three';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
-import { useBlockchainStore } from '@/entities/blockchain/store';
-import { Modelo3D } from '@/entities/model3D/three/Modelo3D';
-import { TEXTURES } from '@/entities/model3D/three/textures';
-import { env } from '@/shared/config/env';
-import { ModalBlockchain } from '@/features/blockchain/ui/ModalBlockchain';
+import { assetUrl } from '@/shared/lib/assetUrl';
+import { BackgroundTask } from '@/shared/ui/loader';
 import { Button } from '@/shared/ui/button';
 import { Badge } from '@/shared/ui/badge';
 import { Skeleton } from '@/shared/ui/spinner';
-import { CubeIcon, LayersIcon, PlusIcon, ShieldIcon, UploadIcon } from '@/shared/ui/icons';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/ui/dialog';
+import { CubeIcon, LayersIcon, PlusIcon, TrashIcon, UploadIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
+
+function serverMessage(error: unknown, fallback: string): string {
+  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  return typeof detail === 'string' && detail.length > 0 ? detail : fallback;
+}
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -23,14 +32,16 @@ export function DashboardPage() {
   const fetchModels = useModelStore((s) => s.fetch);
   const uploadPlan = useModelStore((s) => s.uploadPlan);
   const uploadGlb = useModelStore((s) => s.saveGlb);
-  const setImageToVerify = useBlockchainStore((s) => s.setImageToVerify);
+  const createEmpty = useModelStore((s) => s.createEmpty);
+  const removeModel = useModelStore((s) => s.remove);
 
   const planInputRef = useRef<HTMLInputElement>(null);
   const glbInputRef = useRef<HTMLInputElement>(null);
 
   const [preview, setPreview] = useState<string | null>(null);
-  const [blockchainOpen, setBlockchainOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [task, setTask] = useState<string | null>(null);
+  const [deleteId, setDeleteId] = useState<number | null>(null);
 
   useEffect(() => {
     fetchModels().catch(() => toast.error('Error', 'No se pudieron cargar los modelos.'));
@@ -40,11 +51,14 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    setTask('Subiendo y procesando plano...');
     try {
       await uploadPlan(file, user.id);
       toast.success('Exito', 'Modelo subido con exito.');
-    } catch {
-      toast.error('Error', 'No se pudo subir el modelo.');
+    } catch (error) {
+      toast.error('Error', serverMessage(error, 'No se pudo subir el modelo.'));
+    } finally {
+      setTask(null);
     }
   }
 
@@ -52,46 +66,49 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    setTask('Subiendo modelo 3D...');
     try {
       await uploadGlb(file, user.id);
       toast.success('Exito', 'Modelo 3D subido con exito.');
     } catch {
       toast.error('Error', 'No se pudo subir el modelo 3D.');
+    } finally {
+      setTask(null);
     }
   }
 
   async function onCreateModel() {
     if (!user) return;
     setCreating(true);
+    setTask('Creando modelo...');
     try {
-      const random = Math.floor(Math.random() * 1000);
-      const empty = new Modelo3D(
-        null,
-        null,
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(1, 1, 1),
-        new THREE.Euler(0, 0, 0),
-        TEXTURES,
-      );
-      const { blob } = await empty.exportAsGLB(`job_${random}`);
-      const file = new File([blob], `job_${random}.glb`, { type: 'model/gltf-binary' });
-      await uploadGlb(file, user.id);
-      toast.success('Exito', 'Modelo 3D creado con exito.');
-    } catch {
-      toast.error('Error', 'No se pudo crear el modelo 3D.');
+      await createEmpty(user.id);
+      toast.success('Exito', 'Modelo creado. Abrelo para dibujar.');
+    } catch (error) {
+      toast.error('Error', serverMessage(error, 'No se pudo crear el modelo.'));
     } finally {
       setCreating(false);
+      setTask(null);
+    }
+  }
+
+  async function onConfirmDelete() {
+    if (deleteId == null) return;
+    setTask('Eliminando proyecto...');
+    try {
+      await removeModel(deleteId);
+      toast.success('Exito', 'Proyecto eliminado.');
+    } catch {
+      toast.error('Error', 'No se pudo eliminar el proyecto.');
+    } finally {
+      setDeleteId(null);
+      setTask(null);
     }
   }
 
   function openModel(model: (typeof list)[number]) {
     localStorage.setItem('modelo', JSON.stringify(model));
     navigate('/private/editor');
-  }
-
-  function openBlockchain(id: number, url: string) {
-    setImageToVerify({ id, url: url.replace(/^\//, '') });
-    setBlockchainOpen(true);
   }
 
   return (
@@ -145,9 +162,7 @@ export function DashboardPage() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {list.map((model) => {
-            const image = model.plan_image
-              ? `${env.apiUrl}${model.plan_image.replace(/^\//, '')}`
-              : null;
+            const image = model.plan_image ? assetUrl(model.plan_image) : null;
             return (
               <article
                 key={model.id}
@@ -182,17 +197,18 @@ export function DashboardPage() {
                     </p>
                   </div>
 
-                  <div className="mt-auto flex flex-wrap gap-2">
+                  <div className="mt-auto flex flex-wrap items-center gap-2">
                     <Button size="sm" onClick={() => openModel(model)}>
                       Abrir editor
                     </Button>
                     <Button
                       size="sm"
-                      variant="outline"
-                      onClick={() => openBlockchain(model.id, model.plan_image ?? '')}
-                      disabled={!model.plan_image}
+                      variant="ghost"
+                      className="ml-auto text-muted hover:text-danger"
+                      onClick={() => setDeleteId(model.id)}
+                      aria-label={`Eliminar modelo ${model.id}`}
                     >
-                      <ShieldIcon width={15} height={15} /> Blockchain
+                      <TrashIcon width={15} height={15} /> Eliminar
                     </Button>
                   </div>
                 </div>
@@ -202,7 +218,7 @@ export function DashboardPage() {
         </div>
       )}
 
-      <ModalBlockchain open={blockchainOpen} onClose={() => setBlockchainOpen(false)} />
+      <BackgroundTask show={!!task} label={task ?? ''} />
 
       {preview && (
         <div
@@ -214,6 +230,25 @@ export function DashboardPage() {
           <img src={preview} alt="Vista previa del plano" className="max-h-[85vh] max-w-[90vw] rounded-xl border border-border" />
         </div>
       )}
+
+      <Dialog open={deleteId != null} onOpenChange={(v) => !v && setDeleteId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Eliminar proyecto</DialogTitle>
+            <DialogDescription>
+              Se eliminara el modelo #{deleteId} y sus archivos. Esta accion no se puede deshacer.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteId(null)}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={onConfirmDelete}>
+              Eliminar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

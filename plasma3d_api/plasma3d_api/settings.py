@@ -62,6 +62,7 @@ INSTALLED_APPS = [
     'users',
     'presupuesto',
     'suggestion_risk',
+    'catalog',
 ]
 
 MIDDLEWARE = [
@@ -170,6 +171,16 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 # Media files (uploads)
 MEDIA_URL = '/media/'
 MEDIA_ROOT = BASE_DIR / 'media'
+
+# --- Almacenamiento de media (local | cloudinary) ---
+STORAGE_BACKEND = os.getenv('STORAGE_BACKEND', 'local').strip().lower()
+CLOUDINARY_CLOUD_NAME = os.getenv('CLOUDINARY_CLOUD_NAME', '')
+CLOUDINARY_API_KEY = os.getenv('CLOUDINARY_API_KEY', '')
+CLOUDINARY_API_SECRET = os.getenv('CLOUDINARY_API_SECRET', '')
+CLOUDINARY_FOLDER = os.getenv('CLOUDINARY_FOLDER', 'plasma3d')
+
+if STORAGE_BACKEND == 'cloudinary':
+    DEFAULT_FILE_STORAGE = 'plasma3d_api.cloudinary_storage.CloudinaryStorage'
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field

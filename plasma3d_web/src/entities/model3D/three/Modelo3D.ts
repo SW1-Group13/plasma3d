@@ -2,6 +2,47 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import type { ModelJson, TextureRef } from '@/entities/model3D/types';
+import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
+import {
+  WINDOW_BAR_THICK_M,
+  WINDOW_SILL_M,
+  WINDOW_TOP_THICK_M,
+} from '@/entities/model3D/three/dimensions';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+
+/**
+ * Marco de ventana hueco (bloque de alfeizar + cruz fina + tapa superior),
+ * replicando el diseño del backend (`_window_mesh_from_roi`).
+ */
+function buildWindowFrameGeometry(
+  thickness: number,
+  height: number,
+  length: number,
+): THREE.BufferGeometry {
+  const sill = WINDOW_SILL_M;
+  const centerY = sill + height / 2;
+  const totalTop = sill + height;
+  const parts: THREE.BufferGeometry[] = [];
+
+  if (sill > 0) {
+    const bottom = new THREE.BoxGeometry(thickness, sill, length);
+    bottom.translate(0, sill / 2 - centerY, 0);
+    parts.push(bottom);
+  }
+
+  // Cruz: montante vertical (fino en el largo) + travesaño (fino en alto).
+  parts.push(new THREE.BoxGeometry(thickness, height, WINDOW_BAR_THICK_M));
+  parts.push(new THREE.BoxGeometry(thickness, WINDOW_BAR_THICK_M, length));
+
+  // Tapa superior, justo por debajo del techo del vano.
+  const top = new THREE.BoxGeometry(thickness, WINDOW_TOP_THICK_M, length);
+  top.translate(0, totalTop - WINDOW_TOP_THICK_M / 2 - centerY, 0);
+  parts.push(top);
+
+  const merged = mergeGeometries(parts, false);
+  parts.forEach((part) => part.dispose());
+  return merged ?? new THREE.BoxGeometry(thickness, height, length);
+}
 
 export type ElementType = 'wall' | 'door' | 'window';
 
@@ -196,34 +237,15 @@ export class Modelo3D {
     return this.windows;
   }
 
-  private ensureUVs(mesh: THREE.Mesh, axis: 'xz' | 'xy' = 'xz') {
-    const geom = mesh.geometry as THREE.BufferGeometry;
-    if (geom.attributes.uv) return;
-
-    geom.computeBoundingBox();
-    const bbox = geom.boundingBox!;
-    const size = new THREE.Vector3();
-    bbox.getSize(size);
-    const pos = geom.attributes.position as THREE.BufferAttribute;
-
-    const uvArray: number[] = [];
-    for (let i = 0; i < pos.count; i++) {
-      const a = (pos.getX(i) - bbox.min.x) / (size.x || 1);
-      const b =
-        axis === 'xz'
-          ? (pos.getZ(i) - bbox.min.z) / (size.z || 1)
-          : (pos.getY(i) - bbox.min.y) / (size.y || 1);
-      uvArray.push(a, b);
-    }
-    geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvArray, 2));
+  private ensureUVs(mesh: THREE.Mesh) {
+    ensurePlanarUVs(mesh);
   }
 
   setTexture(url: string) {
     if (!this.objeto) return;
 
-    const texture = this.loader.load(url, (tex) => {
+    const baseTexture = this.loader.load(url, (tex) => {
       tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-      tex.repeat.set(4, 4);
       tex.colorSpace = THREE.SRGBColorSpace;
     });
 
@@ -231,8 +253,13 @@ export class Modelo3D {
       if ((child as THREE.Mesh).isMesh) {
         const mesh = child as THREE.Mesh;
         this.ensureUVs(mesh);
+        const map = baseTexture.clone();
+        map.needsUpdate = true;
+        map.wrapS = map.wrapT = THREE.RepeatWrapping;
+        const [u, v] = textureRepeatFor(mesh);
+        map.repeat.set(u, v);
         mesh.material = new THREE.MeshStandardMaterial({
-          map: texture,
+          map,
           color: 0xffffff,
           metalness: 0,
           roughness: 1,
@@ -250,9 +277,9 @@ export class Modelo3D {
     const lowerName = partialName.toLowerCase();
     const textureName = this.textures.find((t) => t.url === url)?.name ?? 'Personalizado';
 
-    const texture = this.loader.load(url);
-    texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
-    texture.colorSpace = THREE.SRGBColorSpace;
+    const baseTexture = this.loader.load(url);
+    baseTexture.wrapS = baseTexture.wrapT = THREE.RepeatWrapping;
+    baseTexture.colorSpace = THREE.SRGBColorSpace;
 
     this.objeto.traverse((child) => {
       if (!(child as THREE.Mesh).isMesh) return;
@@ -264,13 +291,16 @@ export class Modelo3D {
       const isWindow = lowerName === 'window' && lname.includes('window');
       if (!isWall && !isDoor && !isWindow) return;
 
-      if (isWindow) texture.repeat.set(1, 1);
-      else texture.repeat.set(2, 2);
-
       this.ensureUVs(mesh);
 
+      const map = baseTexture.clone();
+      map.needsUpdate = true;
+      map.wrapS = map.wrapT = THREE.RepeatWrapping;
+      const [u, v] = textureRepeatFor(mesh);
+      map.repeat.set(u, v);
+
       const newMat = new THREE.MeshStandardMaterial({
-        map: texture,
+        map,
         color: 0xffffff,
         metalness: 0.1,
         roughness: 0.9,
@@ -293,17 +323,30 @@ export class Modelo3D {
         return;
       }
 
+      const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
+      this.objeto.traverse((child) => {
+        if (child.name === '__edges' && child.parent) {
+          detached.push({ parent: child.parent, child });
+        }
+      });
+      detached.forEach(({ child }) => child.removeFromParent());
+      const restore = () => detached.forEach(({ parent, child }) => parent.add(child));
+
       const exporter = new GLTFExporter();
       exporter.parse(
         this.objeto,
         (result) => {
+          restore();
           const blob =
             result instanceof ArrayBuffer
               ? new Blob([result], { type: 'model/gltf-binary' })
               : new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
           resolve({ blob, filename });
         },
-        (error) => reject(error),
+        (error) => {
+          restore();
+          reject(error);
+        },
         { binary: true },
       );
     });
@@ -423,6 +466,65 @@ export class Modelo3D {
     if (type === 'window') this.windows.push(mesh);
 
     mesh.userData.baseY = baseY;
+    return mesh;
+  }
+
+  createElementSegment(
+    type: ElementType,
+    a: THREE.Vector3,
+    b: THREE.Vector3,
+    thickness: number,
+    height: number,
+    sill = 0,
+  ): THREE.Mesh | null {
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const length = dir.length();
+    if (length < 0.05) return null;
+
+    const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+
+    let refArray: THREE.Mesh[] = [];
+    if (type === 'wall') refArray = this.walls;
+    else if (type === 'door') refArray = this.doors;
+    else if (type === 'window') refArray = this.windows;
+
+    let baseMaterial: THREE.MeshStandardMaterial;
+    if (refArray.length > 0) {
+      baseMaterial = (refArray[0].material as THREE.MeshStandardMaterial).clone();
+    } else {
+      let color = 0x9aa4b2;
+      if (type === 'door') color = 0x8a6b4a;
+      if (type === 'window') color = 0x6ea0d8;
+      baseMaterial = new THREE.MeshStandardMaterial({
+        color,
+        roughness: 0.85,
+        metalness: 0.1,
+        side: THREE.DoubleSide,
+      });
+    }
+
+    const geometry =
+      type === 'window'
+        ? buildWindowFrameGeometry(thickness, height, length)
+        : new THREE.BoxGeometry(thickness, height, length);
+    const mesh = new THREE.Mesh(geometry, baseMaterial);
+    mesh.position.set(mid.x, a.y + sill + height / 2, mid.z);
+    mesh.rotation.y = Math.atan2(dir.x, dir.z);
+
+    if (type === 'wall') {
+      mesh.name = `wall_internal_${Date.now()}`;
+      this.walls.push(mesh);
+    } else if (type === 'door') {
+      mesh.name = `door_${Date.now()}`;
+      this.doors.push(mesh);
+    } else {
+      mesh.name = `window_${Date.now()}`;
+      this.windows.push(mesh);
+    }
+
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    this.objeto.add(mesh);
     return mesh;
   }
 

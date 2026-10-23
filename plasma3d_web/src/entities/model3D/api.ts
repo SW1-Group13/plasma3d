@@ -33,4 +33,13 @@ export const model3DApi = {
     );
     return data;
   },
+
+  async createEmpty(usuario: number): Promise<Model3D> {
+    const { data } = await http.post<Model3D>('api/set_plan/plans/empty/', { usuario });
+    return data;
+  },
+
+  async remove(id: number): Promise<void> {
+    await http.delete(`api/set_plan/plans/${id}/`);
+  },
 };

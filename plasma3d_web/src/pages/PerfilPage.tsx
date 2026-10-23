@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { userApi } from '@/entities/user/api';
-import { cloudinaryApi } from '@/entities/cloudinary/api';
+import { mediaApi } from '@/entities/media/api';
 import { useSession } from '@/entities/session/store';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/ui/card';
@@ -89,8 +89,8 @@ export function PerfilPage() {
 
     setIsUploading(true);
     try {
-      const upload = await cloudinaryApi.uploadImage(file);
-      const updated = await userApi.edit(user.id, { url: upload.secure_url });
+      const upload = await mediaApi.uploadImage(file);
+      const updated = await userApi.edit(user.id, { url: upload.url });
       setUser(updated);
       toast.success('Exito', 'Imagen de perfil actualizada.');
     } catch {

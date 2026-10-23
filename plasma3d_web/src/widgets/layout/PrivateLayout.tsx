@@ -1,7 +1,8 @@
-import { Link, NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
 import { Button } from '@/shared/ui/button';
 import { CubeIcon, CreditCardIcon, LayoutDashboardIcon, LogOutIcon, UserIcon } from '@/shared/ui/icons';
+import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
 
 const links = [
@@ -12,6 +13,8 @@ const links = [
 
 export function PrivateLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const fullBleed = location.pathname.startsWith('/private/editor');
   const user = useSession((s) => s.user);
   const logout = useSession((s) => s.logout);
 
@@ -57,9 +60,17 @@ export function PrivateLayout() {
           <div className="flex items-center gap-3">
             {user && (
               <div className="hidden items-center gap-2 sm:flex">
-                <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-sm font-semibold text-foreground ring-1 ring-inset ring-border">
-                  {user.nombre?.charAt(0)?.toUpperCase() ?? '?'}
-                </span>
+                {user.url ? (
+                  <img
+                    src={assetUrl(user.url)}
+                    alt={user.nombre ?? 'Avatar'}
+                    className="h-8 w-8 rounded-full object-cover ring-1 ring-inset ring-border"
+                  />
+                ) : (
+                  <span className="flex h-8 w-8 items-center justify-center rounded-full bg-surface-2 text-sm font-semibold text-foreground ring-1 ring-inset ring-border">
+                    {user.nombre?.charAt(0)?.toUpperCase() ?? '?'}
+                  </span>
+                )}
                 <div className="text-right leading-tight">
                   <p className="text-sm font-medium text-foreground">{user.nombre}</p>
                   <p className="text-xs text-muted">{user.rol}</p>
@@ -81,9 +92,13 @@ export function PrivateLayout() {
       </header>
 
       <main className="flex-1">
-        <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+        {fullBleed ? (
           <Outlet />
-        </div>
+        ) : (
+          <div className="mx-auto max-w-7xl px-4 py-6 sm:py-8">
+            <Outlet />
+          </div>
+        )}
       </main>
     </section>
   );

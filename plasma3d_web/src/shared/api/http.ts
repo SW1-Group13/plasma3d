@@ -6,7 +6,7 @@ export const http = axios.create({
   baseURL: env.apiUrl,
 });
 
-const EXCLUDED_URLS = ['/auth/login', '/auth/registro', '/auth/register', 'cloudinary.com'];
+const EXCLUDED_URLS = ['/auth/login', '/auth/registro', '/auth/register'];
 
 http.interceptors.request.use((config) => {
   const url = config.url ?? '';

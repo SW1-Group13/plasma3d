@@ -159,7 +159,6 @@ wrapt==1.12.1
 yarl==1.6.3
 zipp==3.4.1
 mapbox_earcut
-web3==5.31.4
 python-dotenv==0.20.0
 pygltflib==1.15.3
 stripe==4.2.0

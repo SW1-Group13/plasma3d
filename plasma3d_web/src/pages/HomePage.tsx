@@ -27,7 +27,7 @@ export function HomePage() {
 
           <p className="max-w-prose text-lg leading-relaxed text-muted">
             Sube tu plano, la IA detecta muros, puertas y ventanas y los convierte en un modelo 3D
-            editable. Personaliza texturas, calcula presupuestos y verifica en blockchain.
+            editable. Personaliza texturas y calcula presupuestos.
           </p>
 
           <div className="flex flex-wrap gap-3">
@@ -43,7 +43,7 @@ export function HomePage() {
             {[
               { k: 'Muros detectados', v: 'IA' },
               { k: 'Presupuesto', v: 'Auto' },
-              { k: 'On-chain', v: 'Polygon' },
+              { k: 'Exportacion', v: 'GLB' },
             ].map((item) => (
               <div key={item.k}>
                 <dt className="text-xs text-muted">{item.k}</dt>

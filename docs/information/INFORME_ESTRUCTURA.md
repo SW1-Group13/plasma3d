@@ -44,7 +44,7 @@ plasma3d/                           # Directorio raíz del proyecto en la máqui
 
 ### B. Contenedor del Backend (`plasma3d-api`)
 * **Código**: Copiado al contenedor mediante `Dockerfile.dev`/`Dockerfile.prod`.
-* **Variables de Entorno**: Inyectadas desde el [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto gracias a la propiedad `env_file` (incluye llaves blockchain, Gemini API, CSRF y `STRIPE_API_KEY`).
+* **Variables de Entorno**: Inyectadas desde el [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto gracias a la propiedad `env_file` (incluye Gemini API, CSRF y `STRIPE_API_KEY`).
 * **Pesos del Modelo**: Lee localmente `/weights/maskrcnn_15_epochs.h5`.
 * **Puertos expuestos**: Puerto `8000` expuesto a la red local para recibir llamadas desde Nginx Proxy Manager.
 

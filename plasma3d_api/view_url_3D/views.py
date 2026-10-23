@@ -1,7 +1,4 @@
 
-import os
-
-from django.conf import settings
 from rest_framework import status
 from rest_framework.decorators import api_view, parser_classes
 from rest_framework.parsers import FormParser, MultiPartParser
@@ -16,6 +13,8 @@ from users.models import Usuario
 def upload_glb(request):
     """
     Subir archivo GLB y crear registro de Plan3DJob.
+
+    El almacenamiento lo resuelve el campo FileField (STORAGE_BACKEND).
 
     Args:
         request: Request con archivo GLB y usuario_id
@@ -36,13 +35,6 @@ def upload_glb(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    save_path = os.path.join(settings.MEDIA_ROOT, glb_file.name)
-    with open(save_path, 'wb+') as destination:
-        for chunk in glb_file.chunks():
-            destination.write(chunk)
-
-    file_url = settings.MEDIA_URL + glb_file.name
-
     usuario_id = request.data.get("usuario")
     try:
         usuario_instance = Usuario.objects.get(pk=usuario_id)
@@ -52,11 +44,8 @@ def upload_glb(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    job = Plan3DJob.objects.create(
-        glb_model=glb_file,
-        usuario=usuario_instance
-    )
-    job.save()
+    # Crear el job y luego guardar el archivo (para conocer su carpeta en media)
+    job = Plan3DJob.objects.create(usuario=usuario_instance)
+    job.glb_model.save(glb_file.name, glb_file, save=True)
 
-    return Response({'url': file_url}, status=status.HTTP_201_CREATED)
-
+    return Response({'url': job.glb_model.url}, status=status.HTTP_201_CREATED)

@@ -2,7 +2,7 @@
 import numpy as np
 import trimesh
 import trimesh.repair as repair
-from trimesh.transformations import rotation_matrix
+
 from shapely.geometry import LineString, box, Polygon, MultiPolygon
 from shapely.ops import unary_union, snap, polygonize
 
@@ -387,6 +387,37 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True):
     return scene if len(scene.geometry) > 0 else None
 
 
+def _iter_trimeshes(geom):
+    """Iterar las mallas (Trimesh) de una escena o de una sola malla."""
+    if isinstance(geom, trimesh.Scene):
+        return list(geom.geometry.values())
+    return [geom]
+
+
+def _orient_floorplan(geom):
+    """
+    Pasar el plano (X=imagen_x, Y=imagen_y, Z=altura) a un modelo Y-up que
+    coincide EXACTAMENTE con el plano de entrada (sin quedar espejado).
+
+    La imagen usa Y hacia abajo (sistema levógiro), por lo que la conversion
+    correcta es una reflexion que intercambia los ejes Y y Z:
+
+        (x, y, z)  ->  (X=x, Y=z [altura], Z=y [imagen_y])
+
+    Al ser una reflexion (det = -1) el winding de las caras se invierte, por
+    eso se recomputan las normales hacia afuera.
+    """
+    swap_yz = np.array([
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ])
+    for mesh in _iter_trimeshes(geom):
+        mesh.apply_transform(swap_yz)
+        repair.fix_normals(mesh)
+
+
 def export_glb(geom, out: str, make_y_up: bool = True):
     """
     Exportar geometría a formato GLB.
@@ -394,11 +425,11 @@ def export_glb(geom, out: str, make_y_up: bool = True):
     Args:
         geom: Geometría trimesh a exportar
         out: Ruta de salida o file object
-        make_y_up: Si True, rota -90° en X (Z-up -> Y-up)
+        make_y_up: Si True, orienta el plano a Y-up coincidiendo con el plano
+                   de entrada (Z-up -> Y-up sin espejar).
     """
     if make_y_up:
-        rotation = rotation_matrix(np.deg2rad(-90.0), [1, 0, 0])
-        geom.apply_transform(rotation)
+        _orient_floorplan(geom)
 
     if hasattr(out, "write"):
         geom.export(out, file_type='glb')
