@@ -83,3 +83,22 @@ def process_payment(request):
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR
         )
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def payment_config(request):
+    """
+    Configuracion publica de pagos.
+
+    Expone SOLO la publishable key. La secret key (STRIPE_API_KEY) permanece
+    en el backend y nunca se envia al frontend.
+    """
+    publishable = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
+    return Response(
+        {
+            'publishable_key': publishable,
+            'enabled': bool(publishable),
+        },
+        status=status.HTTP_200_OK,
+    )

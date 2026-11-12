@@ -12,3 +12,8 @@ export interface PaymentResponse {
   message: string;
   usuario?: Record<string, unknown>;
 }
+
+export interface PaymentConfig {
+  publishable_key: string;
+  enabled: boolean;
+}

@@ -1,4 +1,4 @@
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import axios from 'axios';
 import { paymentApi } from '@/features/payment/api';
@@ -45,6 +45,22 @@ export function PaymentForm() {
   const [expiryDate, setExpiryDate] = useState('');
   const [cvv, setCvv] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [stripeEnabled, setStripeEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    paymentApi
+      .getConfig()
+      .then((config) => {
+        if (alive) setStripeEnabled(config.enabled);
+      })
+      .catch(() => {
+        if (alive) setStripeEnabled(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   function onCardNumber(value: string) {
     setCardNumber(value.replace(/\s/g, '').replace(/\D/g, '').slice(0, 16));
@@ -58,6 +74,10 @@ export function PaymentForm() {
   }
 
   async function onSubmit() {
+    if (stripeEnabled === false) {
+      toast.error('Pagos no configurados', 'La pasarela de pago no esta disponible.');
+      return;
+    }
     if (!cardholderName || cardNumber.length !== 16 || !/^\d{2}\/\d{2}$/.test(expiryDate) || cvv.length < 3) {
       toast.error('Datos incompletos', 'Revisa los datos de la tarjeta.');
       return;
@@ -185,10 +205,19 @@ export function PaymentForm() {
               </div>
             </div>
 
-            <Button onClick={onSubmit} disabled={isProcessing} variant="success" className="mt-1">
+            <Button
+              onClick={onSubmit}
+              disabled={isProcessing || stripeEnabled === false}
+              variant="success"
+              className="mt-1"
+            >
               {isProcessing && <Spinner className="h-4 w-4" />}
               Pagar ${selectedPlan.price}
             </Button>
+            {stripeEnabled === false && (
+              <p className="text-xs text-danger">Pagos no configurados en el servidor.</p>
+            )}
+            {stripeEnabled && <p className="text-xs text-muted">Pago seguro con Stripe.</p>}
           </div>
         </CardContent>
       </Card>
