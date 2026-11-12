@@ -11,7 +11,7 @@ El stack de producción (`docker-compose.prod.yml`) expone un único punto de en
 - `/` → `plasma3d-web` (React + Vite, SPA servida por su Nginx interno en `5173`)
 - `/api`, `/media`, `/static` → `plasma3d-api` (Django, `8000`)
 
-El frontend usa una base relativa (`VITE_API_BASE=/`), por lo que no hay dominio ni endpoint hardcodeados.
+El frontend usa una base relativa (`/`), por lo que no hay dominio ni endpoint hardcodeados. El proxy (Vite dev / Nginx prod) apunta al backend mediante `VITE_BASE_URL`.
 
 ---
 

@@ -6,7 +6,7 @@ Consume la API de `plasma3d-api` (Django REST) y sigue la organización
 
 ## Requisitos
 - Node 20+
-- Backend `plasma3d-api` disponible (el proxy de Vite apunta a `VITE_API_URL`)
+- Backend `plasma3d-api` disponible (el proxy de Vite apunta a `VITE_BASE_URL`)
 
 ## Desarrollo
 ```bash
@@ -14,10 +14,10 @@ npm install
 npm run dev        # http://localhost:FRONTEND_PORT (5173 por defecto)
 ```
 El dev server **usa proxies** hacia el backend:
-- `/api`, `/media`, `/static` → `VITE_API_URL` (por defecto `http://localhost:8000`)
+- `/api`, `/media`, `/static` → `VITE_BASE_URL` (por defecto `http://localhost:8000`)
 - `/ws` → `VITE_WS_URL` (opcional, websockets)
 
-Por eso la app usa una base relativa (`VITE_API_BASE=/`) y no hay problemas de CORS.
+Por eso la app usa una base relativa (`/`) y no hay problemas de CORS.
 
 ## Produccion
 ```bash
@@ -29,10 +29,8 @@ npm run preview
 El `vite.config.ts` carga el `.env` de **la raiz del proyecto** (`envDir: '..'`), no un
 `.env` local. Define ahí:
 - `FRONTEND_PORT` — puerto del dev server / preview
-- `VITE_API_URL` — target del proxy hacia Django
+- `VITE_BASE_URL` — target del proxy hacia Django y base de la API
 - `VITE_WS_URL` — target del proxy de websockets (opcional)
-- `VITE_API_BASE` — base relativa que usa la app (`/`)
-- `VITE_STRIPE_PK` — clave publica de Stripe
 
 Ver `.env.sample` en la raiz del proyecto.
 

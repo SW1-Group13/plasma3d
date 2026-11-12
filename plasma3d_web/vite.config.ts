@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, envDir, '');
 
   const frontendPort = parseInt(env.FRONTEND_PORT || env.PORT || '5173', 10);
-  const apiTarget = env.VITE_API_URL || 'http://localhost:8000';
+  const apiTarget = env.VITE_BASE_URL || 'http://localhost:8000';
   const wsTarget = env.VITE_WS_URL || 'ws://localhost:8000';
 
   const proxy = {
@@ -34,6 +34,11 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: frontendPort,
+      watch: {
+        // Polling: necesario para HMR dentro de Docker en Windows/macOS.
+        usePolling: true,
+        interval: 800,
+      },
       proxy,
     },
     preview: {

@@ -50,7 +50,7 @@ plasma3d/                           # Directorio raíz del proyecto en la máqui
 
 ### C. Contenedor del Frontend (`plasma3d-web`)
 * **App**: React + TypeScript + Vite (SPA), servida por Nginx en el puerto `5173`.
-* **Endpoint API**: relativo (`VITE_API_BASE=/`), así que hereda el origen (`/api/...`).
+* **Endpoint API**: relativo (`/`), así que hereda el origen (`/api/...`). El proxy usa `VITE_BASE_URL`.
 * **Puertos expuestos**: Puerto `5173` expuesto a la red local.
 
 ### D. Contenedor Reverse Proxy (`plasma3d-nginx`)

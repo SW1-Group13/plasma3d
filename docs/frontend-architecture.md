@@ -115,10 +115,10 @@ Definido en `tsconfig.app.json` y `vite.config.ts`:
 `vite.config.ts` carga el `.env` de **la raíz del proyecto** (`envDir: '..'`) y define proxies
 hacia el backend:
 
-- `/api`, `/media`, `/static` → `VITE_API_URL`
+- `/api`, `/media`, `/static` → `VITE_BASE_URL`
 - `/ws` → `VITE_WS_URL` (opcional)
 
-La app usa base relativa (`VITE_API_BASE=/`), así que funciona igual tras el proxy de Vite
+La app usa base relativa (`/`), así que funciona igual tras el proxy de Vite
 (dev) y tras Nginx (prod), sin CORS.
 
 ---

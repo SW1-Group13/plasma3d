@@ -2,7 +2,7 @@ from django.urls import path
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import UsuarioViewSet,RegistroView, LoginView, LogoutView, update_usuario
-from .pagues import process_payment
+from .pagues import process_payment, payment_config
 router = DefaultRouter()
 router.register(r'usuarios', UsuarioViewSet, basename='usuario')
 
@@ -12,5 +12,6 @@ urlpatterns = [
     path('auth/logout/', LogoutView.as_view(), name='logout'),
     path('auth/usuario/update/<int:pk>/', update_usuario, name='usuario-update'),
     path('payment/process/', process_payment, name='process-payment'),
+    path('payment/config/', payment_config, name='payment-config'),
     path('', include(router.urls)),
 ]
