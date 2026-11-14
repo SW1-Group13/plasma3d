@@ -1,6 +1,18 @@
+import { useState } from 'react';
 import { useBudgetStore } from '@/entities/budget/store';
-import { CATEGORY_LABELS, PRICE_UNITS } from '@/entities/budget/materials';
-import type { Categoria } from '@/entities/budget/types';
+import { CATEGORY_LABELS } from '@/entities/budget/materials';
+import { useSession } from '@/entities/session/store';
+import {
+  CATEGORY_ORDER,
+  buildBudgetReport,
+  categoryLabel,
+  currentPlanId,
+  money,
+  qty,
+  unitLabel,
+  type BudgetReport,
+} from '@/features/budget/export/report';
+import { BudgetExportViewer, type ExportFormat } from '@/features/budget/ui/BudgetExportViewer';
 import {
   Dialog,
   DialogContent,
@@ -11,7 +23,7 @@ import {
 import { Badge } from '@/shared/ui/badge';
 import { Button } from '@/shared/ui/button';
 import { FullPageSpinner } from '@/shared/ui/spinner';
-import { AlertTriangleIcon, TagIcon } from '@/shared/ui/icons';
+import { AlertTriangleIcon, FileTextIcon, SheetIcon, TagIcon } from '@/shared/ui/icons';
 
 interface BudgetDialogProps {
   open: boolean;
@@ -20,27 +32,21 @@ interface BudgetDialogProps {
   onOpenPrices?: () => void;
 }
 
-const CATEGORY_ORDER: Categoria[] = ['wall', 'door', 'window', 'floor', 'roof'];
-
-function money(value: number): string {
-  return `$${value.toLocaleString('es', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-function qty(value: number): string {
-  return value.toLocaleString('es', { maximumFractionDigits: 2 });
-}
-
-function unitLabel(unit: string): string {
-  return PRICE_UNITS.find((u) => u.id === unit)?.label ?? unit;
-}
-
-function categoryLabel(cat: string): string {
-  return CATEGORY_LABELS[cat as Categoria] ?? cat;
-}
-
 export function BudgetDialog({ open, onClose, onOpenPrices }: BudgetDialogProps) {
   const { isLoading, total, detalle, noEncontrados, totales, sinPrecio } = useBudgetStore();
   const noPrices = !isLoading && detalle.length === 0 && noEncontrados.length > 0;
+  const user = useSession((s) => s.user);
+  const [exportFormat, setExportFormat] = useState<ExportFormat | null>(null);
+  const [report, setReport] = useState<BudgetReport | null>(null);
+  const canExport = !isLoading && detalle.length > 0;
+
+  function openExport(format: ExportFormat) {
+    // Foto de los datos reales en este momento (los 3 formatos usan la misma).
+    setReport(
+      buildBudgetReport({ total, detalle, totales, sinPrecio, noEncontrados, planoId: currentPlanId(), usuario: user }),
+    );
+    setExportFormat(format);
+  }
 
   function openPrices() {
     onClose();
@@ -76,6 +82,22 @@ export function BudgetDialog({ open, onClose, onOpenPrices }: BudgetDialogProps)
             <div className="flex items-center justify-between rounded-lg border border-primary/30 bg-primary/10 px-4 py-3">
               <span className="font-medium text-foreground">Total estimado</span>
               <span className="text-xl font-bold tabular-nums text-primary">{money(total)}</span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Exportar</span>
+              <ExportButton label="PDF" onClick={() => openExport('pdf')} disabled={!canExport} className="hover:border-red-400/60 hover:text-red-300">
+                <FileTextIcon width={15} height={15} className="text-red-400" />
+              </ExportButton>
+              <ExportButton label="Excel" onClick={() => openExport('xlsx')} disabled={!canExport} className="hover:border-emerald-400/60 hover:text-emerald-300">
+                <SheetIcon width={15} height={15} className="text-emerald-400" />
+              </ExportButton>
+              <ExportButton label="CSV" onClick={() => openExport('csv')} disabled={!canExport} className="hover:border-sky-400/60 hover:text-sky-300">
+                <FileTextIcon width={15} height={15} className="text-sky-400" />
+              </ExportButton>
+              {!canExport && !isLoading && (
+                <span className="text-xs text-muted">Carga precios para poder exportar.</span>
+              )}
             </div>
 
             {noPrices ? (
@@ -170,7 +192,34 @@ export function BudgetDialog({ open, onClose, onOpenPrices }: BudgetDialogProps)
           </div>
         )}
       </DialogContent>
+      <BudgetExportViewer
+        open={exportFormat !== null}
+        format={exportFormat ?? 'pdf'}
+        report={report}
+        onFormatChange={setExportFormat}
+        onClose={() => setExportFormat(null)}
+      />
     </Dialog>
+  );
+}
+
+function ExportButton({
+  label,
+  onClick,
+  disabled,
+  className,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <Button size="sm" variant="outline" onClick={onClick} disabled={disabled} className={className} title={`Ver y exportar en ${label}`}>
+      {children} {label}
+    </Button>
   );
 }
 

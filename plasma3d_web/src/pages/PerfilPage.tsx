@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { userApi } from '@/entities/user/api';
 import { mediaApi } from '@/entities/media/api';
 import { useSession } from '@/entities/session/store';
@@ -67,9 +68,7 @@ export function PerfilPage() {
       const payload: Record<string, string> = {};
       if (form.nombre) payload.nombre = form.nombre;
       if (form.email) payload.email = form.email;
-      if (form.rol) payload.rol = form.rol;
-      if (form.fechaExpiracion) payload.fecha_expiracion_plan = form.fechaExpiracion;
-      if (form.fechaRegistro) payload.fecha_registro = form.fechaRegistro;
+      // El plan y su expiracion solo cambian con un pago (pagina Pagos).
 
       const updated = await userApi.edit(user.id, payload);
       setUser(updated);
@@ -153,10 +152,17 @@ export function PerfilPage() {
               <Field label="Nombre" value={form.nombre} disabled={isReadOnly} onChange={(v) => setForm({ ...form, nombre: v })} />
               <Field label="Email" type="email" value={form.email} disabled={isReadOnly} onChange={(v) => setForm({ ...form, email: v })} />
               <Field label="Telefono" type="tel" value={form.telefono} disabled={isReadOnly} onChange={(v) => setForm({ ...form, telefono: v })} />
-              <Field label="Plan / Rol" value={form.rol} disabled={isReadOnly} onChange={(v) => setForm({ ...form, rol: v })} />
-              <Field label="Fecha expiracion" type="date" value={form.fechaExpiracion} disabled={isReadOnly} onChange={(v) => setForm({ ...form, fechaExpiracion: v })} />
-              <Field label="Fecha registro" type="date" value={form.fechaRegistro} disabled={isReadOnly} onChange={(v) => setForm({ ...form, fechaRegistro: v })} />
+              <Field label="Plan / Rol" value={form.rol} disabled onChange={() => undefined} />
+              <Field label="Fecha expiracion" type="date" value={form.fechaExpiracion} disabled onChange={() => undefined} />
+              <Field label="Fecha registro" type="date" value={form.fechaRegistro} disabled onChange={() => undefined} />
             </div>
+            <p className="mt-4 text-sm text-muted">
+              Para cambiar tu plan ve a{' '}
+              <Link to="/private/pago" className="font-medium text-primary hover:underline">
+                Planes y pagos
+              </Link>
+              .
+            </p>
 
             {!isReadOnly && (
               <Button className="mt-6" onClick={onSave} disabled={isLoading}>

@@ -1,17 +1,39 @@
 import { http } from '@/shared/api/http';
-import type { PaymentRequest, PaymentResponse, PaymentConfig } from '@/entities/payment/types';
+import type {
+  CreateIntentResponse,
+  Pago,
+  PaymentConfig,
+  PaymentResult,
+  PlanId,
+} from '@/entities/payment/types';
 
 export const paymentApi = {
-  async process(payment: PaymentRequest): Promise<PaymentResponse> {
-    const { data } = await http.post<PaymentResponse>(
-      'api/users/payment/process/',
-      payment,
-    );
+  async getConfig(): Promise<PaymentConfig> {
+    const { data } = await http.get<PaymentConfig>('api/users/payment/config/');
     return data;
   },
 
-  async getConfig(): Promise<PaymentConfig> {
-    const { data } = await http.get<PaymentConfig>('api/users/payment/config/');
+  /** Crea el PaymentIntent en Stripe; el monto lo fija el backend. */
+  async createIntent(plan: PlanId): Promise<CreateIntentResponse> {
+    const { data } = await http.post<CreateIntentResponse>('api/users/payment/create-intent/', { plan });
+    return data;
+  },
+
+  /** Pide al backend verificar el cobro en Stripe, registrar el pago y activar el plan. */
+  async confirm(paymentIntentId: string): Promise<PaymentResult> {
+    const { data } = await http.post<PaymentResult>('api/users/payment/confirm/', {
+      payment_intent_id: paymentIntentId,
+    });
+    return data;
+  },
+
+  async history(): Promise<Pago[]> {
+    const { data } = await http.get<Pago[]>('api/users/payment/historial/');
+    return data;
+  },
+
+  async downgrade(): Promise<PaymentResult> {
+    const { data } = await http.post<PaymentResult>('api/users/payment/downgrade/', {});
     return data;
   },
 };

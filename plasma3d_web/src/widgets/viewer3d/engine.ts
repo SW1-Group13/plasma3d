@@ -36,6 +36,57 @@ import {
 } from '@/entities/model3D/three/dimensions';
 import type { Layer } from '@/entities/layers/types';
 import type { Material } from '@/entities/materials/types';
+import {
+  BRAND_ACCENT,
+  createPresentationRig,
+  makeBackgroundTexture,
+  makePresentationFog,
+  type PresentationRig,
+} from '@/widgets/viewer3d/presentation';
+
+/**
+ * Texturas temporales del modo Animado para piezas sin textura propia
+ * (assets de /static/textures, los mismos de `TEXTURES`).
+ */
+const PRESENTATION_LOOK: Record<string, { url?: string; tint: string }> = {
+  // Muros: estuco liso cálido (una textura se estira en los muros generados).
+  wall: { tint: '#e8d9bd' },
+  floor: { url: '/static/textures/textura_suelo.jpg', tint: '#ffffff' },
+  door: { url: '/static/textures/puerta-madera.jpg', tint: '#ffffff' },
+  roof: { url: '/static/textures/tablas-desgastadas.jpg', tint: '#c0583a' },
+};
+/** Milisegundos sin tocar la cámara antes de reanudar el giro automático. */
+const PRESENTATION_RESUME_MS = 3000;
+
+/** Todo lo que el modo Animado cambia, para dejarlo exactamente como estaba. */
+interface PresentationState {
+  rig: PresentationRig;
+  background: THREE.Scene['background'];
+  backgroundTexture: THREE.Texture;
+  fog: THREE.Scene['fog'];
+  exposure: number;
+  shadows: boolean;
+  gridVisible: boolean;
+  hiddenLights: THREE.Light[];
+  camera: THREE.Camera;
+  persp: { position: THREE.Vector3; up: THREE.Vector3 };
+  ortho: { position: THREE.Vector3; up: THREE.Vector3; zoom: number };
+  target: THREE.Vector3;
+  enableRotate: boolean;
+  autoRotate: boolean;
+  autoRotateSpeed: number;
+  selection: THREE.Mesh[];
+  helperVisible: boolean;
+  measuresVisible: boolean;
+  labelsDisplay: string;
+  /** Material del editor de cada pieza (se restaura al salir). */
+  originals: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
+  /** Material de presentación que se le puso a cada pieza. */
+  looks: Map<THREE.Mesh, THREE.Material>;
+  resumeTimer?: number;
+  onStart: () => void;
+  onEnd: () => void;
+}
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
 export type ViewName = 'planta' | 'alzado' | 'perfil' | 'isometrica' | '3d';
@@ -124,6 +175,8 @@ export class EditorEngine {
   private showTextures = true;
   private textureLoader = new THREE.TextureLoader();
   private textureCache = new Map<string, THREE.Texture>();
+  /** Copias de texturas que esperan a que su imagen termine de cargar. */
+  private pendingTextureCopies = new Map<string, THREE.Texture[]>();
   private viewSize = 20;
   private view: ViewName = 'planta';
   private roofMode: RoofMode = 'visible';
@@ -169,6 +222,10 @@ export class EditorEngine {
   private measureUnit: MeasureUnit = 'm';
   private measureKinds = new Set<MeasureKind>();
   private measureFrame = 0;
+
+  // Modo Animado (presentación): solo vista, se revierte por completo.
+  private presentation: PresentationState | null = null;
+  private onPresentation: (on: boolean) => void = () => {};
 
   constructor(private canvas: HTMLCanvasElement) {
     const { clientWidth: w, clientHeight: h } = canvas;
@@ -332,6 +389,11 @@ export class EditorEngine {
   private onPointerCancel = () => this.abortGesture();
 
   private onPointerDown = (event: PointerEvent) => {
+    // Modo Animado: solo se mira (rotar/zoom los maneja OrbitControls).
+    if (this.presentation) {
+      this.tween = null;
+      return;
+    }
     // Un 2º dedo no dibuja ni selecciona: pasa a ser zoom/paneo de la cámara.
     if (!event.isPrimary) {
       this.abortGesture();
@@ -376,7 +438,7 @@ export class EditorEngine {
   };
 
   private onPointerMove = (event: PointerEvent) => {
-    if (!event.isPrimary) return;
+    if (!event.isPrimary || this.presentation) return;
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY);
       if (point) this.updateDraft(point, event.shiftKey);
@@ -392,7 +454,7 @@ export class EditorEngine {
   };
 
   private onPointerUp = (event: PointerEvent) => {
-    if (!event.isPrimary) return;
+    if (!event.isPrimary || this.presentation) return;
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY) ?? this.drafting.current;
       this.finalizeDraft(point, event.shiftKey);
@@ -820,6 +882,7 @@ export class EditorEngine {
   }
 
   loadModel(url: string | null, textures: { name: string; url: string }[], onLoaded?: () => void) {
+    this.setPresentationMode(false);
     this.model?.dispose();
     this.model = new Modelo3D(
       this.scene,
@@ -901,6 +964,8 @@ export class EditorEngine {
   }
 
   private applyView(ortho: boolean, dir: THREE.Vector3, viewName: ViewName) {
+    // Cambiar de vista sale del modo Animado (restaura la escena primero).
+    this.setPresentationMode(false);
     const { center, maxDim } = this.getModelBounds();
     const d = maxDim * 2.0;
     const n = dir.clone().normalize();
@@ -1274,11 +1339,30 @@ export class EditorEngine {
     });
   }
 
+  /** Copia de una textura que se refresca sola cuando la imagen termina de cargar. */
+  private textureCopy(url: string): THREE.Texture | null {
+    const base = this.textureFor(url);
+    if (!base) return null;
+    const copy = base.clone();
+    const image = base.image as { width?: number } | undefined;
+    if (image?.width) {
+      copy.needsUpdate = true;
+    } else {
+      const waiting = this.pendingTextureCopies.get(url) ?? [];
+      waiting.push(copy);
+      this.pendingTextureCopies.set(url, waiting);
+    }
+    return copy;
+  }
+
   private textureFor(url?: string): THREE.Texture | null {
     if (!url) return null;
     const cached = this.textureCache.get(url);
     if (cached) return cached;
-    const texture = this.textureLoader.load(url);
+    const texture = this.textureLoader.load(url, () => {
+      this.pendingTextureCopies.get(url)?.forEach((copy) => (copy.needsUpdate = true));
+      this.pendingTextureCopies.delete(url);
+    });
     texture.wrapS = texture.wrapT = THREE.RepeatWrapping;
     texture.colorSpace = THREE.SRGBColorSpace;
     this.textureCache.set(url, texture);
@@ -1346,6 +1430,8 @@ export class EditorEngine {
       if (prevMap && !Array.from(this.textureCache.values()).includes(prevMap)) prevMap.dispose();
       prevMaterial.dispose();
     }
+    // En modo Animado la pieza mantiene su aspecto de presentación.
+    if (this.presentation) this.applyPresentationLook(mesh);
   }
 
   private refreshAppearance() {
@@ -1583,6 +1669,7 @@ export class EditorEngine {
   }
 
   startCreate(type: DrawType) {
+    if (this.presentation) return;
     this.cancelDraft();
     this.creating = type;
   }
@@ -1659,6 +1746,8 @@ export class EditorEngine {
 
   async exportGlb(filename: string) {
     if (!this.model) throw new Error('Sin modelo');
+    // Nunca exportar/guardar con los materiales o luces de presentación.
+    this.setPresentationMode(false);
     return this.model.exportAsGLB(filename);
   }
 
@@ -1820,7 +1909,7 @@ export class EditorEngine {
     this.refreshVisibility();
     this.refreshAppearance();
     const visible = select.filter((m) => this.selectableMeshes().includes(m));
-    if (visible.length > 0) this.setSelection(visible);
+    if (visible.length > 0 && !this.presentation) this.setSelection(visible);
     else this.emitSelection();
   }
 
@@ -1917,7 +2006,289 @@ export class EditorEngine {
     obj.position[axis] = value;
   }
 
+  // ------------------------------------------------------------------
+  // Modo Animado (presentación)
+  // ------------------------------------------------------------------
+
+  setPresentationListener(listener: (on: boolean) => void) {
+    this.onPresentation = listener;
+  }
+
+  isPresentationMode(): boolean {
+    return this.presentation !== null;
+  }
+
+  /**
+   * Activa/desactiva la vista de presentación del modelo abierto: luces de
+   * color, sombras, grilla azul, texturas temporales y giro automático.
+   * Al desactivarla todo vuelve exactamente a como estaba (cámara, luces,
+   * materiales, bordes, selección). No modifica el modelo ni lo que se guarda.
+   */
+  setPresentationMode(on: boolean) {
+    if (on === (this.presentation !== null)) return;
+    if (on) this.enterPresentation();
+    else this.exitPresentation();
+    this.onPresentation(this.presentation !== null);
+  }
+
+  private enterPresentation() {
+    if (!this.model) return;
+    this.cancelDraft();
+    this.creating = null;
+    this.tween = null;
+
+    const savedSelection = [...this.selection];
+    this.clearSelection();
+
+    // Límites del modelo: centro, tamaño y base (piso).
+    const box = new THREE.Box3().setFromObject(this.model.getObject3D());
+    const { center, maxDim } = this.getModelBounds();
+    const groundY = box.isEmpty() ? 0 : box.min.y;
+    const radius = maxDim / 2;
+
+    const rig = createPresentationRig(center, radius, groundY);
+    const backgroundTexture = makeBackgroundTexture();
+    const reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
+    const helper = this.transformControls.getHelper();
+
+    const state: PresentationState = {
+      rig,
+      background: this.scene.background,
+      backgroundTexture,
+      fog: this.scene.fog,
+      exposure: this.renderer.toneMappingExposure,
+      shadows: this.renderer.shadowMap.enabled,
+      gridVisible: this.grid.visible,
+      hiddenLights: [],
+      camera: this.camera,
+      persp: { position: this.persp.position.clone(), up: this.persp.up.clone() },
+      ortho: { position: this.ortho.position.clone(), up: this.ortho.up.clone(), zoom: this.ortho.zoom },
+      target: this.orbit.target.clone(),
+      enableRotate: this.orbit.enableRotate,
+      autoRotate: this.orbit.autoRotate,
+      autoRotateSpeed: this.orbit.autoRotateSpeed,
+      selection: savedSelection,
+      helperVisible: helper.visible,
+      measuresVisible: this.measureGroup.visible,
+      labelsDisplay: this.labelRenderer.domElement.style.display,
+      originals: new Map(),
+      looks: new Map(),
+      onStart: () => {
+        window.clearTimeout(state.resumeTimer);
+        this.orbit.autoRotate = false;
+      },
+      onEnd: () => {
+        if (reducedMotion) return;
+        window.clearTimeout(state.resumeTimer);
+        state.resumeTimer = window.setTimeout(() => {
+          if (this.presentation === state) this.orbit.autoRotate = true;
+        }, PRESENTATION_RESUME_MS);
+      },
+    };
+    this.presentation = state;
+
+    // Escena: luces y piso de presentación en lugar de los del editor.
+    this.scene.children.forEach((child) => {
+      const light = child as THREE.Light;
+      if (light.isLight && light.visible) {
+        light.visible = false;
+        state.hiddenLights.push(light);
+      }
+    });
+    this.scene.add(rig.group);
+    this.grid.visible = false;
+    this.scene.background = backgroundTexture;
+    this.scene.fog = makePresentationFog(radius);
+    this.renderer.shadowMap.enabled = true;
+    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.toneMappingExposure = 1.15;
+
+    // Ocultar herramientas: gizmo, cotas y fantasma de dibujo.
+    helper.visible = false;
+    this.measureGroup.visible = false;
+    this.labelRenderer.domElement.style.display = 'none';
+    if (this.preview) this.preview.visible = false;
+
+    // Materiales de presentación (sobre copias) y sin bordes negros.
+    this.allMeshes().forEach((mesh) => this.applyPresentationLook(mesh));
+
+    // Cámara en perspectiva, vista 3/4 encuadrando el modelo, girando despacio.
+    this.camera = this.persp;
+    this.persp.up.set(0, 1, 0);
+    this.orbit.object = this.persp;
+    this.orbit.enableRotate = true;
+    this.updateTouchGestures();
+    this.transformControls.camera = this.persp;
+    const target = new THREE.Vector3(center.x, groundY + (center.y - groundY) * 0.8, center.z);
+    const dir = new THREE.Vector3(1, 0.62, 1).normalize();
+    this.persp.position.copy(target).addScaledVector(dir, maxDim * 1.25 + 2);
+    this.orbit.target.copy(target);
+    this.persp.lookAt(target);
+    this.orbit.autoRotateSpeed = 0.8;
+    this.orbit.autoRotate = !reducedMotion;
+    this.orbit.addEventListener('start', state.onStart);
+    this.orbit.addEventListener('end', state.onEnd);
+    this.orbit.update();
+  }
+
+  private exitPresentation() {
+    const state = this.presentation;
+    if (!state) return;
+    this.presentation = null;
+    window.clearTimeout(state.resumeTimer);
+    this.orbit.removeEventListener('start', state.onStart);
+    this.orbit.removeEventListener('end', state.onEnd);
+
+    // Materiales del editor, bordes y sombras.
+    state.originals.forEach((original, mesh) => {
+      const look = state.looks.get(mesh);
+      if (look && mesh.material === look) {
+        mesh.material = original;
+        this.disposeLook(look);
+      } else {
+        // El editor ya le puso otro material mientras tanto: el guardado sobra.
+        this.disposeEditorMaterial(original);
+      }
+    });
+    this.allMeshes().forEach((mesh) => {
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      mesh.children.forEach((child) => {
+        if (child.name === '__edges') child.visible = true;
+      });
+    });
+
+    // Escena del editor.
+    this.scene.remove(state.rig.group);
+    state.rig.dispose();
+    state.hiddenLights.forEach((light) => (light.visible = true));
+    this.grid.visible = state.gridVisible;
+    this.scene.background = state.background;
+    this.scene.fog = state.fog;
+    state.backgroundTexture.dispose();
+    this.renderer.shadowMap.enabled = state.shadows;
+    this.renderer.toneMappingExposure = state.exposure;
+
+    // Herramientas.
+    this.transformControls.getHelper().visible = state.helperVisible;
+    this.measureGroup.visible = state.measuresVisible;
+    this.labelRenderer.domElement.style.display = state.labelsDisplay;
+
+    // Cámara exactamente donde estaba.
+    this.orbit.autoRotate = state.autoRotate;
+    this.orbit.autoRotateSpeed = state.autoRotateSpeed;
+    this.persp.position.copy(state.persp.position);
+    this.persp.up.copy(state.persp.up);
+    this.ortho.position.copy(state.ortho.position);
+    this.ortho.up.copy(state.ortho.up);
+    this.ortho.zoom = state.ortho.zoom;
+    this.ortho.updateProjectionMatrix();
+    this.camera = state.camera;
+    this.orbit.object = this.camera;
+    this.orbit.enableRotate = state.enableRotate;
+    this.updateTouchGestures();
+    this.transformControls.camera = this.camera;
+    this.orbit.target.copy(state.target);
+    this.camera.lookAt(state.target);
+    this.orbit.update();
+
+    // Selección previa (si las piezas siguen en el modelo).
+    const selection = state.selection.filter((mesh) => this.agentHas(mesh));
+    if (selection.length > 0) this.setSelection(selection);
+  }
+
+  /** Pone a la pieza su material de presentación (guardando el del editor). */
+  private applyPresentationLook(mesh: THREE.Mesh) {
+    const state = this.presentation;
+    if (!state) return;
+    const current = mesh.material as THREE.Material;
+    const previousLook = state.looks.get(mesh);
+    if (previousLook && previousLook === current) return;
+
+    // Si el editor reemplazó el material (y ya liberó el de presentación),
+    // el original guardado quedó viejo: liberarlo.
+    const stale = state.originals.get(mesh);
+    if (stale && stale !== current) this.disposeEditorMaterial(stale);
+
+    state.originals.set(mesh, mesh.material);
+    const look = this.buildPresentationLook(mesh, current as THREE.MeshStandardMaterial);
+    mesh.material = look;
+    state.looks.set(mesh, look);
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.children.forEach((child) => {
+      if (child.name === '__edges') child.visible = false;
+    });
+  }
+
+  private buildPresentationLook(mesh: THREE.Mesh, current: THREE.MeshStandardMaterial): THREE.Material {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+
+    // Ventanas: vidrio que brilla en cian.
+    if (kind === 'window') {
+      return new THREE.MeshStandardMaterial({
+        map: current.map ?? null,
+        color: current.map ? current.color.clone() : new THREE.Color(0xbfe9ff),
+        emissive: new THREE.Color(BRAND_ACCENT),
+        emissiveIntensity: 0.45,
+        roughness: 0.1,
+        metalness: 0.2,
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
+        // Las piezas generadas no traen normales: el shader las calcula por cara.
+        flatShading: true,
+      });
+    }
+
+    const look = (current.isMeshStandardMaterial ? current.clone() : new THREE.MeshStandardMaterial()) as THREE.MeshStandardMaterial;
+    const preset = PRESENTATION_LOOK[kind];
+    // Sin textura propia: textura temporal según el tipo de pieza.
+    if (!current.map && preset) {
+      look.color.set(preset.tint);
+      const map = preset.url ? this.textureCopy(preset.url) : null;
+      if (map) {
+        ensurePlanarUVs(mesh);
+        map.wrapS = map.wrapT = THREE.RepeatWrapping;
+        const [u, v] = this.isStructural(mesh) ? horizontalRepeatFor(mesh) : textureRepeatFor(mesh);
+        map.repeat.set(u, v);
+        look.map = map;
+        look.userData.ownMap = true;
+        look.color.set(preset.tint);
+      }
+    }
+    // Siempre opaco (el techo en Planta se ve traslúcido en el editor).
+    look.transparent = false;
+    look.opacity = 1;
+    look.depthWrite = true;
+    look.emissive?.setHex(0x000000);
+    look.roughness = Math.min(look.roughness ?? 0.9, 0.85);
+    // Las piezas generadas no traen normales: sin esto las luces direccionales
+    // las dejan negras. flatShading calcula la normal de cada cara en el shader
+    // sin tocar la geometría (el editor queda igual al salir).
+    look.flatShading = true;
+    look.needsUpdate = true;
+    return look;
+  }
+
+  private disposeLook(material: THREE.Material) {
+    const standard = material as THREE.MeshStandardMaterial;
+    if (material.userData.ownMap && standard.map) standard.map.dispose();
+    material.dispose();
+  }
+
+  private disposeEditorMaterial(material: THREE.Material | THREE.Material[]) {
+    const list = Array.isArray(material) ? material : [material];
+    const cached = Array.from(this.textureCache.values());
+    list.forEach((m) => {
+      const map = (m as THREE.MeshStandardMaterial).map;
+      if (map && !cached.includes(map)) map.dispose();
+      m.dispose();
+    });
+  }
+
   dispose() {
+    this.setPresentationMode(false);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);

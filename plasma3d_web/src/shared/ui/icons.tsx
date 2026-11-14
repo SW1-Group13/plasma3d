@@ -214,3 +214,33 @@ export const ImageIcon = (props: IconProps) => (
     <path d="m21 16-4.5-4.5L7 21" />
   </svg>
 );
+
+export const PlayCircleIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M10 8.5v7l5.5-3.5L10 8.5Z" />
+  </svg>
+);
+
+export const FileTextIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5Z" />
+    <path d="M14 3v5h5" />
+    <path d="M9 13h6M9 17h6" />
+  </svg>
+);
+
+export const SheetIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <rect x="3" y="3" width="18" height="18" rx="2.5" />
+    <path d="M3 9h18M3 15h18M9 9v12" />
+  </svg>
+);
+
+export const PrinterIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M7 9V3h10v6" />
+    <rect x="3" y="9" width="18" height="8" rx="2" />
+    <path d="M7 14h10v7H7z" />
+  </svg>
+);

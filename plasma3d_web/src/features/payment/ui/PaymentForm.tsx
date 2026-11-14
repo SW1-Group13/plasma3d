@@ -1,9 +1,10 @@
-import { useEffect, useId, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useId, useMemo, useState } from 'react';
 import axios from 'axios';
+import { loadStripe, type Stripe, type StripeCardElementOptions } from '@stripe/stripe-js';
+import { CardElement, Elements, useElements, useStripe } from '@stripe/react-stripe-js';
 import { paymentApi } from '@/features/payment/api';
 import { useSession } from '@/entities/session/store';
-import type { UserInterface } from '@/entities/user/types';
+import type { PaymentConfig, PlanId } from '@/entities/payment/types';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent } from '@/shared/ui/card';
 import { Input } from '@/shared/ui/input';
@@ -14,7 +15,7 @@ import { cn } from '@/shared/lib/utils';
 import { toast } from '@/shared/ui/toast';
 
 interface Plan {
-  id: string;
+  id: PlanId;
   name: string;
   price: number;
   features: string[];
@@ -26,105 +27,202 @@ const PLANS: Plan[] = [
     id: 'usuario_premium',
     name: 'Plan Premium',
     price: 40,
-    features: ['Proyectos ilimitados', 'Soporte prioritario'],
+    features: ['Proyectos ilimitados', 'Soporte prioritario', '30 dias por pago'],
   },
 ];
 
-export function PaymentForm() {
-  const navigate = useNavigate();
-  const setUser = useSession((s) => s.setUser);
+/** loadStripe debe llamarse una sola vez por clave publica. */
+const stripeCache = new Map<string, Promise<Stripe | null>>();
+function getStripe(key: string): Promise<Stripe | null> {
+  let promise = stripeCache.get(key);
+  if (!promise) {
+    promise = loadStripe(key);
+    stripeCache.set(key, promise);
+  }
+  return promise;
+}
 
-  const cardholderId = useId();
-  const cardNumberId = useId();
-  const expiryId = useId();
-  const cvvId = useId();
+/** El CardElement vive en un iframe de Stripe: los colores van en valores fijos. */
+const CARD_OPTIONS: StripeCardElementOptions = {
+  hidePostalCode: true,
+  style: {
+    base: {
+      color: '#e8ecf4',
+      iconColor: '#94a0b8',
+      fontSize: '14px',
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      '::placeholder': { color: '#94a0b899' },
+    },
+    invalid: { color: '#f87171', iconColor: '#f87171' },
+  },
+};
 
-  const [selectedPlan, setSelectedPlan] = useState<Plan>(PLANS[0]);
-  const [cardholderName, setCardholderName] = useState('');
-  const [cardNumber, setCardNumber] = useState('');
-  const [expiryDate, setExpiryDate] = useState('');
-  const [cvv, setCvv] = useState('');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [stripeEnabled, setStripeEnabled] = useState<boolean | null>(null);
+function errorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const data = error.response?.data as { message?: string; detail?: string } | undefined;
+    return data?.message || data?.detail || fallback;
+  }
+  return fallback;
+}
+
+function isPremiumActive(rol?: string, expiracion?: string | null): boolean {
+  if (rol !== 'usuario_premium') return false;
+  if (!expiracion) return true;
+  return expiracion >= new Date().toISOString().slice(0, 10);
+}
+
+function formatDate(iso?: string | null): string {
+  if (!iso) return '';
+  const [y, m, d] = iso.slice(0, 10).split('-');
+  return `${d}/${m}/${y}`;
+}
+
+interface PaymentFormProps {
+  /** Se llama despues de un pago o cambio de plan (para recargar el historial). */
+  onChanged?: () => void;
+}
+
+export function PaymentForm({ onChanged }: PaymentFormProps) {
+  const [config, setConfig] = useState<PaymentConfig | null>(null);
+  const [configError, setConfigError] = useState(false);
 
   useEffect(() => {
     let alive = true;
     paymentApi
       .getConfig()
-      .then((config) => {
-        if (alive) setStripeEnabled(config.enabled);
-      })
-      .catch(() => {
-        if (alive) setStripeEnabled(false);
-      });
+      .then((c) => alive && setConfig(c))
+      .catch(() => alive && setConfigError(true));
     return () => {
       alive = false;
     };
   }, []);
 
-  function onCardNumber(value: string) {
-    setCardNumber(value.replace(/\s/g, '').replace(/\D/g, '').slice(0, 16));
-  }
-  function onExpiry(value: string) {
-    const digits = value.replace(/\D/g, '').slice(0, 4);
-    setExpiryDate(digits.length >= 2 ? `${digits.slice(0, 2)}/${digits.slice(2, 4)}` : digits);
-  }
-  function onCvv(value: string) {
-    setCvv(value.replace(/\D/g, '').slice(0, 4));
-  }
+  const enabled = !!config?.enabled && !!config.publishable_key;
+  const stripePromise = useMemo(
+    () => (enabled && config ? getStripe(config.publishable_key) : null),
+    [enabled, config],
+  );
 
-  async function onSubmit() {
-    if (stripeEnabled === false) {
-      toast.error('Pagos no configurados', 'La pasarela de pago no esta disponible.');
+  return (
+    <Elements stripe={stripePromise}>
+      <CheckoutForm
+        enabled={enabled}
+        loading={!config && !configError}
+        premiumPrice={config?.precios?.usuario_premium}
+        onChanged={onChanged}
+      />
+    </Elements>
+  );
+}
+
+interface CheckoutFormProps {
+  enabled: boolean;
+  loading: boolean;
+  premiumPrice?: number;
+  onChanged?: () => void;
+}
+
+function CheckoutForm({ enabled, loading, premiumPrice, onChanged }: CheckoutFormProps) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const user = useSession((s) => s.user);
+  const setUser = useSession((s) => s.setUser);
+
+  const cardholderId = useId();
+  const plans = useMemo(
+    () => PLANS.map((p) => (p.id === 'usuario_premium' && premiumPrice != null ? { ...p, price: premiumPrice } : p)),
+    [premiumPrice],
+  );
+
+  const [selectedId, setSelectedId] = useState<PlanId>('usuario_premium');
+  const [cardholderName, setCardholderName] = useState(user?.nombre ?? '');
+  const [cardComplete, setCardComplete] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const selectedPlan = plans.find((p) => p.id === selectedId) ?? plans[0];
+  const premiumActive = isPremiumActive(user?.rol, user?.fecha_expiracion_plan);
+  const isFree = selectedPlan.price === 0;
+
+  async function onPay() {
+    if (!stripe || !elements) return;
+    const card = elements.getElement(CardElement);
+    if (!card) return;
+    if (!cardholderName.trim()) {
+      toast.error('Datos incompletos', 'Escribe el titular de la tarjeta.');
       return;
     }
-    if (!cardholderName || cardNumber.length !== 16 || !/^\d{2}\/\d{2}$/.test(expiryDate) || cvv.length < 3) {
+    if (!cardComplete) {
       toast.error('Datos incompletos', 'Revisa los datos de la tarjeta.');
       return;
     }
 
     setIsProcessing(true);
     try {
-      const response = await paymentApi.process({
-        plan: selectedPlan.id,
-        monto: selectedPlan.price,
-        cardholderName,
-        cardNumber,
-        expiryDate,
-        cvv,
+      // 1. El backend crea el PaymentIntent con el precio del servidor.
+      const intent = await paymentApi.createIntent(selectedPlan.id);
+
+      // 2. La tarjeta se envia directo a Stripe (3D Secure si el banco lo pide).
+      const { error, paymentIntent } = await stripe.confirmCardPayment(intent.client_secret, {
+        payment_method: {
+          card,
+          billing_details: { name: cardholderName.trim(), email: user?.email },
+        },
       });
 
-      if (response.success) {
-        toast.success('Pago exitoso', `Se proceso el pago de $${selectedPlan.price}.`);
-        if (response.usuario) setUser(response.usuario as unknown as UserInterface);
-        setTimeout(() => navigate('/private/perfil'), 1500);
-      } else {
-        toast.error('Pago rechazado', response.message || 'No se pudo procesar el pago.');
+      if (error) {
+        toast.error('Pago rechazado', error.message ?? 'No se pudo procesar el pago.');
+        await paymentApi.confirm(intent.payment_intent_id).catch(() => undefined);
+        return;
       }
+      if (paymentIntent?.status !== 'succeeded') {
+        toast.error('Pago incompleto', `Estado del pago: ${paymentIntent?.status ?? 'desconocido'}.`);
+        return;
+      }
+
+      // 3. El backend verifica el cobro en Stripe, registra el pago y activa el plan.
+      const result = await paymentApi.confirm(paymentIntent.id);
+      if (result.usuario) setUser(result.usuario);
+      card.clear();
+      toast.success('Pago exitoso', `Se cobraron $${selectedPlan.price}. Tu plan Premium esta activo.`);
     } catch (error) {
-      const message = axios.isAxiosError(error)
-        ? error.response?.data?.message || 'Error al procesar el pago'
-        : 'Error al procesar el pago';
-      toast.error('Error de pago', String(message));
+      toast.error('Error de pago', errorMessage(error, 'Error al procesar el pago.'));
     } finally {
       setIsProcessing(false);
+      onChanged?.();
+    }
+  }
+
+  async function onDowngrade() {
+    setIsProcessing(true);
+    try {
+      const result = await paymentApi.downgrade();
+      if (result.usuario) setUser(result.usuario);
+      toast.success('Plan actualizado', result.message);
+    } catch (error) {
+      toast.error('Error', errorMessage(error, 'No se pudo cambiar el plan.'));
+    } finally {
+      setIsProcessing(false);
+      onChanged?.();
     }
   }
 
   return (
     <div className="grid gap-6 lg:grid-cols-2">
       <div className="flex flex-col gap-4">
-        {PLANS.map((plan) => {
-          const active = selectedPlan.id === plan.id;
+        {plans.map((plan) => {
+          const active = selectedId === plan.id;
+          const current =
+            plan.id === 'usuario_premium' ? premiumActive : !premiumActive;
           return (
             <Card
               key={plan.id}
-              onClick={() => setSelectedPlan(plan)}
+              onClick={() => setSelectedId(plan.id)}
               role="radio"
               aria-checked={active}
               tabIndex={0}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') setSelectedPlan(plan);
+                if (e.key === 'Enter' || e.key === ' ') setSelectedId(plan.id);
               }}
               className={cn(
                 'cursor-pointer transition-all duration-150 hover:border-border-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
@@ -132,9 +230,19 @@ export function PaymentForm() {
               )}
             >
               <CardContent className="p-5">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-lg font-semibold text-foreground">{plan.name}</h3>
-                  <span className="text-xl font-bold tabular-nums text-primary">${plan.price}</span>
+                <div className="flex items-center justify-between gap-3">
+                  <h3 className="flex items-center gap-2 text-lg font-semibold text-foreground">
+                    {plan.name}
+                    {current && (
+                      <span className="rounded-full border border-success/40 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
+                        Plan actual
+                      </span>
+                    )}
+                  </h3>
+                  <span className="text-xl font-bold tabular-nums text-primary">
+                    ${plan.price}
+                    {plan.price > 0 && <span className="text-sm font-medium text-muted"> / 30 dias</span>}
+                  </span>
                 </div>
                 <ul className="mt-3 space-y-1.5 text-sm text-muted">
                   {plan.features.map((feature) => (
@@ -148,77 +256,94 @@ export function PaymentForm() {
             </Card>
           );
         })}
+        {premiumActive && user?.fecha_expiracion_plan && (
+          <p className="text-sm text-muted">
+            Tu plan Premium vence el{' '}
+            <span className="font-medium text-foreground">{formatDate(user.fecha_expiracion_plan)}</span>. Si
+            pagas de nuevo, se suman 30 dias.
+          </p>
+        )}
       </div>
 
       <Card>
         <CardContent className="p-5">
-          <h3 className="mb-4 text-lg font-semibold text-foreground">Datos de pago</h3>
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={cardholderId}>Titular de la tarjeta</Label>
-              <Input
-                id={cardholderId}
-                value={cardholderName}
-                onChange={(e) => setCardholderName(e.target.value)}
-                placeholder="Juan Perez"
-                autoComplete="cc-name"
-              />
+          {isFree ? (
+            <div className="flex flex-col gap-4">
+              <h3 className="text-lg font-semibold text-foreground">Plan Normal</h3>
+              <p className="text-sm text-muted">
+                El plan Normal es gratuito y no requiere tarjeta. Tendras un limite de 5 proyectos.
+              </p>
+              {premiumActive && (
+                <p className="text-sm text-warning">
+                  Al cambiar a Normal pierdes los dias de Premium que te quedan.
+                </p>
+              )}
+              <Button
+                onClick={onDowngrade}
+                disabled={isProcessing || !premiumActive}
+                variant="outline"
+              >
+                {isProcessing && <Spinner className="h-4 w-4" />}
+                {premiumActive ? 'Cambiar a plan Normal' : 'Ya tienes el plan Normal'}
+              </Button>
             </div>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <h3 className="text-lg font-semibold text-foreground">Datos de pago</h3>
 
-            <div className="flex flex-col gap-1.5">
-              <Label htmlFor={cardNumberId}>Numero de tarjeta</Label>
-              <Input
-                id={cardNumberId}
-                value={cardNumber.replace(/(\d{4})(?=\d)/g, '$1 ')}
-                onChange={(e) => onCardNumber(e.target.value)}
-                placeholder="4242 4242 4242 4242"
-                inputMode="numeric"
-                autoComplete="cc-number"
-                className="tabular-nums"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <Label htmlFor={expiryId}>Expiracion</Label>
+                <Label htmlFor={cardholderId}>Titular de la tarjeta</Label>
                 <Input
-                  id={expiryId}
-                  value={expiryDate}
-                  onChange={(e) => onExpiry(e.target.value)}
-                  placeholder="MM/YY"
-                  inputMode="numeric"
-                  autoComplete="cc-exp"
-                  className="tabular-nums"
+                  id={cardholderId}
+                  value={cardholderName}
+                  onChange={(e) => setCardholderName(e.target.value)}
+                  placeholder="Juan Perez"
+                  autoComplete="cc-name"
                 />
               </div>
-              <div className="flex flex-col gap-1.5">
-                <Label htmlFor={cvvId}>CVV</Label>
-                <Input
-                  id={cvvId}
-                  value={cvv}
-                  onChange={(e) => onCvv(e.target.value)}
-                  placeholder="123"
-                  inputMode="numeric"
-                  autoComplete="cc-csc"
-                  className="tabular-nums"
-                />
-              </div>
-            </div>
 
-            <Button
-              onClick={onSubmit}
-              disabled={isProcessing || stripeEnabled === false}
-              variant="success"
-              className="mt-1"
-            >
-              {isProcessing && <Spinner className="h-4 w-4" />}
-              Pagar ${selectedPlan.price}
-            </Button>
-            {stripeEnabled === false && (
-              <p className="text-xs text-danger">Pagos no configurados en el servidor.</p>
-            )}
-            {stripeEnabled && <p className="text-xs text-muted">Pago seguro con Stripe.</p>}
-          </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Tarjeta</Label>
+                <div
+                  className={cn(
+                    'flex h-11 items-center rounded-lg border border-border bg-surface-2 px-3 shadow-inner shadow-black/20 transition-colors focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/60',
+                    cardError && 'border-danger',
+                    !enabled && 'opacity-50',
+                  )}
+                >
+                  <div className="w-full">
+                    <CardElement
+                      options={{ ...CARD_OPTIONS, disabled: !enabled || isProcessing }}
+                      onChange={(e) => {
+                        setCardComplete(e.complete);
+                        setCardError(e.error?.message ?? null);
+                      }}
+                    />
+                  </div>
+                </div>
+                {cardError && <p className="text-xs text-danger">{cardError}</p>}
+              </div>
+
+              <Button
+                onClick={onPay}
+                disabled={isProcessing || !enabled || !stripe}
+                variant="success"
+                className="mt-1"
+              >
+                {isProcessing && <Spinner className="h-4 w-4" />}
+                {premiumActive ? 'Renovar' : 'Pagar'} ${selectedPlan.price}
+              </Button>
+              {loading && <p className="text-xs text-muted">Cargando pasarela de pago...</p>}
+              {!loading && !enabled && (
+                <p className="text-xs text-danger">Pagos no configurados en el servidor.</p>
+              )}
+              {enabled && (
+                <p className="text-xs text-muted">
+                  Pago seguro con Stripe. Los datos de tu tarjeta van directo a Stripe y no se guardan en Plasma3D.
+                </p>
+              )}
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>

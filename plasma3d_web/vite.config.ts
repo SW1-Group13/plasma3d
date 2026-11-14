@@ -115,7 +115,17 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id) {
+            // El helper de import() de Vite lo usan todos: que no caiga en un
+            // bloque de exportación (si no, ese bloque se precarga al inicio).
+            if (id.includes('vite/preload-helper')) return 'vendor';
             if (id.includes('node_modules/three')) return 'three';
+            // Exportar presupuestos: se cargan solo al exportar (import dinámico).
+            if (id.includes('node_modules/exceljs')) return 'export-xlsx';
+            if (
+              /node_modules\/(jspdf|jspdf-autotable|fflate|fast-png|iobuffer|pako|html2canvas|canvg|dompurify|core-js|raf|rgbcolor|stackblur-canvas|svg-pathdata)\//.test(id)
+            ) {
+              return 'export-pdf';
+            }
             if (id.includes('node_modules')) return 'vendor';
             return undefined;
           },

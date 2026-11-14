@@ -13,6 +13,16 @@ class AppConstants {
     defaultValue: 'https://django-sw1.fournext.me',
   );
 
+  /// Plataforma web (los pagos con Stripe se hacen ahi).
+  static const webUrl = String.fromEnvironment(
+    'WEB_URL',
+    defaultValue: 'https://front-sw1.fournext.me',
+  );
+
+  /// Página de planes y pagos de la web.
+  static String get webPaymentUrl =>
+      '${webUrl.endsWith('/') ? webUrl.substring(0, webUrl.length - 1) : webUrl}/private/pago';
+
   /// Base normalizada con slash final.
   static String get apiBase => baseUrl.endsWith('/') ? baseUrl : '$baseUrl/';
 }

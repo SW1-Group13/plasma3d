@@ -49,6 +49,7 @@ import {
   KeyboardIcon,
   LayersIcon,
   MoveIcon,
+  PlayCircleIcon,
   PointerIcon,
   RotateIcon,
   SaveIcon,
@@ -157,6 +158,7 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
       { action: 'Techo: visible / transparente / oculto', keys: 'T' },
       { action: 'Menú de medidas (cotas)', keys: 'M' },
       { action: 'Abrir / cerrar Agente IA', keys: 'I' },
+      { action: 'Modo Animado (presentación)', keys: 'P' },
       { action: 'Zoom', keys: 'Rueda' },
       { action: 'Desplazar (pan)', keys: 'Botón derecho' },
     ],
@@ -234,6 +236,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [multiSelect, setMultiSelect] = useState(false);
   const [lockVertical, setLockVertical] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
+  const [animated, setAnimated] = useState(false);
   const [fillGap, setFillGap] = useState(true);
   const [view, setViewState] = useState<ViewName>('planta');
   const [ortho, setOrtho] = useState(false);
@@ -290,8 +293,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     if (!canvas) return;
 
     const engine = new EditorEngine(canvas);
-    engineRef.current = engine;
-    engine.setSelectionListener((info) => {
+    engineRef.current = engine;    engine.setSelectionListener((info) => {
       setSelected(info);
       // Celular: tocar una pieza abre la hoja de Propiedades.
       if (info && isMobileViewport()) setPropsOpen(true);
@@ -304,6 +306,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       if (!info) setCreateHint(null);
     });
     engine.setMarqueeListener(setMarquee);
+    engine.setPresentationListener(setAnimated);
 
     const raw = localStorage.getItem('modelo');
     let url: string | null = null;
@@ -386,12 +389,17 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       else if ((e.key === 't' || e.key === 'T') && hasRoofRef.current) setRoofMode(nextRoofMode);
       else if (e.key === 'm' || e.key === 'M') setMeasuresOpen((v) => !v);
       else if (e.key === 'i' || e.key === 'I') setAgentOpen((v) => !v);
+      else if (e.key === 'p' || e.key === 'P') {
+        const engine = engineRef.current;
+        engine?.setPresentationMode(!engine.isPresentationMode());
+      }
       else if (e.key === '1') applyView('planta');
       else if (e.key === '2') applyView('alzado');
       else if (e.key === '3') applyView('perfil');
       else if (e.key === '4') applyView('isometrica');
       else if (e.key === '5') applyView('3d');
       else if (e.key === 'Escape') {
+        engineRef.current?.setPresentationMode(false);
         setMeasuresOpen(false);
         engineRef.current?.cancelDraft();
         setCreateHint(null);
@@ -571,6 +579,25 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             )}
           >
             <SparklesIcon width={15} height={15} /> <Lbl>Agente IA</Lbl>
+          </button>
+          {/* Animado: vista de presentación del modelo abierto (brilla en celeste mientras está activa) */}
+          <button
+            type="button"
+            onClick={() => {
+              const engine = engineRef.current;
+              engine?.setPresentationMode(!engine.isPresentationMode());
+            }}
+            disabled={modelLoading}
+            aria-pressed={animated}
+            title={animated ? 'Volver al editor (P)' : 'Ver el modelo animado (P)'}
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
+              animated
+                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
+                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
+            )}
+          >
+            <PlayCircleIcon width={15} height={15} /> <Lbl>Animado</Lbl>
           </button>
 
           <div className="flex shrink-0 items-center gap-1 sm:ml-auto">
