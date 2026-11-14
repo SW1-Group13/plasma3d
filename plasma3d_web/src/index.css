@@ -91,3 +91,83 @@ canvas {
     scroll-behavior: auto !important;
   }
 }
+
+/* Cotas del visor 3D (CSS2DRenderer): etiquetas que siguen a las piezas */
+/* --m = color del tipo (lo asigna el motor desde MEASURE_COLORS) */
+.measure-label {
+  --m: #4f7cff;
+  padding: 1px 6px 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--m);
+  border-left-width: 4px;
+  background: color-mix(in srgb, var(--m) 28%, rgb(10 14 26 / 0.92));
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: 0 1px 1px rgb(0 0 0 / 0.6);
+  transition: opacity 150ms ease-out;
+}
+/* Tapada por otra pieza (3D): tenue, para no confundirla con la de adelante */
+.measure-label--hidden {
+  opacity: 0.18;
+  z-index: 0 !important;
+}
+/* Hay una selección y esta no es: un paso atrás */
+.measure-label--dim {
+  opacity: 0.55;
+}
+/* La pieza seleccionada: grande, borde blanco, siempre encima */
+.measure-label--active {
+  opacity: 1;
+  font-size: 13px;
+  line-height: 18px;
+  padding: 2px 8px 2px 6px;
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--m), 0 4px 12px rgb(0 0 0 / 0.5);
+  z-index: 9999 !important;
+}
+
+/* Tiras deslizables (barras del editor en celular) sin barra de scroll visible */
+.no-scrollbar {
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Agente IA: brillo celeste del botón activo y de la burbuja minimizada */
+@keyframes p3d-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgb(34 211 238 / 0.9), 0 0 8px rgb(34 211 238 / 0.45); }
+  50% { box-shadow: 0 0 0 1px rgb(34 211 238 / 1), 0 0 18px rgb(34 211 238 / 0.8); }
+}
+.p3d-agent-glow {
+  animation: p3d-glow 1.8s ease-in-out infinite;
+}
+
+/* "escribiendo…" del agente */
+@keyframes p3d-typing {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-3px); }
+}
+.p3d-typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--color-muted);
+  animation: p3d-typing 1s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Sin pulso: queda el borde celeste fijo */
+  .p3d-agent-glow {
+    animation: none;
+    box-shadow: 0 0 0 1px rgb(34 211 238 / 0.9), 0 0 10px rgb(34 211 238 / 0.5);
+  }
+  .p3d-typing-dot { animation: none; opacity: 0.6; }
+}

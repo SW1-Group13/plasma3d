@@ -10,6 +10,7 @@ export const TEXTURES: TextureRef[] = [
   { name: 'Madera roble', url: '/static/textures/tablas-desgastadas.jpg' },
   { name: 'Vidrio simple', url: '/static/textures/hielo.jpg' },
   { name: 'Vidrio escandinavo', url: '/static/textures/hielo.jpg' },
+  { name: 'Ceramica', url: '/static/textures/textura_suelo.jpg' },
 ];
 
 // Modelo del visor de inicio (servido desde el backend).

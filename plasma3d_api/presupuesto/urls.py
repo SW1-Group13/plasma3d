@@ -7,6 +7,7 @@ def test_view(request):
 urlpatterns = [
     path('', test_view),
     path('calcular/', views.calcular_presupuesto, name='calcular_presupuesto'),
+    path('materiales/', views.listar_materiales, name='listar_materiales'),
     path('materiales/cargar/', views.cargar_materiales, name='cargar_materiales'),
 
 ]

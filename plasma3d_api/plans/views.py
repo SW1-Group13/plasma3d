@@ -57,21 +57,31 @@ def _plan_limit_response():
     )
 
 
-def process_and_save_glb(job, det):
+def _roof_type_from(request):
+    """Tipo de techo pedido: 'ninguno' | 'plano' | 'dos_aguas' (default plano)."""
+    from .three import ROOF_TYPES
+    roof_type = str(request.data.get("roof_type") or "plano").strip().lower()
+    return roof_type if roof_type in ROOF_TYPES else "plano"
+
+
+def process_and_save_glb(job, det, roof_type="plano"):
     """
     Generar GLB en memoria y guardar metadatos.
 
     Args:
         job: Instancia de Plan3DJob
         det: Diccionario con datos de detección
+        roof_type: 'ninguno' | 'plano' | 'dos_aguas'
 
     Returns:
         job: Instancia actualizada de Plan3DJob
     """
     from .three import build_scene_mesh, export_glb
 
-    # Generar el modelo 3D (GLB)
-    mesh = build_scene_mesh(det, min_score=0.0, cut_openings=True)
+    # Generar el modelo 3D (GLB) con piso y techo
+    mesh = build_scene_mesh(
+        det, min_score=0.0, cut_openings=True, roof_type=roof_type
+    )
     if mesh is not None:
         glb_buf = io.BytesIO()
         export_glb(mesh, glb_buf)
@@ -172,7 +182,7 @@ def create_plan3d_job(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det)
+    process_and_save_glb(job, det, _roof_type_from(request))
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -228,7 +238,7 @@ def create_plan_json(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det)
+    process_and_save_glb(job, det, _roof_type_from(request))
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -278,7 +288,7 @@ def generate_dynamic_glb(request):
         job = Plan3DJob.objects.create(usuario_id=usuario_id)
 
         # Generar el GLB
-        process_and_save_glb(job, det_json)
+        process_and_save_glb(job, det_json, _roof_type_from(request))
 
         message = "Modelo GLB generado exitosamente con colores personalizados."
         return Response(
@@ -396,3 +406,61 @@ def reemplazar_glb(request):
     # Devolver modelo completo actualizado
     serializer = Plan3DJobSerializer(job)
     return Response(serializer.data, status=status.HTTP_200_OK)
+
+
+def _roof_type_from_glb(job):
+    """Tipo de techo del GLB actual (para conservarlo al regenerar)."""
+    try:
+        from pygltflib import GLTF2
+        with job.glb_model.open('rb') as fh:
+            gltf = GLTF2.load_from_bytes(fh.read())
+        names = [n.name or '' for n in gltf.nodes]
+    except Exception:
+        return "plano"
+    if any(n.startswith('wall_gable') for n in names):
+        return "dos_aguas"
+    if any(n.startswith('roof') for n in names):
+        return "plano"
+    return "ninguno"
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def regenerar_plan(request, pk):
+    """
+    Reconstruye el GLB de un plano desde sus detecciones guardadas, con la
+    geometría actual (vanos con dintel/antepecho, vidrio, marcos, encaje al
+    muro). OJO: reemplaza el modelo, se pierden las ediciones manuales.
+
+    Body opcional: {roof_type: 'ninguno'|'plano'|'dos_aguas'} (si no, conserva el actual).
+    """
+    try:
+        job = Plan3DJob.objects.get(pk=pk)
+    except Plan3DJob.DoesNotExist:
+        return Response({'detail': 'Modelo no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    if job.usuario_id and getattr(request.user, 'pk', None) != job.usuario_id:
+        return Response({'detail': 'No puedes modificar este modelo.'}, status=status.HTTP_403_FORBIDDEN)
+    if not job.detections_json:
+        return Response(
+            {'detail': 'Este modelo no viene de un plano subido (no tiene detecciones).'},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+    try:
+        with job.detections_json.open('rb') as fh:
+            det = json.loads(fh.read().decode('utf-8'))
+    except Exception:
+        return Response({'detail': 'No se pudieron leer las detecciones.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    roof_type = (
+        _roof_type_from(request) if request.data.get("roof_type")
+        else (_roof_type_from_glb(job) if job.glb_model else "plano")
+    )
+    old = job.glb_model.name if job.glb_model else None
+    process_and_save_glb(job, det, roof_type)
+    if old and job.glb_model.name != old:
+        try:
+            job.glb_model.storage.delete(old)  # no acumular versiones viejas
+        except Exception:
+            pass
+    return Response(Plan3DJobSerializer(job).data, status=status.HTTP_200_OK)

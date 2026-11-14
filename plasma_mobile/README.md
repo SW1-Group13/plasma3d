@@ -19,6 +19,25 @@ flutter run \
 
 La app **no** contiene claves secretas ni referencias a blockchain.
 
+## Generar el APK (Android)
+Con el backend en tu PC (celular en la misma Wi-Fi; `192.168.1.50` = IP de la PC,
+la ves con `ipconfig`):
+
+```bash
+flutter build apk --release \
+  --dart-define=API_BASE_URL=http://192.168.1.50:8000/ \
+  --dart-define=API_MEDIA_URL=http://192.168.1.50:8000
+```
+
+Con el backend en un servidor, usa su URL HTTPS en ambos `--dart-define`.
+El APK queda en `build/app/outputs/flutter-apk/app-release.apk`: cópialo al
+celular e instálalo (permitir "orígenes desconocidos").
+
+iOS (IPA) solo se compila desde una Mac con Xcode: `flutter build ipa`.
+
+> La versión web de Plasma3D también funciona en el navegador del celular y se
+> puede instalar como app (PWA): ver `docs/movil.md` en la raíz del repo.
+
 ## Funcionalidades
 - Autenticación con JWT (registro, login, logout).
 - **Inicio**: lista de modelos, subir plano, crear modelo vacío y eliminar.

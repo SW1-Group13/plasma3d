@@ -1,0 +1,75 @@
+# ==========================================================
+# HTTPS para producción (necesario para INSTALAR la PWA en el celular).
+#
+# Uso (en el servidor, con un dominio apuntando a su IP):
+#   1. Obtener certificado (Let's Encrypt):
+#        certbot certonly --standalone -d TU_DOMINIO
+#   2. Copiar este archivo a nginx/default.conf (reemplaza el actual) y
+#      cambiar TU_DOMINIO.
+#   3. En docker-compose.prod.yml, servicio plasma3d-nginx:
+#        ports:  - "80:80"  y  - "443:443"
+#        volumes: - /etc/letsencrypt:/etc/letsencrypt:ro
+#   4. docker compose -f docker-compose.prod.yml up -d
+# ==========================================================
+
+upstream plasma3d_api {
+    server plasma3d-api:8000;
+}
+
+upstream plasma3d_web {
+    server plasma3d-web:5173;
+}
+
+# HTTP -> HTTPS
+server {
+    listen 80;
+    server_name TU_DOMINIO;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name TU_DOMINIO;
+
+    ssl_certificate     /etc/letsencrypt/live/TU_DOMINIO/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/TU_DOMINIO/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 100M;
+
+    location /api/ {
+        proxy_pass http://plasma3d_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+    }
+
+    location /media/ {
+        proxy_pass http://plasma3d_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+
+    location /static/ {
+        proxy_pass http://plasma3d_api;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location / {
+        proxy_pass http://plasma3d_web;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_read_timeout 600s;
+    }
+}

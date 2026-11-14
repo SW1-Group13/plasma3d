@@ -1,13 +1,30 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { EditorEngine, type SelectedInfo, type TransformMode, type ViewName } from '@/widgets/viewer3d/engine';
+import {
+  EditorEngine,
+  type DraftInfo,
+  type DrawType,
+  type RoofDrawKind,
+  type RoofMode,
+  type SelectedInfo,
+  type TransformMode,
+  type ViewName,
+} from '@/widgets/viewer3d/engine';
 import { ViewCube } from '@/widgets/viewer3d/ViewCube';
+import { AgentChat } from '@/widgets/viewer3d/AgentChat';
+import {
+  MEASURE_COLORS,
+  MEASURE_KINDS,
+  type MeasureKind,
+  type MeasureDetail,
+  type MeasureUnit,
+} from '@/widgets/viewer3d/measurements';
 import { LayersDialog } from '@/widgets/viewer3d/LayersDialog';
 import { MaterialsDialog } from '@/widgets/viewer3d/MaterialsDialog';
 import { NewMaterialDialog } from '@/widgets/viewer3d/NewMaterialDialog';
 import { TEXTURES } from '@/entities/model3D/three/textures';
 import { useLayerStore } from '@/entities/layers/store';
 import { useMaterialStore } from '@/entities/materials/store';
-import type { ElementType, ModelSummary } from '@/entities/model3D/three/Modelo3D';
+import type { ModelSummary } from '@/entities/model3D/three/Modelo3D';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
 import { assetUrl } from '@/shared/lib/assetUrl';
@@ -39,6 +56,7 @@ import {
   SparklesIcon,
   TagIcon,
   TrashIcon,
+  XIcon,
 } from '@/shared/ui/icons';
 import { cn } from '@/shared/lib/utils';
 import { toast } from '@/shared/ui/toast';
@@ -51,11 +69,94 @@ const VIEWS: { id: ViewName; label: string }[] = [
   { id: '3d', label: '3D' },
 ];
 
+const ROOF_MODES: RoofMode[] = ['visible', 'transparente', 'oculto'];
+const ROOF_LABELS: Record<RoofMode, string> = {
+  visible: 'Visible',
+  transparente: 'Transparente',
+  oculto: 'Oculto',
+};
+const ROOF_STORAGE_KEY = 'plasma3d.roofMode';
+const ROOF_DRAW_STORAGE_KEY = 'plasma3d.roofDrawKind';
+
+const DRAW_LABELS: Record<DrawType, string> = {
+  wall: 'muro',
+  door: 'puerta',
+  window: 'ventana',
+  floor: 'piso',
+  roof: 'techo',
+};
+
+const MEASURES_STORAGE_KEY = 'plasma3d.measures';
+const MEASURE_UNITS: { id: MeasureUnit; label: string }[] = [
+  { id: 'cm', label: 'Centímetros (cm)' },
+  { id: 'm', label: 'Metros (m)' },
+  { id: 'in', label: 'Pulgadas (pulg)' },
+];
+const MEASURE_KIND_LABELS: Record<MeasureKind, string> = {
+  wall: 'Pared',
+  roof: 'Techo',
+  floor: 'Suelo',
+  window: 'Ventana',
+  door: 'Puerta',
+};
+const UNIT_SHORT: Record<MeasureUnit, string> = { cm: 'cm', m: 'm', in: 'pulg' };
+
+function readStoredMeasures(): { unit: MeasureUnit; kinds: MeasureKind[]; detail: MeasureDetail } {
+  try {
+    const raw = JSON.parse(localStorage.getItem(MEASURES_STORAGE_KEY) || '{}') as {
+      unit?: string;
+      kinds?: string[];
+      detail?: string;
+    };
+    const unit = MEASURE_UNITS.some((u) => u.id === raw.unit) ? (raw.unit as MeasureUnit) : 'm';
+    const kinds = Array.isArray(raw.kinds)
+      ? (raw.kinds.filter((k) => MEASURE_KINDS.includes(k as MeasureKind)) as MeasureKind[])
+      : [];
+    const detail: MeasureDetail = raw.detail === 'completo' ? 'completo' : 'largo';
+    return { unit, kinds, detail };
+  } catch {
+    return { unit: 'm', kinds: [], detail: 'largo' };
+  }
+}
+
+/** Pantalla de celular (por debajo del breakpoint `sm` de Tailwind). */
+function isMobileViewport(): boolean {
+  try {
+    return window.matchMedia('(max-width: 639px)').matches;
+  } catch {
+    return false;
+  }
+}
+
+function readStoredRoofDrawKind(): RoofDrawKind {
+  try {
+    return localStorage.getItem(ROOF_DRAW_STORAGE_KEY) === 'dos_aguas' ? 'dos_aguas' : 'plano';
+  } catch {
+    return 'plano';
+  }
+}
+
+function nextRoofMode(mode: RoofMode): RoofMode {
+  return ROOF_MODES[(ROOF_MODES.indexOf(mode) + 1) % ROOF_MODES.length];
+}
+
+function readStoredRoofMode(): RoofMode {
+  try {
+    const stored = localStorage.getItem(ROOF_STORAGE_KEY) as RoofMode | null;
+    return stored && ROOF_MODES.includes(stored) ? stored : 'visible';
+  } catch {
+    return 'visible';
+  }
+}
+
 const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] = [
   {
     title: 'Vistas',
     items: [
       { action: 'Planta / Alzado / Perfil / Iso / 3D', keys: '1 / 2 / 3 / 4 / 5' },
+      { action: 'Techo: visible / transparente / oculto', keys: 'T' },
+      { action: 'Menú de medidas (cotas)', keys: 'M' },
+      { action: 'Abrir / cerrar Agente IA', keys: 'I' },
       { action: 'Zoom', keys: 'Rueda' },
       { action: 'Desplazar (pan)', keys: 'Botón derecho' },
     ],
@@ -79,6 +180,7 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
     title: 'Dibujo',
     items: [
       { action: 'Dibujar muro / puerta / ventana', keys: 'Arrastrar' },
+      { action: 'Dibujar piso / techo (rectángulo)', keys: 'Arrastrar esquina a esquina' },
       { action: 'Restringir a 0/90° (Orto)', keys: 'Shift' },
       { action: 'Mostrar / ocultar grilla', keys: 'G' },
       { action: 'Cancelar dibujo', keys: 'Esc' },
@@ -119,19 +221,33 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [snap, setSnap] = useState(0);
   const [rotSnap, setRotSnap] = useState(0);
   const [isBusy, setIsBusy] = useState(false);
-  const [createHint, setCreateHint] = useState<ElementType | null>(null);
+  const [createHint, setCreateHint] = useState<DrawType | null>(null);
+  const [roofDrawKind, setRoofDrawKind] = useState<RoofDrawKind>(readStoredRoofDrawKind);
+  const [measuresOpen, setMeasuresOpen] = useState(false);
+  const [measureUnit, setMeasureUnit] = useState<MeasureUnit>(() => readStoredMeasures().unit);
+  const [measureKinds, setMeasureKinds] = useState<MeasureKind[]>(() => readStoredMeasures().kinds);
+  const [measureDetail, setMeasureDetail] = useState<MeasureDetail>(() => readStoredMeasures().detail);
   const [modelLoading, setModelLoading] = useState(true);
   const [gridVisible, setGridVisible] = useState(true);
-  const [propsOpen, setPropsOpen] = useState(true);
+  // En celular el panel arranca cerrado y se abre al tocar una pieza.
+  const [propsOpen, setPropsOpen] = useState(() => !isMobileViewport());
+  const [multiSelect, setMultiSelect] = useState(false);
+  const [lockVertical, setLockVertical] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const [fillGap, setFillGap] = useState(true);
   const [view, setViewState] = useState<ViewName>('planta');
   const [ortho, setOrtho] = useState(false);
-  const [draft, setDraft] = useState<{ type: ElementType; length: number } | null>(null);
+  const [draft, setDraft] = useState<DraftInfo | null>(null);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [materialsOpen, setMaterialsOpen] = useState(false);
   const [newMaterialOpen, setNewMaterialOpen] = useState(false);
   const [tool, setTool] = useState<'select' | 'hand'>('select');
+  const [roofMode, setRoofMode] = useState<RoofMode>(readStoredRoofMode);
+  const [hasRoof, setHasRoof] = useState(false);
+  const roofModeRef = useRef(roofMode);
+  const hasRoofRef = useRef(false);
   const [modelId] = useState<number | string>(() => {
     try {
       return JSON.parse(localStorage.getItem('modelo') || '{}').id ?? '—';
@@ -144,6 +260,20 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     setViewState(next);
     engineRef.current?.setView(next);
   }, []);
+
+  /** Lo que el Agente IA puede usar del editor (motor, vista y medidas). */
+  const getAgentHost = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return null;
+    return {
+      engine,
+      setView: applyView,
+      setMeasures: (kinds: MeasureKind[], unit?: MeasureUnit) => {
+        setMeasureKinds(kinds);
+        if (unit) setMeasureUnit(unit);
+      },
+    };
+  }, [applyView]);
 
   const getCameraQuaternion = useCallback(
     () => engineRef.current?.getCameraQuaternion() ?? null,
@@ -161,7 +291,14 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
     const engine = new EditorEngine(canvas);
     engineRef.current = engine;
-    engine.setSelectionListener(setSelected);
+    engine.setSelectionListener((info) => {
+      setSelected(info);
+      // Celular: tocar una pieza abre la hoja de Propiedades.
+      if (info && isMobileViewport()) setPropsOpen(true);
+      // Se dispara al crear y al borrar: mantiene el botón "Techo" al día.
+      hasRoofRef.current = engine.hasRoof();
+      setHasRoof(hasRoofRef.current);
+    });
     engine.setDraftListener((info) => {
       setDraft(info);
       if (!info) setCreateHint(null);
@@ -181,6 +318,9 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     engine.loadModel(url, TEXTURES, () => {
       setModelLoading(false);
       engine.setView('planta');
+      hasRoofRef.current = engine.hasRoof();
+      setHasRoof(hasRoofRef.current);
+      engine.setRoofMode(roofModeRef.current);
     });
     const loadingFallback = window.setTimeout(() => setModelLoading(false), 25000);
 
@@ -198,6 +338,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => void engineRef.current?.setGridVisible(gridVisible), [gridVisible]);
   useEffect(() => void engineRef.current?.setOrthoMode(ortho), [ortho]);
   useEffect(() => void engineRef.current?.setToolMode(tool), [tool]);
+  useEffect(() => void engineRef.current?.setMultiSelect(multiSelect), [multiSelect]);
+  useEffect(() => void engineRef.current?.setLockVertical(lockVertical), [lockVertical]);
   useEffect(() => {
     engineRef.current?.setLayers(layers, currentLayerId);
   }, [layers, currentLayerId]);
@@ -207,6 +349,15 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => {
     engineRef.current?.setShowTextures(showTextures);
   }, [showTextures]);
+  useEffect(() => {
+    roofModeRef.current = roofMode;
+    engineRef.current?.setRoofMode(roofMode);
+    try {
+      localStorage.setItem(ROOF_STORAGE_KEY, roofMode);
+    } catch {
+      /* almacenamiento no disponible: solo no se recuerda */
+    }
+  }, [roofMode]);
 
   useEffect(() => {
     useLayerStore.getState().fetch().catch(() => undefined);
@@ -232,12 +383,16 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       else if (e.key === 'g' || e.key === 'G') setGridVisible((v) => !v);
       else if (e.key === 'v' || e.key === 'V') setTool('select');
       else if (e.key === 'h' || e.key === 'H') setTool('hand');
+      else if ((e.key === 't' || e.key === 'T') && hasRoofRef.current) setRoofMode(nextRoofMode);
+      else if (e.key === 'm' || e.key === 'M') setMeasuresOpen((v) => !v);
+      else if (e.key === 'i' || e.key === 'I') setAgentOpen((v) => !v);
       else if (e.key === '1') applyView('planta');
       else if (e.key === '2') applyView('alzado');
       else if (e.key === '3') applyView('perfil');
       else if (e.key === '4') applyView('isometrica');
       else if (e.key === '5') applyView('3d');
       else if (e.key === 'Escape') {
+        setMeasuresOpen(false);
         engineRef.current?.cancelDraft();
         setCreateHint(null);
       } else if (e.key === 'Delete' || e.key === 'Backspace') engineRef.current?.deleteSelected();
@@ -256,11 +411,36 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     };
   }, [applyView]);
 
-  const startCreate = useCallback((type: ElementType) => {
+  const startCreate = useCallback((type: DrawType) => {
     engineRef.current?.startCreate(type);
     setCreateHint(type);
-    toast.info('Dibujar elemento', 'Arrastra sobre el piso para definir inicio y fin. ESC para cancelar.');
+    if (type === 'floor' || type === 'roof') {
+      toast.info(`Dibujar ${DRAW_LABELS[type]}`, 'Arrastra de una esquina a la opuesta. ESC para cancelar.');
+    } else {
+      toast.info('Dibujar elemento', 'Arrastra sobre el piso para definir inicio y fin. ESC para cancelar.');
+    }
   }, []);
+
+  useEffect(() => {
+    engineRef.current?.setMeasureConfig(measureUnit, measureKinds, measureDetail);
+    try {
+      localStorage.setItem(
+        MEASURES_STORAGE_KEY,
+        JSON.stringify({ unit: measureUnit, kinds: measureKinds, detail: measureDetail }),
+      );
+    } catch {
+      /* sin almacenamiento: solo no se recuerda */
+    }
+  }, [measureUnit, measureKinds, measureDetail]);
+
+  useEffect(() => {
+    engineRef.current?.setRoofDrawKind(roofDrawKind);
+    try {
+      localStorage.setItem(ROOF_DRAW_STORAGE_KEY, roofDrawKind);
+    } catch {
+      /* sin almacenamiento: solo no se recuerda */
+    }
+  }, [roofDrawKind]);
 
   async function buildFile(): Promise<File | null> {
     const engine = engineRef.current;
@@ -339,12 +519,15 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     <div className="flex h-[calc(100dvh-4rem)] flex-col bg-canvas">
       {/* Barra superior fija (estilo ventana) */}
       <div className="shrink-0 border-b border-border bg-surface/95 shadow-lg shadow-black/20">
-        <div className="flex flex-wrap items-center gap-1.5 px-3 py-2">
-          <div className="flex items-center gap-2 pr-1">
+        {/* En celular cada fila es una tira deslizable (sin saltos de línea) */}
+        <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto [&>*]:shrink-0 px-2 py-1.5 sm:flex-wrap sm:overflow-visible sm:px-3 sm:py-2">
+          <div className="flex shrink-0 items-center gap-2 pr-1">
             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/15 text-primary ring-1 ring-inset ring-primary/30">
               <CubeIcon width={16} height={16} />
             </span>
-            <span className="text-sm font-semibold tracking-tight text-foreground">Plano #{modelId}</span>
+            <span className="hidden text-sm font-semibold tracking-tight text-foreground sm:inline">
+              Plano #{modelId}
+            </span>
           </div>
 
           <Divider />
@@ -360,47 +543,79 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <Divider />
 
           <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor">
-            <SaveIcon width={15} height={15} /> Guardar
+            <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
           </RibbonAction>
           <RibbonAction onClick={onExport} disabled={isBusy} title="Exportar GLB">
-            <DownloadIcon width={15} height={15} /> Exportar
+            <DownloadIcon width={15} height={15} /> <Lbl>Exportar</Lbl>
           </RibbonAction>
           <RibbonAction onClick={onAnalyzeClick} disabled={isBusy} title="Analisis estructural">
-            <SparklesIcon width={15} height={15} /> Analizar
+            <SparklesIcon width={15} height={15} /> <Lbl>Analizar</Lbl>
           </RibbonAction>
           <RibbonAction onClick={onBudgetClick} disabled={isBusy} title="Generar presupuesto">
-            <CalculatorIcon width={15} height={15} /> Presupuesto
+            <CalculatorIcon width={15} height={15} /> <Lbl>Presupuesto</Lbl>
           </RibbonAction>
           <RibbonAction onClick={onOpenPrices} title="Precios de materiales">
-            <TagIcon width={15} height={15} /> Precios
+            <TagIcon width={15} height={15} /> <Lbl>Precios</Lbl>
           </RibbonAction>
+          {/* Agente IA: brilla en celeste mientras el chat está abierto */}
+          <button
+            type="button"
+            onClick={() => setAgentOpen((v) => !v)}
+            aria-pressed={agentOpen}
+            title={agentOpen ? 'Cerrar Agente IA (I)' : 'Abrir Agente IA (I)'}
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300',
+              agentOpen
+                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
+                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
+            )}
+          >
+            <SparklesIcon width={15} height={15} /> <Lbl>Agente IA</Lbl>
+          </button>
 
-          <div className="ml-auto flex items-center gap-1">
+          <div className="flex shrink-0 items-center gap-1 sm:ml-auto">
             <RibbonAction onClick={() => setLayersOpen(true)} title="Administrar capas">
-              <LayersIcon width={15} height={15} /> Capas
+              <LayersIcon width={15} height={15} /> <Lbl>Capas</Lbl>
             </RibbonAction>
             <RibbonAction onClick={() => setMaterialsOpen(true)} title="Biblioteca de materiales">
-              <ImageIcon width={15} height={15} /> Materiales
+              <ImageIcon width={15} height={15} /> <Lbl>Materiales</Lbl>
             </RibbonAction>
             <RibbonAction onClick={() => setShortcutsOpen(true)} title="Ver atajos de teclado">
-              <KeyboardIcon width={15} height={15} /> Atajos
+              <KeyboardIcon width={15} height={15} /> <Lbl>Atajos</Lbl>
             </RibbonAction>
             <RibbonAction onClick={() => setPropsOpen((v) => !v)} active={propsOpen} title="Mostrar/ocultar propiedades">
-              <CubeIcon width={15} height={15} /> Propiedades
+              <CubeIcon width={15} height={15} /> <Lbl>Propiedades</Lbl>
             </RibbonAction>
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5 border-t border-border/60 px-3 py-1.5">
-          <span className="pr-1 text-[10px] font-semibold uppercase tracking-wide text-muted">Transformar</span>
+        <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto [&>*]:shrink-0 border-t border-border/60 px-2 py-1.5 sm:flex-wrap sm:overflow-visible sm:px-3">
+          <span className="hidden pr-1 text-[10px] font-semibold uppercase tracking-wide text-muted sm:inline">
+            Transformar
+          </span>
+          {/* Equivalentes táctiles de Ctrl+clic y Shift (solo celular) */}
+          <MobileToggle
+            active={multiSelect}
+            onClick={() => setMultiSelect((v) => !v)}
+            title="Multiselección: cada toque agrega o quita piezas (reemplaza Ctrl+clic)"
+          >
+            Multi
+          </MobileToggle>
+          <MobileToggle
+            active={lockVertical}
+            onClick={() => setLockVertical((v) => !v)}
+            title="Bloquear vertical al mover (reemplaza mantener Shift)"
+          >
+            Bloq. Y
+          </MobileToggle>
           <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} title="Mover (W)">
-            <MoveIcon width={15} height={15} /> Mover
+            <MoveIcon width={15} height={15} /> <Lbl>Mover</Lbl>
           </ModeButton>
           <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} title="Rotar (E)">
-            <RotateIcon width={15} height={15} /> Rotar
+            <RotateIcon width={15} height={15} /> <Lbl>Rotar</Lbl>
           </ModeButton>
           <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} title="Escalar (R)">
-            <ScaleIcon width={15} height={15} /> Escalar
+            <ScaleIcon width={15} height={15} /> <Lbl>Escalar</Lbl>
           </ModeButton>
 
           <Divider />
@@ -449,7 +664,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             )}
             title="Mostrar/ocultar grilla (G)"
           >
-            <GridIcon width={15} height={15} /> Grilla
+            <GridIcon width={15} height={15} /> <Lbl>Grilla</Lbl>
           </button>
           <button
             onClick={() => setOrtho((v) => !v)}
@@ -471,6 +686,28 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             Texturas: {showTextures ? 'ON' : 'OFF'}
           </button>
+          {hasRoof && (
+            <button
+              onClick={() => setRoofMode(nextRoofMode)}
+              className={cn(
+                'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                roofMode !== 'visible' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+              )}
+              title="Techo visible / transparente / oculto (T). Transparente u oculto: el clic lo atraviesa para medir y seleccionar el interior. No se borra al guardar."
+            >
+              Techo: {ROOF_LABELS[roofMode]}
+            </button>
+          )}
+          <MeasuresMenu
+            open={measuresOpen}
+            onOpenChange={setMeasuresOpen}
+            unit={measureUnit}
+            onUnitChange={setMeasureUnit}
+            kinds={measureKinds}
+            onKindsChange={setMeasureKinds}
+            detail={measureDetail}
+            onDetailChange={setMeasureDetail}
+          />
         </div>
       </div>
 
@@ -487,23 +724,65 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         )}
 
         {createHint && (
-          <div className="absolute left-1/2 top-3 z-30 -translate-x-1/2 rounded-lg border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary backdrop-blur">
-            {draft
-              ? `Dibujando ${createHint} · Longitud: ${draft.length.toFixed(2)} m · ESC cancela`
-              : `Dibujar ${createHint}: arrastra sobre el piso (Shift = orto, ESC cancela)`}
+          <div className="absolute left-1/2 top-3 z-30 flex w-max max-w-[calc(100%-1.5rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-2 rounded-lg border border-primary/40 bg-primary/15 px-3 py-1.5 text-xs font-medium text-primary backdrop-blur">
+            <span className="text-center">
+              {draft
+                ? draft.width !== undefined && draft.depth !== undefined
+                  ? `Dibujando ${DRAW_LABELS[createHint]} · ${draft.width.toFixed(2)} × ${draft.depth.toFixed(2)} m · ${(draft.width * draft.depth).toFixed(1)} m² · ESC cancela`
+                  : `Dibujando ${DRAW_LABELS[createHint]} · Longitud: ${draft.length.toFixed(2)} m · ESC cancela`
+                : createHint === 'floor' || createHint === 'roof'
+                  ? `Dibujar ${DRAW_LABELS[createHint]}: arrastra de esquina a esquina (ESC cancela)`
+                  : `Dibujar ${DRAW_LABELS[createHint]}: arrastra sobre el piso (Shift = orto, ESC cancela)`}
+            </span>
+            {createHint === 'roof' && (
+              <span className="flex overflow-hidden rounded-md border border-primary/40">
+                {(['plano', 'dos_aguas'] as RoofDrawKind[]).map((kind) => (
+                  <button
+                    key={kind}
+                    type="button"
+                    onClick={() => setRoofDrawKind(kind)}
+                    className={cn(
+                      'cursor-pointer px-2 py-0.5 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                      roofDrawKind === kind ? 'bg-primary text-white' : 'hover:bg-primary/20',
+                    )}
+                  >
+                    {kind === 'plano' ? 'Plano' : 'Dos aguas'}
+                  </button>
+                ))}
+              </span>
+            )}
+            {/* Equivale a Esc: imprescindible en celular */}
+            <button
+              type="button"
+              onClick={() => {
+                engineRef.current?.cancelDraft();
+                setCreateHint(null);
+              }}
+              className="cursor-pointer rounded-md border border-primary/40 px-2 py-0.5 hover:bg-primary/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              title="Cancelar dibujo (Esc)"
+            >
+              Cancelar
+            </button>
           </div>
         )}
 
-        {/* Paleta de herramientas (izquierda) */}
-        <div className="absolute left-3 top-1/2 z-30 hidden -translate-y-1/2 sm:block">
-          <div className="flex flex-col gap-1.5 rounded-xl border border-border/70 bg-surface/85 p-1.5 shadow-xl shadow-black/40 backdrop-blur-md">
+        {/* Paleta de herramientas: barra inferior en celular, columna izquierda en escritorio */}
+        <div
+          className={cn(
+            'absolute bottom-[max(0.75rem,env(safe-area-inset-bottom))] left-1/2 z-30 max-w-[calc(100%-1rem)] -translate-x-1/2',
+            'sm:bottom-auto sm:left-3 sm:top-1/2 sm:max-w-none sm:translate-x-0 sm:-translate-y-1/2',
+            // En celular, con la hoja de Propiedades abierta, la paleta se oculta
+            (propsOpen || agentOpen) && 'hidden sm:block',
+          )}
+        >
+          <div className="no-scrollbar flex flex-row gap-1.5 overflow-x-auto rounded-xl border border-border/70 bg-surface/85 p-1.5 shadow-xl shadow-black/40 backdrop-blur-md [&>*]:shrink-0 sm:flex-col sm:overflow-visible">
             <ToolButton title="Seleccionar (V)" active={tool === 'select'} onClick={() => setTool('select')}>
               <PointerIcon width={18} height={18} />
             </ToolButton>
             <ToolButton title="Mano / Pan (H)" active={tool === 'hand'} onClick={() => setTool('hand')}>
               <MoveIcon width={18} height={18} />
             </ToolButton>
-            <span className="my-0.5 h-px w-full bg-border" />
+            <span className="mx-0.5 h-auto w-px self-stretch bg-border sm:mx-0 sm:my-0.5 sm:h-px sm:w-full" />
             <ToolButton title="Dibujar muro" onClick={() => startCreate('wall')}>
               <MaskIcon src="/icons/wall.svg" className="h-[18px] w-[18px]" />
             </ToolButton>
@@ -513,7 +792,13 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             <ToolButton title="Dibujar ventana" onClick={() => startCreate('window')}>
               <MaskIcon src="/icons/window.svg" className="h-[18px] w-[18px]" />
             </ToolButton>
-            <span className="my-0.5 h-px w-full bg-border" />
+            <ToolButton title="Dibujar piso (rectángulo)" onClick={() => startCreate('floor')}>
+              <MaskIcon src="/icons/floor.svg" className="h-[18px] w-[18px]" />
+            </ToolButton>
+            <ToolButton title="Dibujar techo (rectángulo, plano o dos aguas)" onClick={() => startCreate('roof')}>
+              <MaskIcon src="/icons/roof.svg" className="h-[18px] w-[18px]" />
+            </ToolButton>
+            <span className="mx-0.5 h-auto w-px self-stretch bg-border sm:mx-0 sm:my-0.5 sm:h-px sm:w-full" />
             <ToolButton
               title="Eliminar seleccion(es) (Supr)"
               variant="danger"
@@ -525,9 +810,17 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </div>
         </div>
 
+        {/* Agente IA: chat a la derecha de la paleta (hoja inferior en celular) */}
+        <AgentChat
+          open={agentOpen}
+          onClose={() => setAgentOpen(false)}
+          modelId={modelId}
+          getHost={getAgentHost}
+        />
+
         {/* ViewCube / dado (esquina superior derecha) */}
         <ViewCube
-          className="absolute right-3 top-3 z-30"
+          className="absolute right-2 top-2 z-30 origin-top-right scale-[0.65] sm:right-3 sm:top-3 sm:scale-100"
           getQuaternion={getCameraQuaternion}
           onDirection={handleDirection}
           onSelect={applyView}
@@ -535,11 +828,27 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
         {/* Propiedades (derecha, debajo del dado) */}
         {propsOpen && (
-          <aside className="absolute right-3 top-48 bottom-3 z-30 flex w-72 flex-col gap-4 overflow-y-auto rounded-xl border border-border/70 bg-surface/90 p-4 shadow-xl shadow-black/40 backdrop-blur-md">
+          <aside
+            className={cn(
+              // Celular: hoja inferior a todo el ancho (45 % del alto).
+              'absolute inset-x-0 bottom-0 z-30 flex max-h-[45%] flex-col gap-4 overflow-y-auto rounded-t-2xl border border-border/70 bg-surface/95 p-4 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-xl shadow-black/40 backdrop-blur-md',
+              // Escritorio: panel a la derecha, debajo del dado (como antes).
+              'sm:inset-x-auto sm:right-3 sm:top-48 sm:bottom-3 sm:max-h-none sm:w-72 sm:rounded-xl sm:bg-surface/90 sm:pb-4',
+            )}
+          >
+            <span className="mx-auto -mt-2 h-1 w-10 shrink-0 rounded-full bg-border-strong sm:hidden" aria-hidden="true" />
             <div>
               <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <CubeIcon width={16} height={16} className="text-primary" />
-                {selected ? selected.name : 'Sin seleccion'}
+                <CubeIcon width={16} height={16} className="shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate">{selected ? selected.name : 'Sin seleccion'}</span>
+                <button
+                  type="button"
+                  onClick={() => setPropsOpen(false)}
+                  className="-mr-1 flex h-8 w-8 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 sm:hidden"
+                  aria-label="Cerrar propiedades"
+                >
+                  <XIcon width={16} height={16} />
+                </button>
               </h3>
               <p className="mt-1 text-xs text-muted">
                 {selected
@@ -615,19 +924,50 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                 {(selected.kind === 'wall' || selected.kind === 'door' || selected.kind === 'window') && (
                   <div className="flex flex-col gap-2 border-t border-border pt-3">
                     <span className="text-xs font-medium uppercase tracking-wide text-muted">Geometria</span>
-                    <div className="grid grid-cols-2 gap-2">
-                      <DimField label="Longitud" value={selected.length} onChange={(v) => engineRef.current?.setSelectedDimension('length', v)} />
-                      <DimField label="Angulo" value={selected.angle} onChange={(v) => engineRef.current?.updateRotation('y', v)} />
-                      {selected.kind === 'wall' ? (
+                    {selected.kind === 'wall' ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        <DimField label="Longitud" value={selected.length} onChange={(v) => engineRef.current?.setSelectedDimension('length', v)} />
+                        <DimField label="Angulo" value={selected.angle} onChange={(v) => engineRef.current?.updateRotation('y', v)} />
                         <DimField label="Grosor" value={selected.thickness} onChange={(v) => engineRef.current?.setSelectedDimension('thickness', v)} />
-                      ) : (
-                        <DimField label="Ancho" value={selected.width} onChange={(v) => engineRef.current?.setSelectedDimension('width', v)} />
-                      )}
-                      <DimField label="Altura" value={selected.height} onChange={(v) => engineRef.current?.setSelectedDimension('height', v)} />
-                      {selected.kind === 'window' && (
-                        <DimField label="Alfeizar" value={selected.sill} onChange={(v) => engineRef.current?.setSelectedElevation(v)} />
-                      )}
-                    </div>
+                        <DimField label="Altura" value={selected.height} onChange={(v) => engineRef.current?.setSelectedDimension('height', v)} />
+                      </div>
+                    ) : (
+                      <>
+                        {/* Puerta/ventana: se reconstruye con la medida nueva (no se estira) */}
+                        <div className="grid grid-cols-2 gap-2">
+                          <DimField label="Ancho" value={selected.width} onChange={(v) => engineRef.current?.setSelectedDimension('width', v)} />
+                          <DimField label="Alto" value={selected.height} onChange={(v) => engineRef.current?.setSelectedDimension('height', v)} />
+                          <DimField label="Espesor" value={selected.thickness} onChange={(v) => engineRef.current?.setSelectedDimension('thickness', v)} />
+                          {selected.kind === 'window' ? (
+                            <DimField label="Alfeizar" value={selected.sill} onChange={(v) => engineRef.current?.setSelectedElevation(v)} />
+                          ) : (
+                            <DimField label="Angulo" value={selected.angle} onChange={(v) => engineRef.current?.updateRotation('y', v)} />
+                          )}
+                        </div>
+                        <label className="flex cursor-pointer items-center gap-2 text-xs text-muted">
+                          <input
+                            type="checkbox"
+                            checked={fillGap}
+                            onChange={(e) => setFillGap(e.target.checked)}
+                            className="h-3.5 w-3.5 accent-[var(--color-primary)]"
+                          />
+                          Rellenar hueco hasta los muros (≤ 30 cm)
+                        </label>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            const results = engineRef.current?.snapSelectedOpenings(fillGap) ?? [];
+                            const bad = results.find((r) => !r.ok);
+                            if (bad) toast.error('No se pudo ajustar', bad.mensaje);
+                            else toast.success('Ajustada al muro', results.map((r) => r.mensaje).join(' '));
+                          }}
+                          title="Alinea la pieza con el muro más cercano, la centra en su eje y le da su espesor"
+                        >
+                          Ajustar al muro
+                        </Button>
+                      </>
+                    )}
                   </div>
                 )}
 
@@ -670,8 +1010,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         )}
       </div>
 
-      {/* Barra de estado fija */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-border bg-surface/95 px-4 py-1.5 text-xs text-muted">
+      {/* Barra de estado fija (oculta en celular: no hay espacio y es info de teclado) */}
+      <div className="hidden shrink-0 items-center justify-between gap-3 border-t border-border bg-surface/95 px-4 py-1.5 text-xs text-muted sm:flex">
         <span className="tabular-nums">
           {selected
             ? `X ${selected.position.x.toFixed(2)}  Y ${selected.position.y.toFixed(2)}  Z ${selected.position.z.toFixed(2)}`
@@ -686,7 +1026,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <span className="hidden sm:inline">Herramienta: {tool === 'hand' ? 'Mano' : 'Seleccionar'}</span>
           <span className="hidden sm:inline">Vista: {VIEWS.find((v) => v.id === view)?.label ?? view}</span>
           <span className="hidden md:inline">Modo: {mode === 'translate' ? 'Mover' : mode === 'rotate' ? 'Rotar' : 'Escalar'}</span>
-          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · Supr borrar</span>
+          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · T techo · M medidas · I agente · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · Supr borrar</span>
         </div>
       </div>
 
@@ -748,6 +1088,39 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
 function Divider() {
   return <span className="mx-0.5 hidden h-6 w-px bg-border sm:block" />;
+}
+
+/** Texto de un botón de barra: en celular se oculta y queda solo el ícono (el title da el nombre). */
+function Lbl({ children }: { children: React.ReactNode }) {
+  return <span className="hidden md:inline">{children}</span>;
+}
+
+/** Interruptor visible solo en celular (equivalente táctil de una tecla). */
+function MobileToggle({
+  active,
+  onClick,
+  title,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        'inline-flex cursor-pointer items-center rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 sm:hidden',
+        active ? 'bg-primary text-white' : 'bg-surface-2 text-muted',
+      )}
+    >
+      {children}
+    </button>
+  );
 }
 
 function ModeButton({
@@ -934,6 +1307,205 @@ function AxisGroup({
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+interface MeasuresMenuProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  unit: MeasureUnit;
+  onUnitChange: (unit: MeasureUnit) => void;
+  kinds: MeasureKind[];
+  onKindsChange: (kinds: MeasureKind[]) => void;
+  detail: MeasureDetail;
+  onDetailChange: (detail: MeasureDetail) => void;
+}
+
+/** Botón "Medidas" + menú: unidad (cm/m/pulg) y qué piezas acotar. */
+function MeasuresMenu({
+  open,
+  onOpenChange,
+  unit,
+  onUnitChange,
+  kinds,
+  onKindsChange,
+  detail,
+  onDetailChange,
+}: MeasuresMenuProps) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  const active = kinds.length > 0;
+
+  // Posición fija bajo el botón: la barra es deslizable en celular y recortaría
+  // un menú `absolute`. Se mantiene dentro de la pantalla.
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const r = buttonRef.current?.getBoundingClientRect();
+      if (!r) return;
+      const width = 224;
+      setPos({ top: r.bottom + 6, left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) onOpenChange(false);
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [open, onOpenChange]);
+
+  const toggleKind = (kind: MeasureKind) => {
+    onKindsChange(
+      kinds.includes(kind)
+        ? kinds.filter((k) => k !== kind)
+        : MEASURE_KINDS.filter((k) => k === kind || kinds.includes(k)),
+    );
+  };
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-haspopup="true"
+        className={cn(
+          'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+          active || open ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+        )}
+        title="Mostrar medidas reales sobre el plano (M)"
+      >
+        Medidas{active ? `: ${UNIT_SHORT[unit]}` : ''}
+      </button>
+
+      {open && pos && (
+        <div
+          role="menu"
+          style={{ top: pos.top, left: pos.left, maxHeight: `calc(100dvh - ${pos.top + 12}px)` }}
+          className="fixed z-50 w-56 overflow-y-auto rounded-xl border border-border/70 bg-surface/95 p-2 text-xs shadow-xl shadow-black/40 backdrop-blur-md"
+        >
+          <p className="px-2 pb-1 pt-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted">Unidad</p>
+          <div className="flex flex-col">
+            {MEASURE_UNITS.map((u) => (
+              <button
+                key={u.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={unit === u.id}
+                onClick={() => onUnitChange(u.id)}
+                className={cn(
+                  'flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                  unit === u.id ? 'bg-primary/15 text-primary' : 'text-foreground hover:bg-surface-2',
+                )}
+              >
+                <span
+                  className={cn(
+                    'h-3 w-3 rounded-full border',
+                    unit === u.id ? 'border-primary bg-primary' : 'border-border-strong',
+                  )}
+                />
+                {u.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="my-1.5 h-px bg-border" />
+
+          <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">Mostrar medidas de</p>
+          <div className="flex flex-col">
+            {MEASURE_KINDS.map((kind) => {
+              const checked = kinds.includes(kind);
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  role="menuitemcheckbox"
+                  aria-checked={checked}
+                  onClick={() => toggleKind(kind)}
+                  className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+                >
+                  <span
+                    className={cn(
+                      'flex h-3.5 w-3.5 items-center justify-center rounded-sm border text-[9px] leading-none',
+                      checked ? 'border-primary bg-primary text-white' : 'border-border-strong',
+                    )}
+                  >
+                    {checked ? '✓' : ''}
+                  </span>
+                  <span className="flex-1">{MEASURE_KIND_LABELS[kind]}</span>
+                  {/* Leyenda: mismo color que sus etiquetas en el visor */}
+                  <span
+                    aria-hidden="true"
+                    className={cn('h-3 w-5 rounded-sm border', checked ? 'opacity-100' : 'opacity-40')}
+                    style={{ backgroundColor: MEASURE_COLORS[kind], borderColor: MEASURE_COLORS[kind] }}
+                  />
+                </button>
+              );
+            })}
+          </div>
+          <p className="px-2 pt-1 text-[10px] leading-snug text-muted">
+            Largo de cada tramo detectado, de punta a punta (ver línea de cota). En esquinas puede incluir el
+            espesor del muro que cruza. Clic en una pieza para resaltar su medida.
+          </p>
+
+          <div className="my-1.5 h-px bg-border" />
+
+          <p className="px-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-muted">Detalle de paredes</p>
+          <div className="flex gap-1 px-1 pb-1">
+            {(
+              [
+                { id: 'largo', label: 'Solo largo' },
+                { id: 'completo', label: 'Largo · alto · espesor' },
+              ] as { id: MeasureDetail; label: string }[]
+            ).map((d) => (
+              <button
+                key={d.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={detail === d.id}
+                onClick={() => onDetailChange(d.id)}
+                className={cn(
+                  'flex-1 cursor-pointer rounded-md border px-1.5 py-1 text-[11px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                  detail === d.id
+                    ? 'border-primary bg-primary/15 text-primary'
+                    : 'border-border text-muted hover:bg-surface-2 hover:text-foreground',
+                )}
+              >
+                {d.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="my-1.5 h-px bg-border" />
+
+          <div className="flex gap-1">
+            <button
+              type="button"
+              onClick={() => onKindsChange([...MEASURE_KINDS])}
+              className="flex-1 cursor-pointer rounded-md px-2 py-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+            >
+              Mostrar todas
+            </button>
+            <button
+              type="button"
+              onClick={() => onKindsChange([])}
+              disabled={!active}
+              className="flex-1 cursor-pointer rounded-md px-2 py-1.5 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Ocultar todas
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

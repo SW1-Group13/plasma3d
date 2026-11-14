@@ -6,6 +6,8 @@ const FALLBACK: Layer[] = [
   { id: 'layer-paredes', nombre: 'Paredes', color: '#ffffff', visible: true, bloqueada: false, congelada: false, grosorLinea: 0.3, tipoLinea: 'continuous', transparencia: 0, descripcion: 'Muros y tabiques' },
   { id: 'layer-puertas', nombre: 'Puertas', color: '#8a5a2b', visible: true, bloqueada: false, congelada: false, grosorLinea: 0.25, tipoLinea: 'continuous', transparencia: 0, descripcion: 'Vanos de puerta' },
   { id: 'layer-ventanas', nombre: 'Ventanas', color: '#9aa3af', visible: true, bloqueada: false, congelada: false, grosorLinea: 0.25, tipoLinea: 'continuous', transparencia: 0, descripcion: 'Vanos de ventana' },
+  { id: 'layer-pisos', nombre: 'Pisos', color: '#d6d3cc', visible: true, bloqueada: false, congelada: false, grosorLinea: 0.15, tipoLinea: 'continuous', transparencia: 0, descripcion: 'Losa de piso' },
+  { id: 'layer-techos', nombre: 'Techos', color: '#b5623c', visible: true, bloqueada: false, congelada: false, grosorLinea: 0.15, tipoLinea: 'continuous', transparencia: 0, descripcion: 'Cubierta / techo' },
 ];
 
 const timers: Record<string, number> = {};

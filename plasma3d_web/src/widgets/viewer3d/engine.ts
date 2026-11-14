@@ -1,10 +1,34 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
-import { Modelo3D, type ElementType, type ModelSummary } from '@/entities/model3D/three/Modelo3D';
-import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
+import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js';
+import {
+  MEASURE_COLORS,
+  measureMesh,
+  openingVertical,
+  pieceAxis,
+  pieceQuantities,
+  type MeasureDetail,
+  type MeasureKind,
+  type MeasureUnit,
+} from '@/widgets/viewer3d/measurements';
+import {
+  Modelo3D,
+  buildDoorGeometry,
+  buildWindowFrameGeometry,
+  classifyMeshName,
+  type ElementType,
+  type ModelSummary,
+} from '@/entities/model3D/three/Modelo3D';
+import {
+  ensurePlanarUVs,
+  horizontalRepeatFor,
+  textureRepeatFor,
+} from '@/entities/model3D/three/uv';
 import {
   DOOR_HEIGHT_M,
+  ROOF_THICKNESS_M,
+  SLAB_THICKNESS_M,
   WALL_HEIGHT_M,
   WALL_THICKNESS_M,
   WINDOW_HEIGHT_M,
@@ -15,6 +39,39 @@ import type { Material } from '@/entities/materials/types';
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
 export type ViewName = 'planta' | 'alzado' | 'perfil' | 'isometrica' | '3d';
+/** Cómo se muestra el techo generado en el editor (solo vista, no se borra). */
+export type RoofMode = 'visible' | 'transparente' | 'oculto';
+/** Medidas de una puerta/ventana (metros). */
+export interface OpeningDims {
+  ancho: number;
+  alto: number;
+  alfeizar: number;
+  espesor: number;
+}
+
+/** Lo que se puede dibujar desde la paleta: segmentos o rectángulos. */
+export type DrawType = ElementType | 'floor' | 'roof';
+export type RoofDrawKind = 'plano' | 'dos_aguas';
+export interface DraftInfo {
+  type: DrawType;
+  length: number;
+  /** Solo en rectángulos (piso/techo): ancho (X) y largo (Z) en metros. */
+  width?: number;
+  depth?: number;
+}
+
+/** Material del catálogo que recibe cada tipo de pieza al crearse. */
+const DEFAULT_MATERIAL_BY_KIND: Record<MeasureKind, string> = {
+  wall: 'Ladrillo rojo',
+  door: 'Roble',
+  window: 'Vidrio transparente',
+  floor: 'Ceramica piso',
+  roof: 'Cemento', // se tiñe con el color terracota de la capa Techos
+};
+
+function isRectType(type: DrawType): type is 'floor' | 'roof' {
+  return type === 'floor' || type === 'roof';
+}
 
 export interface SelectedInfo {
   name: string;
@@ -69,6 +126,7 @@ export class EditorEngine {
   private textureCache = new Map<string, THREE.Texture>();
   private viewSize = 20;
   private view: ViewName = 'planta';
+  private roofMode: RoofMode = 'visible';
   private tween: {
     fromPos: THREE.Vector3;
     toPos: THREE.Vector3;
@@ -81,14 +139,16 @@ export class EditorEngine {
   public model: Modelo3D | null = null;
   public selected: THREE.Mesh | null = null;
   public selection: THREE.Mesh[] = [];
-  public creating: ElementType | null = null;
+  public creating: DrawType | null = null;
+  private roofDrawKind: RoofDrawKind = 'plano';
   private onSelection: SelectionListener = () => {};
-  private onDraft: (info: { type: ElementType; length: number } | null) => void = () => {};
+  private onDraft: (info: DraftInfo | null) => void = () => {};
   private onMarquee: (rect: { x: number; y: number; w: number; h: number } | null) => void = () => {};
-  private drafting: { type: ElementType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
+  private drafting: { type: DrawType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
   private preview: THREE.Mesh | null = null;
   private orthoMode = false;
   private lockVertical = false;
+  private multiSelect = false;
   private translationSnap: number | null = null;
   private pivot = new THREE.Object3D();
   private dragStart: { pivot: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrix: THREE.Matrix4 }[] } | null = null;
@@ -100,10 +160,22 @@ export class EditorEngine {
   private justDraggedAt = 0;
   private resizeObserver: ResizeObserver;
 
+  // Cotas (etiquetas HTML que siguen a las piezas)
+  private labelRenderer: CSS2DRenderer;
+  private measureGroup = new THREE.Group();
+  private measureLabels = new Map<THREE.Mesh, { label: CSS2DObject; line: THREE.LineSegments }>();
+  private measureRay = new THREE.Raycaster();
+  private measureDetail: MeasureDetail = 'largo';
+  private measureUnit: MeasureUnit = 'm';
+  private measureKinds = new Set<MeasureKind>();
+  private measureFrame = 0;
+
   constructor(private canvas: HTMLCanvasElement) {
     const { clientWidth: w, clientHeight: h } = canvas;
 
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    // Nítido en pantallas de alta densidad (celulares) sin pasar de 2x.
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.renderer.setSize(w, h);
     this.renderer.setClearColor(0x0a0e1a);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -175,7 +247,16 @@ export class EditorEngine {
       this.orbit.enabled = !dragging;
       if (!dragging) this.justDraggedAt = Date.now();
       if (dragging) this.captureTransformStart();
-      else this.dragStart = null;
+      else {
+        this.dragStart = null;
+        // Escalar un vano: convertir la escala en medidas reales y
+        // reconstruirlo (si no, el marco y la cruz quedan deformados).
+        if (this.transformControls.mode === 'scale') {
+          this.selection
+            .filter((m) => this.isOpening(m) && (Math.abs(m.scale.x - 1) > 1e-3 || Math.abs(m.scale.y - 1) > 1e-3 || Math.abs(m.scale.z - 1) > 1e-3))
+            .forEach((m) => this.rebuildOpening(m, this.openingDims(m)));
+        }
+      }
     });
 
     this.transformControls.addEventListener('objectChange', () => {
@@ -185,7 +266,20 @@ export class EditorEngine {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerCancel);
     this.canvas.addEventListener('wheel', this.onWheel, { passive: true });
+
+    // Capa HTML de cotas sobre el canvas; no captura clics.
+    this.labelRenderer = new CSS2DRenderer();
+    this.labelRenderer.setSize(w, h);
+    const labelDom = this.labelRenderer.domElement;
+    labelDom.style.position = 'absolute';
+    labelDom.style.inset = '0';
+    labelDom.style.pointerEvents = 'none';
+    labelDom.style.zIndex = '10';
+    canvas.parentElement?.appendChild(labelDom);
+    this.measureGroup.name = '__measures';
+    this.scene.add(this.measureGroup);
 
     this.renderer.setAnimationLoop(() => {
       if (this.tween) {
@@ -193,7 +287,11 @@ export class EditorEngine {
       } else {
         this.orbit.update();
       }
+      // Refresco periódico: cubre mover/escalar/dibujar/borrar/capas sin
+      // cablear cada evento.
+      if (this.measureKinds.size > 0 && ++this.measureFrame % 10 === 0) this.refreshMeasures();
       this.renderer.render(this.scene, this.camera);
+      this.labelRenderer.render(this.scene, this.camera);
     });
 
     this.setView('planta');
@@ -210,13 +308,37 @@ export class EditorEngine {
     const { clientWidth, clientHeight } = this.canvas;
     if (clientWidth === 0 || clientHeight === 0) return;
     this.renderer.setSize(clientWidth, clientHeight, false);
+    this.labelRenderer.setSize(clientWidth, clientHeight);
     const aspect = clientWidth / clientHeight;
     this.persp.aspect = aspect;
     this.persp.updateProjectionMatrix();
     this.updateOrthoFrustum();
   }
 
+  /**
+   * Cancela un dibujo o un marco a medio hacer y devuelve la cámara al usuario
+   * (2º dedo = gesto de zoom/pan, o el sistema canceló el toque).
+   */
+  private abortGesture() {
+    if (this.drafting) this.cancelDraft();
+    if (this.marqueeStart) {
+      this.marqueeStart = null;
+      this.marqueeActive = false;
+      this.onMarquee(null);
+    }
+    this.orbit.enabled = true;
+  }
+
+  private onPointerCancel = () => this.abortGesture();
+
   private onPointerDown = (event: PointerEvent) => {
+    // Un 2º dedo no dibuja ni selecciona: pasa a ser zoom/paneo de la cámara.
+    if (!event.isPrimary) {
+      this.abortGesture();
+      return;
+    }
+    // Gizmo de mover/rotar más grande con el dedo.
+    this.transformControls.size = event.pointerType === 'touch' ? 1.6 : 1;
     this.tween = null;
     this.pointerDown = { x: event.clientX, y: event.clientY, button: event.button };
 
@@ -232,8 +354,10 @@ export class EditorEngine {
 
     if (this.toolMode === 'hand') return;
 
-    // Seleccion por rectangulo: solo en vistas fijas (ortograficas, sin rotacion)
-    if (!this.orbit.enableRotate && this.model) {
+    // Seleccion por rectangulo: solo en vistas fijas (ortograficas, sin rotacion).
+    // Con el dedo, arrastrar mueve el plano; el marco solo con Multiselección.
+    const touch = event.pointerType === 'touch';
+    if (!this.orbit.enableRotate && this.model && (!touch || this.multiSelect)) {
       const rect = this.canvas.getBoundingClientRect();
       this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
@@ -252,6 +376,7 @@ export class EditorEngine {
   };
 
   private onPointerMove = (event: PointerEvent) => {
+    if (!event.isPrimary) return;
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY);
       if (point) this.updateDraft(point, event.shiftKey);
@@ -267,6 +392,7 @@ export class EditorEngine {
   };
 
   private onPointerUp = (event: PointerEvent) => {
+    if (!event.isPrimary) return;
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY) ?? this.drafting.current;
       this.finalizeDraft(point, event.shiftKey);
@@ -283,7 +409,11 @@ export class EditorEngine {
       this.justDraggedAt = Date.now();
 
       if (active) {
-        this.selectInRect(start, { x: event.clientX, y: event.clientY }, event.ctrlKey || event.metaKey);
+        this.selectInRect(
+          start,
+          { x: event.clientX, y: event.clientY },
+          event.ctrlKey || event.metaKey || this.multiSelect,
+        );
       } else {
         this.clearSelection();
       }
@@ -356,6 +486,8 @@ export class EditorEngine {
 
   private clampSelectionToFloor() {
     this.selection.forEach((mesh) => {
+      // La losa de piso vive bajo y=0 (su cara superior es el nivel 0).
+      if (((mesh.userData.kind as string) ?? this.kindOf(mesh)) === 'floor') return;
       mesh.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(mesh);
       if (box.min.y < 0) {
@@ -385,10 +517,20 @@ export class EditorEngine {
 
   private updateDraft(point: THREE.Vector3, orthoOverride = false) {
     if (!this.drafting) return;
-    const end = this.constrainPoint(point, this.drafting.start, orthoOverride);
+    const { type, start } = this.drafting;
+    // Los rectángulos (piso/techo) no usan orto: las dos esquinas son libres.
+    const end = isRectType(type)
+      ? new THREE.Vector3(point.x, start.y, point.z)
+      : this.constrainPoint(point, start, orthoOverride);
     this.drafting.current = end;
     this.updatePreview();
-    this.onDraft({ type: this.drafting.type, length: end.distanceTo(this.drafting.start) });
+    this.onDraft({
+      type,
+      length: end.distanceTo(start),
+      ...(isRectType(type)
+        ? { width: Math.abs(end.x - start.x), depth: Math.abs(end.z - start.z) }
+        : {}),
+    });
   }
 
   private constrainPoint(point: THREE.Vector3, start: THREE.Vector3, orthoOverride = false): THREE.Vector3 {
@@ -412,6 +554,21 @@ export class EditorEngine {
   private updatePreview() {
     if (!this.preview || !this.drafting) return;
     const { type, start, current } = this.drafting;
+    if (isRectType(type)) {
+      const w = Math.abs(current.x - start.x);
+      const d = Math.abs(current.z - start.z);
+      if (w < 0.001 || d < 0.001) {
+        this.preview.visible = false;
+        return;
+      }
+      const thickness = type === 'floor' ? SLAB_THICKNESS_M : ROOF_THICKNESS_M;
+      const y = type === 'floor' ? -SLAB_THICKNESS_M / 2 : WALL_HEIGHT_M + ROOF_THICKNESS_M / 2;
+      this.preview.visible = true;
+      this.preview.scale.set(w, thickness, d);
+      this.preview.position.set((start.x + current.x) / 2, y, (start.z + current.z) / 2);
+      this.preview.rotation.y = 0;
+      return;
+    }
     const dir = new THREE.Vector3().subVectors(current, start);
     const length = dir.length();
     const dims = this.elementDims(type);
@@ -429,14 +586,36 @@ export class EditorEngine {
   private finalizeDraft(point: THREE.Vector3, orthoOverride = false) {
     if (!this.drafting || !this.model) return;
     const start = this.drafting.start.clone();
-    const end = this.constrainPoint(point, start, orthoOverride);
     const type = this.drafting.type;
+    const end = isRectType(type)
+      ? new THREE.Vector3(point.x, start.y, point.z)
+      : this.constrainPoint(point, start, orthoOverride);
 
     this.drafting = null;
     if (this.preview) this.preview.visible = false;
     this.orbit.enabled = true;
     this.creating = null;
     this.onDraft(null);
+
+    if (isRectType(type)) {
+      const parent = this.model.getObject3D();
+      parent.updateMatrixWorld(true);
+      const slab = this.model.createSlab(
+        type,
+        parent.worldToLocal(start.clone()),
+        parent.worldToLocal(end.clone()),
+        this.roofDrawKind,
+      );
+      if (slab) {
+        this.initMesh(slab);
+        this.refreshVisibility();
+        this.refreshAppearance();
+        // Un techo transparente/oculto no se puede seleccionar: solo avisar.
+        if (this.selectableMeshes().includes(slab)) this.select(slab);
+        else this.emitSelection();
+      }
+      return;
+    }
 
     if (end.distanceTo(start) < 0.2) return;
     const dims = this.elementDims(type);
@@ -483,7 +662,7 @@ export class EditorEngine {
 
     if (intersects.length > 0) {
       const mesh = intersects[0].object as THREE.Mesh;
-      if (event.ctrlKey || event.metaKey) {
+      if (event.ctrlKey || event.metaKey || this.multiSelect) {
         const exists = this.selection.includes(mesh);
         this.setSelection(
           exists ? this.selection.filter((m) => m !== mesh) : [...this.selection, mesh],
@@ -498,7 +677,19 @@ export class EditorEngine {
 
   private allMeshes(): THREE.Mesh[] {
     if (!this.model) return [];
-    return [...this.model.getWalls(), ...this.model.getDoors(), ...this.model.getWindows()];
+    return [
+      ...this.model.getWalls(),
+      ...this.model.getDoors(),
+      ...this.model.getWindows(),
+      ...this.model.getFloors(),
+      ...this.model.getRoofs(),
+    ];
+  }
+
+  /** Piso y techo son estructura generada: se seleccionan pero no se transforman. */
+  private isStructural(mesh: THREE.Mesh): boolean {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    return kind === 'floor' || kind === 'roof';
   }
 
   private syncPivot() {
@@ -529,6 +720,8 @@ export class EditorEngine {
       this.transformControls.attach(this.pivot);
     }
     this.emitSelection();
+    // Resaltar al instante la cota de lo seleccionado.
+    if (this.measureKinds.size > 0) this.refreshMeasures();
   }
 
   private select(mesh: THREE.Mesh) {
@@ -558,6 +751,9 @@ export class EditorEngine {
       length: size.z,
     };
 
+    // Vanos: mostrar sus medidas reales (ancho, alto, alféizar, espesor)
+    const od = this.isOpening(mesh) ? this.openingDims(mesh) : null;
+
     this.onSelection({
       name: this.selection.length > 1 ? `${this.selection.length} elementos` : mesh.name,
       count: this.selection.length,
@@ -578,12 +774,12 @@ export class EditorEngine {
       transparency: layer?.transparencia ?? 0,
       materialId: (mesh.userData.materialId as string) ?? '',
       elevation: (mesh.userData.elevation as number) ?? 0,
-      length: base.length,
+      length: od ? od.ancho : base.length,
       angle: THREE.MathUtils.radToDeg(mesh.rotation.y),
-      thickness: base.thickness,
-      height: base.height * mesh.scale.y,
-      width: base.length * mesh.scale.z,
-      sill: (mesh.userData.elevation as number) ?? 0,
+      thickness: od ? od.espesor : base.thickness,
+      height: od ? od.alto : base.height * mesh.scale.y,
+      width: od ? od.ancho : base.length * mesh.scale.z,
+      sill: od ? od.alfeizar : (mesh.userData.elevation as number) ?? 0,
     });
   }
 
@@ -724,8 +920,11 @@ export class EditorEngine {
     }
     this.orbit.object = this.camera;
     this.orbit.enableRotate = !ortho;
+    this.updateTouchGestures();
     this.transformControls.camera = this.camera;
     this.view = viewName;
+    this.refreshVisibility();
+    this.refreshAppearance();
 
     this.tween = {
       fromPos,
@@ -791,6 +990,24 @@ export class EditorEngine {
       MIDDLE: THREE.MOUSE.DOLLY,
       RIGHT: THREE.MOUSE.PAN,
     };
+    this.updateTouchGestures();
+  }
+
+  /** Multiselección táctil: reemplaza a Ctrl+clic y habilita el marco con el dedo. */
+  setMultiSelect(value: boolean) {
+    this.multiSelect = value;
+  }
+
+  /**
+   * Gestos con el dedo: 1 dedo rota en 3D y desplaza el plano en vistas fijas
+   * (o en modo Mano); 2 dedos hacen zoom + desplazamiento.
+   */
+  private updateTouchGestures() {
+    const panOneFinger = this.toolMode === 'hand' || !this.orbit.enableRotate;
+    this.orbit.touches = {
+      ONE: panOneFinger ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE,
+      TWO: THREE.TOUCH.DOLLY_PAN,
+    };
   }
 
   // ============================ Capas / Materiales / Color ============================
@@ -803,6 +1020,8 @@ export class EditorEngine {
     if (kind === 'wall') return 'Paredes';
     if (kind === 'door') return 'Puertas';
     if (kind === 'window') return 'Ventanas';
+    if (kind === 'floor') return 'Pisos';
+    if (kind === 'roof') return 'Techos';
     return '';
   }
 
@@ -852,16 +1071,12 @@ export class EditorEngine {
     this.refreshAppearance();
   }
 
-  private kindOf(mesh: THREE.Mesh): 'wall' | 'door' | 'window' | 'mesh' {
-    const n = mesh.name.toLowerCase();
-    if (n.startsWith('wall_internal') || n.includes('wall')) return 'wall';
-    if (n.includes('door')) return 'door';
-    if (n.includes('window')) return 'window';
-    return 'mesh';
+  private kindOf(mesh: THREE.Mesh): 'wall' | 'door' | 'window' | 'floor' | 'roof' | 'mesh' {
+    return classifyMeshName(mesh.name) ?? 'mesh';
   }
 
   private defaultLayerForKind(kind: string): string {
-    const name = kind === 'wall' ? 'Paredes' : kind === 'door' ? 'Puertas' : kind === 'window' ? 'Ventanas' : '';
+    const name = this.layerNameForKind(kind);
     const layer = this.layers.find((l) => l.nombre === name);
     return layer?.id ?? this.currentLayerId ?? '';
   }
@@ -875,7 +1090,7 @@ export class EditorEngine {
     if (layer) mesh.userData.layerName = layer.nombre;
     if (mesh.userData.color === undefined) mesh.userData.color = 'bylayer';
     if (mesh.userData.materialId === undefined) {
-      const name = kind === 'wall' ? 'Ladrillo rojo' : kind === 'door' ? 'Roble' : kind === 'window' ? 'Vidrio transparente' : '';
+      const name = DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind] ?? '';
       mesh.userData.materialId = name ? this.materials.find((m) => m.nombre === name)?.id ?? '' : '';
     }
     if (mesh.userData.elevation === undefined) mesh.userData.elevation = 0;
@@ -910,14 +1125,152 @@ export class EditorEngine {
     return Boolean(this.resolveLayer(mesh)?.bloqueada);
   }
 
+  private isRoof(mesh: THREE.Mesh): boolean {
+    return ((mesh.userData.kind as string) ?? this.kindOf(mesh)) === 'roof';
+  }
+
   private selectableMeshes(): THREE.Mesh[] {
-    return this.allMeshes().filter((mesh) => mesh.visible && !this.isLocked(mesh));
+    return this.allMeshes().filter(
+      (mesh) =>
+        mesh.visible &&
+        !this.isLocked(mesh) &&
+        // Techo transparente/oculto (o en Planta): el clic lo atraviesa.
+        !(this.isRoof(mesh) && this.roofSeeThrough()),
+    );
+  }
+
+  /** El techo se dibuja traslúcido y no captura clics. */
+  private roofSeeThrough(): boolean {
+    return this.roofMode !== 'visible' || this.view === 'planta';
+  }
+
+  setRoofDrawKind(kind: RoofDrawKind) {
+    this.roofDrawKind = kind;
+  }
+
+  // ============================ Cotas ============================
+
+  setMeasureConfig(unit: MeasureUnit, kinds: MeasureKind[], detail: MeasureDetail = 'largo') {
+    this.measureUnit = unit;
+    this.measureKinds = new Set(kinds);
+    this.measureDetail = detail;
+    this.refreshMeasures();
+  }
+
+  /**
+   * ¿Otra pieza tapa el punto `anchor` (de `owner`) desde la cámara?
+   * Funciona con cámara en perspectiva y ortográfica (rayo por NDC).
+   */
+  private isOccluded(anchor: THREE.Vector3, owner: THREE.Mesh, blockers: THREE.Mesh[]): boolean {
+    const ndc = anchor.clone().project(this.camera);
+    if (ndc.z > 1) return true; // detrás de la cámara
+    this.measureRay.setFromCamera(new THREE.Vector2(ndc.x, ndc.y), this.camera);
+    const target = this.measureRay.ray.origin.distanceTo(anchor);
+    const hits = this.measureRay.intersectObjects(blockers, false);
+    return hits.some((h) => h.object !== owner && h.distance < target - 0.05);
+  }
+
+  private measureKindOf(mesh: THREE.Mesh): MeasureKind | null {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    // El relleno de hastiales recorre todo el perímetro: su caja no es un muro.
+    if (kind === 'wall' && mesh.name.toLowerCase().includes('gable')) return null;
+    return kind === 'wall' || kind === 'door' || kind === 'window' || kind === 'floor' || kind === 'roof'
+      ? kind
+      : null;
+  }
+
+  private refreshMeasures() {
+    const wanted = new Set<THREE.Mesh>();
+    if (this.measureKinds.size > 0) {
+      this.camera.updateMatrixWorld();
+      const selected = new Set(this.selection);
+      const hasSelection = selected.size > 0;
+      // Lo que puede tapar una etiqueta: piezas visibles y opacas.
+      const blockers = this.allMeshes().filter(
+        (m) => m.visible && !(this.isRoof(m) && this.roofSeeThrough()),
+      );
+
+      this.allMeshes().forEach((mesh) => {
+        const kind = this.measureKindOf(mesh);
+        if (!kind || !this.measureKinds.has(kind) || !mesh.visible) return;
+        // En Planta el techo es traslúcido: su etiqueta taparía las del plano.
+        if (kind === 'roof' && this.view === 'planta') return;
+        wanted.add(mesh);
+
+        const active = selected.has(mesh);
+        // Seleccionada: siempre con detalle completo (largo · alto · espesor).
+        const { text, anchor, line } = measureMesh(
+          mesh,
+          kind,
+          this.measureUnit,
+          active ? 'completo' : this.measureDetail,
+        );
+
+        let entry = this.measureLabels.get(mesh);
+        if (!entry) {
+          const div = document.createElement('div');
+          div.className = 'measure-label';
+          div.style.setProperty('--m', MEASURE_COLORS[kind]);
+          const label = new CSS2DObject(div);
+          const lineObj = new THREE.LineSegments(
+            new THREE.BufferGeometry(),
+            new THREE.LineBasicMaterial({ color: MEASURE_COLORS[kind], transparent: true }),
+          );
+          lineObj.renderOrder = 3;
+          this.measureGroup.add(label, lineObj);
+          entry = { label, line: lineObj };
+          this.measureLabels.set(mesh, entry);
+        }
+
+        const { label, line: lineObj } = entry;
+        if (label.element.textContent !== text) label.element.textContent = text;
+        label.position.copy(anchor);
+
+        // Línea de cota: muestra de punta a punta lo que mide el número.
+        lineObj.geometry.setFromPoints(line);
+        lineObj.visible = line.length > 0;
+        const lineMat = lineObj.material as THREE.LineBasicMaterial;
+        lineMat.color.set(active ? '#ffffff' : MEASURE_COLORS[kind]);
+        lineMat.opacity = hasSelection && !active ? 0.35 : 1;
+
+        // Tapada por otra pieza → tenue (salvo la seleccionada).
+        const occluded = !active && this.isOccluded(anchor, mesh, blockers);
+        const cls = label.element.classList;
+        cls.toggle('measure-label--active', active);
+        cls.toggle('measure-label--hidden', occluded);
+        cls.toggle('measure-label--dim', hasSelection && !active && !occluded);
+      });
+    }
+    this.measureLabels.forEach(({ label, line }, mesh) => {
+      if (wanted.has(mesh)) return;
+      label.element.remove();
+      line.geometry.dispose();
+      (line.material as THREE.Material).dispose();
+      this.measureGroup.remove(label, line);
+      this.measureLabels.delete(mesh);
+    });
+  }
+
+  hasRoof(): boolean {
+    return (this.model?.getRoofs().length ?? 0) > 0;
+  }
+
+  setRoofMode(mode: RoofMode) {
+    this.roofMode = mode;
+    if (mode !== 'visible' && this.selection.some((mesh) => this.isRoof(mesh))) {
+      this.setSelection(this.selection.filter((mesh) => !this.isRoof(mesh)));
+    }
+    this.refreshVisibility();
+    this.refreshAppearance();
   }
 
   private refreshVisibility() {
     this.allMeshes().forEach((mesh) => {
       const layer = this.resolveLayer(mesh);
-      mesh.visible = layer ? layer.visible && !layer.congelada : true;
+      const layerVisible = layer ? layer.visible && !layer.congelada : true;
+      // En Planta el techo se ve traslúcido (ver applyMeshAppearance).
+      const hiddenByMode = this.isRoof(mesh) && this.roofMode === 'oculto';
+      mesh.visible = layerVisible && !hiddenByMode;
     });
   }
 
@@ -949,7 +1302,7 @@ export class EditorEngine {
         map = base.clone();
         map.needsUpdate = true;
         map.wrapS = map.wrapT = THREE.RepeatWrapping;
-        const [u, v] = textureRepeatFor(mesh);
+        const [u, v] = this.isStructural(mesh) ? horizontalRepeatFor(mesh) : textureRepeatFor(mesh);
         map.repeat.set(u * material.escala_textura[0], v * material.escala_textura[1]);
       }
       mesh.material = new THREE.MeshStandardMaterial({
@@ -977,6 +1330,16 @@ export class EditorEngine {
       });
     }
     const nextMaterial = mesh.material as THREE.MeshStandardMaterial;
+    if (this.isRoof(mesh) && this.roofSeeThrough()) {
+      nextMaterial.transparent = true;
+      nextMaterial.opacity = Math.min(nextMaterial.opacity, 0.25);
+      nextMaterial.depthWrite = false; // no tapa el interior al renderizar
+    }
+    // Ventanas sin textura: que el vidrio se vea como vidrio (no un bloque gris)
+    if (!material && this.measureKindOf(mesh) === 'window') {
+      nextMaterial.transparent = true;
+      nextMaterial.opacity = Math.min(nextMaterial.opacity, 0.5);
+    }
     nextMaterial.needsUpdate = true;
     if (prevMaterial && prevMaterial !== nextMaterial) {
       const prevMap = prevMaterial.map;
@@ -1018,6 +1381,10 @@ export class EditorEngine {
   setSelectedElevation(y: number) {
     if (this.selection.length === 0) return;
     const first = this.selected as THREE.Mesh;
+    if (this.isOpening(first)) {
+      this.rebuildOpening(first, { ...this.openingDims(first), alfeizar: y });
+      return;
+    }
     const delta = y - ((first.userData.elevation as number) ?? 0);
     this.selection.forEach((mesh) => {
       mesh.position.y += delta;
@@ -1029,9 +1396,164 @@ export class EditorEngine {
     this.emitSelection();
   }
 
+  // ============================ Vanos (puertas / ventanas) ============================
+
+  private isOpening(mesh: THREE.Mesh): boolean {
+    const k = this.measureKindOf(mesh);
+    return k === 'door' || k === 'window';
+  }
+
+  /** Medidas actuales de un vano: ancho (a lo largo del muro), alto, alféizar, espesor. */
+  openingDims(mesh: THREE.Mesh): OpeningDims {
+    const kind = this.measureKindOf(mesh) === 'window' ? 'window' : 'door';
+    const q = pieceQuantities(mesh, kind);
+    const v = openingVertical(mesh, kind);
+    return { ancho: q.length, alto: v.height, alfeizar: v.sill, espesor: q.thickness };
+  }
+
+  /**
+   * Reconstruye la geometría del vano con nuevas medidas (marco y cruz no se
+   * estiran). `place` permite reubicarlo sobre otro eje (Ajustar al muro).
+   */
+  rebuildOpening(
+    mesh: THREE.Mesh,
+    dims: OpeningDims,
+    place?: { mid: THREE.Vector3; dir: THREE.Vector3 },
+  ) {
+    if (!this.model || !this.isOpening(mesh)) return;
+    const kind = this.measureKindOf(mesh);
+    const d: OpeningDims = {
+      ancho: THREE.MathUtils.clamp(dims.ancho, 0.3, 20),
+      alto: THREE.MathUtils.clamp(dims.alto, 0.3, WALL_HEIGHT_M),
+      alfeizar: THREE.MathUtils.clamp(dims.alfeizar, 0, WALL_HEIGHT_M - 0.3),
+      espesor: THREE.MathUtils.clamp(dims.espesor, 0.02, 1.5),
+    };
+    let mid: THREE.Vector3;
+    let dir: THREE.Vector3;
+    if (place) {
+      ({ mid, dir } = place);
+    } else {
+      const { a, b } = pieceAxis(mesh);
+      mid = a.clone().add(b).multiplyScalar(0.5);
+      dir = b.clone().sub(a);
+    }
+    dir = dir.clone().setY(0);
+    if (dir.lengthSq() < 1e-8) dir.set(0, 0, 1);
+    dir.normalize();
+
+    const old = mesh.geometry;
+    mesh.geometry =
+      kind === 'window'
+        ? buildWindowFrameGeometry(d.espesor, d.alto, d.ancho)
+        : buildDoorGeometry(d.espesor, d.alto, d.ancho);
+    old.dispose();
+
+    const parent = mesh.parent ?? this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    mesh.position.copy(parent.worldToLocal(new THREE.Vector3(mid.x, d.alfeizar + d.alto / 2, mid.z)));
+    mesh.rotation.set(0, Math.atan2(dir.x, dir.z), 0);
+    mesh.scale.set(1, 1, 1);
+    mesh.updateMatrix();
+    mesh.userData.opening = d;
+    mesh.userData.elevation = d.alfeizar;
+    mesh.userData.baseDims = { thickness: d.espesor, height: d.alto, length: d.ancho };
+    this.ensureEdges(mesh);
+    this.applyMeshAppearance(mesh);
+    if (this.selection.includes(mesh)) {
+      (mesh.material as THREE.MeshStandardMaterial)?.emissive?.setHex(0x2a3550);
+      this.syncPivot();
+    }
+    this.emitSelection();
+  }
+
+  /**
+   * Ajusta un vano a su muro más cercano: lo gira con el muro, lo centra en su
+   * eje y le da su espesor. Con `fill`, estira el vano hasta los muros vecinos
+   * si quedan huecos de hasta 30 cm a cada lado.
+   */
+  snapOpeningToWall(mesh: THREE.Mesh, fill = true): { ok: boolean; mensaje: string; ancho?: number; espesor?: number } {
+    if (!this.isOpening(mesh)) return { ok: false, mensaje: 'Selecciona una puerta o ventana.' };
+    const dims = this.openingDims(mesh);
+    const { a, b } = pieceAxis(mesh);
+    const mid = a.clone().add(b).multiplyScalar(0.5);
+
+    const walls = this.allMeshes().filter((m) => this.measureKindOf(m) === 'wall' && m.visible);
+    let host: { mesh: THREE.Mesh; a: THREE.Vector3; dir: THREE.Vector3; dist: number } | null = null;
+    walls.forEach((w) => {
+      const ax = pieceAxis(w);
+      const seg = new THREE.Line3(ax.a, ax.b);
+      const dist = seg.closestPointToPoint(mid, true, new THREE.Vector3()).distanceTo(mid);
+      if (!host || dist < host.dist) {
+        host = { mesh: w, a: ax.a, dir: ax.b.clone().sub(ax.a).normalize(), dist };
+      }
+    });
+    const h = host as { mesh: THREE.Mesh; a: THREE.Vector3; dir: THREE.Vector3; dist: number } | null;
+    if (!h || h.dist > 1.5) return { ok: false, mensaje: 'No hay un muro a menos de 1.5 m.' };
+
+    const wallThickness = pieceQuantities(h.mesh, 'wall').thickness;
+    const normal = new THREE.Vector3(-h.dir.z, 0, h.dir.x);
+    const t = mid.clone().sub(h.a).dot(h.dir);
+    let s0 = t - dims.ancho / 2;
+    let s1 = t + dims.ancho / 2;
+
+    if (fill) {
+      const band = wallThickness / 2 + 0.05;
+      let left: number | null = null;
+      let right: number | null = null;
+      // Vecinos: muros y también otras puertas/ventanas (ventana doble)
+      const neighbors = [
+        ...walls,
+        ...this.allMeshes().filter((m) => m !== mesh && m.visible && this.isOpening(m)),
+      ];
+      neighbors.forEach((w) => {
+        const box = new THREE.Box3().setFromObject(w);
+        const corners = [
+          new THREE.Vector3(box.min.x, 0, box.min.z),
+          new THREE.Vector3(box.min.x, 0, box.max.z),
+          new THREE.Vector3(box.max.x, 0, box.min.z),
+          new THREE.Vector3(box.max.x, 0, box.max.z),
+        ].map((c) => c.sub(h.a));
+        const along = corners.map((c) => c.dot(h.dir));
+        const across = corners.map((c) => c.dot(normal));
+        if (Math.max(...across) < -band || Math.min(...across) > band) return; // fuera de la franja
+        const p0 = Math.min(...along);
+        const p1 = Math.max(...along);
+        if (p1 <= s0 + 0.01 && s0 - p1 <= 0.3) left = left === null ? p1 : Math.max(left, p1);
+        if (p0 >= s1 - 0.01 && p0 - s1 <= 0.3) right = right === null ? p0 : Math.min(right, p0);
+      });
+      if (left !== null) s0 = left;
+      if (right !== null) s1 = right;
+    }
+
+    const ancho = s1 - s0;
+    const center = h.a.clone().add(h.dir.clone().multiplyScalar((s0 + s1) / 2));
+    this.rebuildOpening(mesh, { ...dims, ancho, espesor: wallThickness }, { mid: center, dir: h.dir });
+    return {
+      ok: true,
+      mensaje: `Ajustada a ${h.mesh.name}: ancho ${ancho.toFixed(2)} m, espesor ${wallThickness.toFixed(2)} m.`,
+      ancho,
+      espesor: wallThickness,
+    };
+  }
+
+  /** Ajusta al muro todos los vanos seleccionados. */
+  snapSelectedOpenings(fill = true) {
+    const results = this.selection.filter((m) => this.isOpening(m)).map((m) => this.snapOpeningToWall(m, fill));
+    return results.length ? results : [{ ok: false, mensaje: 'Selecciona una puerta o ventana.' }];
+  }
+
   setSelectedDimension(field: 'height' | 'thickness' | 'length' | 'width', value: number) {
     if (!this.selected) return;
     const mesh = this.selected;
+    if (this.isOpening(mesh)) {
+      // Vanos: se reconstruyen con la medida nueva (no se estiran con scale).
+      const d = this.openingDims(mesh);
+      if (field === 'height') d.alto = value;
+      else if (field === 'thickness') d.espesor = value;
+      else d.ancho = value;
+      this.rebuildOpening(mesh, d);
+      return;
+    }
     const base = (mesh.userData.baseDims as { thickness: number; height: number; length: number }) ?? {
       thickness: 1,
       height: 1,
@@ -1046,7 +1568,7 @@ export class EditorEngine {
     this.emitSelection();
   }
 
-  setDraftListener(listener: (info: { type: ElementType; length: number } | null) => void) {
+  setDraftListener(listener: (info: DraftInfo | null) => void) {
     this.onDraft = listener;
   }
 
@@ -1060,13 +1582,13 @@ export class EditorEngine {
     this.transformControls.setRotationSnap(value ? THREE.MathUtils.degToRad(value) : null);
   }
 
-  startCreate(type: ElementType) {
+  startCreate(type: DrawType) {
     this.cancelDraft();
     this.creating = type;
   }
 
   private spawnElementAt(point: THREE.Vector3) {
-    if (!this.model || !this.creating) return;
+    if (!this.model || !this.creating || isRectType(this.creating)) return;
     const baseY = this.model.getWalls().length > 0 ? this.model.getWalls()[0].position.y : 0;
     point.y = baseY;
 
@@ -1140,8 +1662,252 @@ export class EditorEngine {
     return this.model.exportAsGLB(filename);
   }
 
+  /**
+   * Resumen para el presupuesto. Corrige lo que `toJSONSummary` no sabe:
+   * - material = el del catálogo asignado a la pieza (no se adivina por la
+   *   textura, así funciona igual con Texturas ON u OFF);
+   * - medidas reales en ejes locales (puertas/ventanas giradas, pendiente).
+   */
+  /**
+   * Resumen compacto del modelo para el Agente IA: por tipo (cantidad, m²,
+   * materiales), totales clave y la pieza seleccionada. Medidas en metros;
+   * `unidad` indica en qué unidad prefiere ver el usuario las respuestas.
+   */
+  getAgentContext(): Record<string, unknown> {
+    const summary = this.getSummary();
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+    const piezas: Record<string, { cantidad: number; area_m2: number; largo_total_m: number; materiales: Record<string, number> }> = {};
+    (summary?.objects ?? []).forEach((o) => {
+      const p = (piezas[o.type] ??= { cantidad: 0, area_m2: 0, largo_total_m: 0, materiales: {} });
+      p.cantidad += 1;
+      p.area_m2 += o.area ?? 0;
+      p.largo_total_m += o.length ?? 0;
+      const mat = o.material?.name || 'Sin material';
+      p.materiales[mat] = (p.materiales[mat] ?? 0) + 1;
+    });
+    Object.values(piezas).forEach((p) => {
+      p.area_m2 = r2(p.area_m2);
+      p.largo_total_m = r2(p.largo_total_m);
+    });
+
+    let seleccion: Record<string, unknown> | null = null;
+    const mesh = this.selection[0];
+    if (mesh) {
+      const kind = this.measureKindOf(mesh);
+      const q = kind ? pieceQuantities(mesh, kind) : null;
+      seleccion = {
+        nombre: mesh.name,
+        tipo: kind ?? 'otro',
+        material: this.materialById(mesh.userData.materialId as string)?.nombre ?? null,
+        piezas_seleccionadas: this.selection.length,
+        ...(q
+          ? {
+              largo_m: r2(q.length),
+              alto_m: r2(q.height),
+              espesor_m: r2(q.thickness),
+              area_m2: r2(q.area),
+              volumen_m3: r2(q.volume),
+            }
+          : {}),
+      };
+    }
+
+    // Ubicación (metros, mundo): límites del plano y eje de cada muro, para que
+    // el agente pueda colocar piezas "a la derecha", "sobre el muro norte"...
+    const r1 = (n: number) => Math.round(n * 100) / 100;
+    const bounds = new THREE.Box3();
+    this.allMeshes().forEach((m) => m.visible && bounds.expandByObject(m));
+    const limites = bounds.isEmpty()
+      ? { min_x: 0, max_x: 0, min_z: 0, max_z: 0, vacio: true }
+      : { min_x: r1(bounds.min.x), max_x: r1(bounds.max.x), min_z: r1(bounds.min.z), max_z: r1(bounds.max.z) };
+    const ejes = (kind: MeasureKind) =>
+      this.allMeshes()
+        .filter((m) => this.measureKindOf(m) === kind)
+        .slice(0, 80)
+        .map((m) => {
+          const { a, b } = pieceAxis(m);
+          return { nombre: m.name, x1: r1(a.x), z1: r1(a.z), x2: r1(b.x), z2: r1(b.z) };
+        });
+
+    return {
+      unidad: this.measureUnit,
+      vista: this.view,
+      tipos: { wall: 'muros', door: 'puertas', window: 'ventanas', floor: 'pisos', roof: 'techos' },
+      piezas,
+      techo: this.hasRoof() ? 'sí' : 'no',
+      limites,
+      muros: ejes('wall'),
+      puertas: ejes('door'),
+      ventanas: ejes('window'),
+      seleccion,
+      seleccion_nombres: this.selection.map((m) => m.name),
+      materiales_catalogo: this.materials.map((m) => m.nombre),
+      // Solo lo usa el backend para costos (no se envía al modelo de IA)
+      objetos: (summary?.objects ?? []).map((o) => ({
+        type: o.type,
+        name: o.name,
+        material: { name: o.material?.name },
+        length: o.length,
+        height: o.height,
+        thickness: o.thickness,
+        area: o.area,
+        volume: o.volume,
+      })),
+    };
+  }
+
+  // ============================ API del Agente IA ============================
+  // Coordenadas en metros del mundo (las mismas de getAgentContext): x → derecha,
+  // z → abajo en Planta, piso en y = 0.
+
+  private agentCounter = 0;
+
+  /** Muro/puerta/ventana de (x1,z1) a (x2,z2). Devuelve la malla creada. */
+  agentCreateSegment(
+    type: ElementType,
+    x1: number,
+    z1: number,
+    x2: number,
+    z2: number,
+    opts: { thickness?: number; height?: number } = {},
+  ): THREE.Mesh | null {
+    if (!this.model) return null;
+    const dims = this.elementDims(type);
+    const parent = this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    const a = parent.worldToLocal(new THREE.Vector3(x1, 0, z1));
+    const b = parent.worldToLocal(new THREE.Vector3(x2, 0, z2));
+    const mesh = this.model.createElementSegment(
+      type,
+      a,
+      b,
+      opts.thickness ?? dims.thickness,
+      opts.height ?? dims.height,
+      dims.sill,
+    );
+    if (!mesh) return null;
+    mesh.name = `${mesh.name}_ia${++this.agentCounter}`; // nombres únicos en lote
+    this.initMesh(mesh);
+    return mesh;
+  }
+
+  /** Piso o techo rectangular entre dos esquinas. */
+  agentCreateSlab(
+    type: 'floor' | 'roof',
+    x1: number,
+    z1: number,
+    x2: number,
+    z2: number,
+    roofKind: RoofDrawKind = 'plano',
+  ): THREE.Mesh | null {
+    if (!this.model) return null;
+    const parent = this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    const slab = this.model.createSlab(
+      type,
+      parent.worldToLocal(new THREE.Vector3(x1, 0, z1)),
+      parent.worldToLocal(new THREE.Vector3(x2, 0, z2)),
+      roofKind,
+    );
+    if (!slab) return null;
+    slab.name = `${slab.name}_ia${++this.agentCounter}`;
+    this.initMesh(slab);
+    return slab;
+  }
+
+  /** Refresca la escena tras cambios del agente y selecciona lo indicado. */
+  agentCommit(select: THREE.Mesh[] = []) {
+    this.refreshVisibility();
+    this.refreshAppearance();
+    const visible = select.filter((m) => this.selectableMeshes().includes(m));
+    if (visible.length > 0) this.setSelection(visible);
+    else this.emitSelection();
+  }
+
+  /** Piezas por alcance: 'seleccion', una categoría, o por nombre (parcial). */
+  agentFind(scope?: string, nombre?: string): THREE.Mesh[] {
+    let meshes = scope === 'seleccion' ? [...this.selection] : this.allMeshes();
+    if (scope && scope !== 'seleccion') meshes = meshes.filter((m) => this.measureKindOf(m) === scope);
+    if (nombre) {
+      const n = nombre.toLowerCase();
+      meshes = meshes.filter((m) => m.name.toLowerCase().includes(n));
+    }
+    return meshes;
+  }
+
+  /** Material del catálogo por nombre (exacto, o el que lo contenga). */
+  agentMaterialByName(name: string): Material | undefined {
+    const n = name.trim().toLowerCase();
+    return (
+      this.materials.find((m) => m.nombre.toLowerCase() === n) ??
+      this.materials.find((m) => m.nombre.toLowerCase().includes(n) || n.includes(m.nombre.toLowerCase()))
+    );
+  }
+
+  /** Asigna material; devuelve los anteriores para poder deshacer. */
+  agentSetMaterial(meshes: THREE.Mesh[], materialId: string): Map<THREE.Mesh, string> {
+    const previous = new Map<THREE.Mesh, string>();
+    meshes.forEach((m) => {
+      previous.set(m, (m.userData.materialId as string) ?? '');
+      m.userData.materialId = materialId;
+    });
+    this.refreshAppearance();
+    this.emitSelection();
+    return previous;
+  }
+
+  agentRestoreMaterials(previous: Map<THREE.Mesh, string>) {
+    previous.forEach((id, m) => (m.userData.materialId = id));
+    this.refreshAppearance();
+    this.emitSelection();
+  }
+
+  /** Elimina piezas (las que estaban seleccionadas se deseleccionan). */
+  agentRemove(meshes: THREE.Mesh[]) {
+    if (!this.model) return;
+    const set = new Set(meshes);
+    if (this.selection.some((m) => set.has(m))) {
+      this.setSelection(this.selection.filter((m) => !set.has(m)));
+    }
+    meshes.forEach((m) => this.model?.removeElement(m));
+    this.emitSelection();
+  }
+
+  agentSelect(meshes: THREE.Mesh[]) {
+    this.setSelection(meshes.filter((m) => this.selectableMeshes().includes(m)));
+  }
+
+  /** ¿La malla sigue en el modelo? (para deshacer con seguridad) */
+  agentHas(mesh: THREE.Mesh): boolean {
+    return this.allMeshes().includes(mesh);
+  }
+
   getSummary(): ModelSummary | null {
-    return this.model ? this.model.toJSONSummary() : null;
+    if (!this.model) return null;
+    const summary = this.model.toJSONSummary();
+    // toJSONSummary recorre walls, doors, windows, floors, roofs: mismo orden que allMeshes().
+    const meshes = this.allMeshes();
+    const objects = summary.objects.flatMap((obj, i) => {
+      const mesh = meshes[i];
+      if (!mesh || mesh.name !== obj.name) return [obj];
+      const kind = this.measureKindOf(mesh);
+      if (!kind) return []; // p. ej. relleno de hastiales: no es un muro medible
+      if (mesh.userData.materialId === undefined) this.initMesh(mesh);
+      const catalog = this.materialById(mesh.userData.materialId as string);
+      const q = pieceQuantities(mesh, kind);
+      return [
+        {
+          ...obj,
+          material: { ...obj.material, name: catalog?.nombre ?? DEFAULT_MATERIAL_BY_KIND[kind] },
+          height: q.height,
+          length: Number(q.length.toFixed(4)),
+          thickness: Number(q.thickness.toFixed(4)),
+          area: Number(q.area.toFixed(4)),
+          volume: Number(q.volume.toFixed(4)),
+        },
+      ];
+    });
+    return { ...summary, objects };
   }
 
   updateLoadedModelPosition(axis: 'x' | 'y' | 'z', value: number) {
@@ -1155,9 +1921,13 @@ export class EditorEngine {
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('wheel', this.onWheel);
     this.resizeObserver.disconnect();
     this.renderer.setAnimationLoop(null);
+    this.measureKinds.clear();
+    this.refreshMeasures();
+    this.labelRenderer.domElement.remove();
     this.transformControls.detach();
     this.transformControls.dispose();
     this.orbit.dispose();

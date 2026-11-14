@@ -116,7 +116,11 @@ export function EditorPage() {
         </DialogContent>
       </Dialog>
 
-      <BudgetDialog open={budgetOpen} onClose={() => setBudgetOpen(false)} />
+      <BudgetDialog
+        open={budgetOpen}
+        onClose={() => setBudgetOpen(false)}
+        onOpenPrices={() => setPricesOpen(true)}
+      />
       <PricesDialog open={pricesOpen} onClose={() => setPricesOpen(false)} />
     </>
   );

@@ -46,3 +46,18 @@ export function textureRepeatFor(
   const vertical = Math.max(size.y, tile);
   return [Math.max(1, horizontal / tile), Math.max(1, vertical / tile)];
 }
+
+/**
+ * Repeat para superficies horizontales (losa de piso, techo): usa el ancho
+ * (X) y el fondo (Z), coherente con las UVs planares en 'xz'.
+ */
+export function horizontalRepeatFor(
+  mesh: THREE.Mesh,
+  tile = TEXTURE_TILE_METERS,
+): [number, number] {
+  const geom = mesh.geometry as THREE.BufferGeometry;
+  if (!geom.boundingBox) geom.computeBoundingBox();
+  const size = new THREE.Vector3();
+  geom.boundingBox!.getSize(size);
+  return [Math.max(1, size.x / tile), Math.max(1, size.z / tile)];
+}

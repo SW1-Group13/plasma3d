@@ -9,8 +9,8 @@ from pygltflib import GLTF2
 
 
 GEMINI_API_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/"
-    "gemini-2.0-flash:generateContent"
+    "https://aiplatform.googleapis.com/v1/projects/95690221859/locations/global/"
+    "publishers/google/models/gemini-3-flash-preview:generateContent"
 )
 
 
@@ -307,12 +307,12 @@ def call_gemini_with_images(parts):
     params = {"key": GEMINI_API_KEY}
 
     payload = {
-        "contents": [{"parts": parts}],
+        "contents": [{"role": "user", "parts": parts}],
         "generationConfig": {
             "temperature": 0.4,
             "topK": 32,
             "topP": 1,
-            "maxOutputTokens": 4096
+            "maxOutputTokens": 8192
         }
     }
     
@@ -379,7 +379,7 @@ def call_gemini(prompt):
     params = {"key": GEMINI_API_KEY}
 
     payload = {
-        "contents": [{"parts": [{"text": prompt}]}]
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}]
     }
     
     try:
@@ -465,52 +465,38 @@ def analizar_modelo_glb(archivo_glb):
         )
 
         # Agrupar elementos por tipo
-        elementos_por_tipo = {
-            'muros': [],
-            'puertas': [],
-            'ventanas': []
-        }
-        
+        # Orden importante: piso/techo antes que muros ('wall_gable' es muro)
+        palabras_por_tipo = [
+            ('pisos', ('floor', 'piso', 'losa')),
+            ('techos', ('roof', 'techo')),
+            ('muros', ('wall', 'muro')),
+            ('puertas', ('door', 'puerta')),
+            ('ventanas', ('window', 'ventana')),
+        ]
+        elementos_por_tipo = {tipo: [] for tipo, _ in palabras_por_tipo}
+
         for elem in info_glb['elementos_estructurales']:
             nombre = elem['nombre'].lower()
-            if 'wall' in nombre or 'muro' in nombre:
-                elementos_por_tipo['muros'].append(elem)
-            elif 'door' in nombre or 'puerta' in nombre:
-                elementos_por_tipo['puertas'].append(elem)
-            elif 'window' in nombre or 'ventana' in nombre:
-                elementos_por_tipo['ventanas'].append(elem)
-        
-        # Crear resumen agrupado
-        muros_texturas = list(set([
-            e['textura_idx'] for e in elementos_por_tipo['muros']
-            if e['textura_idx'] is not None
-        ]))
-        puertas_texturas = list(set([
-            e['textura_idx'] for e in elementos_por_tipo['puertas']
-            if e['textura_idx'] is not None
-        ]))
-        ventanas_texturas = list(set([
-            e['textura_idx'] for e in elementos_por_tipo['ventanas']
-            if e['textura_idx'] is not None
-        ]))
+            for tipo, palabras in palabras_por_tipo:
+                if any(p in nombre for p in palabras):
+                    elementos_por_tipo[tipo].append(elem)
+                    break
 
-        resumen_elementos = {
-            'muros': {
-                'cantidad': len(elementos_por_tipo['muros']),
-                'texturas_usadas': muros_texturas,
-                'elementos': elementos_por_tipo['muros'][:3]
-            },
-            'puertas': {
-                'cantidad': len(elementos_por_tipo['puertas']),
-                'texturas_usadas': puertas_texturas,
-                'elementos': elementos_por_tipo['puertas'][:3]
-            },
-            'ventanas': {
-                'cantidad': len(elementos_por_tipo['ventanas']),
-                'texturas_usadas': ventanas_texturas,
-                'elementos': elementos_por_tipo['ventanas'][:3]
+        # Crear resumen agrupado
+        resumen_elementos = {}
+        for tipo, elementos in elementos_por_tipo.items():
+            resumen_elementos[tipo] = {
+                'cantidad': len(elementos),
+                'texturas_usadas': list(set(
+                    e['textura_idx'] for e in elementos
+                    if e['textura_idx'] is not None
+                )),
+                'elementos': elementos[:3]
             }
-        }
+
+        def _tex(tipo):
+            usadas = resumen_elementos[tipo]['texturas_usadas']
+            return usadas[0] if usadas else 'N/A'
         
         # Convertir la información a JSON formateado
         info_json = json.dumps(resumen_elementos, indent=2, ensure_ascii=False)
@@ -526,9 +512,12 @@ RESUMEN DEL MODELO:
 {}
 
 RELACIÓN ELEMENTO → TEXTURA:
-- MUROS (wall_internal): {} elementos usando textura índice {}
+- MUROS (wall): {} elementos usando textura índice {}
 - PUERTAS (door): {} elementos usando textura índice {}
 - VENTANAS (window): {} elementos usando textura índice {}
+- PISOS / LOSA (floor): {} elementos usando textura índice {}
+- TECHOS (roof): {} elementos usando textura índice {}
+Si un tipo tiene 0 elementos, no lo incluyas en la respuesta.
 
 INSTRUCCIONES:
 1. Analiza visualmente cada textura enviada
@@ -541,7 +530,7 @@ Responde ÚNICAMENTE en formato JSON válido (sin markdown, sin bloques de códi
 {{
   "elementos_bien_hechos": [
     {{
-      "tipo": "muros/puertas/ventanas",
+      "tipo": "muros/puertas/ventanas/pisos/techos",
       "cantidad": 0,
       "material_usado": "nombre del material identificado en la imagen",
       "por_que_esta_bien": "explicación breve de por qué es apropiado"
@@ -549,7 +538,7 @@ Responde ÚNICAMENTE en formato JSON válido (sin markdown, sin bloques de códi
   ],
   "elementos_mal_hechos": [
     {{
-      "tipo": "muros/puertas/ventanas",
+      "tipo": "muros/puertas/ventanas/pisos/techos",
       "cantidad": 0,
       "material_usado": "nombre del material identificado en la imagen",
       "problema": "explicación del problema estructural o funcional",
@@ -558,7 +547,7 @@ Responde ÚNICAMENTE en formato JSON válido (sin markdown, sin bloques de códi
   ],
   "recomendaciones": [
     {{
-      "para_elemento": "muros/puertas/ventanas",
+      "para_elemento": "muros/puertas/ventanas/pisos/techos",
       "cantidad_afectada": 0,
       "cambiar_de": "material actual visto",
       "cambiar_a": "material recomendado",
@@ -578,16 +567,17 @@ CRITERIOS DE EVALUACIÓN:
 - MUROS: Deben ser materiales estructurales (hormigón, ladrillo, bloque). NO madera decorativa o vidrio.
 - PUERTAS: Madera maciza, acero, compuestos resistentes. NO materiales estructurales pesados ni vidrio frágil.
 - VENTANAS: Vidrio templado/laminado transparente. NO materiales opacos ni estructurales.
+- PISOS / LOSA: Hormigón/cemento, cerámica o porcelanato sobre contrapiso; resistentes al desgaste y la humedad. NO vidrio ni madera sin tratar en zonas húmedas.
+- TECHOS: Losa de hormigón, teja cerámica, calamina o paneles con impermeabilización; deben resistir lluvia y peso. NO vidrio común ni materiales sin impermeabilizar.
 """.format(
             info_json,
             len(info_glb['texturas']),
             ', '.join([f"Imagen {i+1} (textura índice {t['indice']})" for i, t in enumerate(info_glb['texturas'])]),
-            resumen_elementos['muros']['cantidad'],
-            resumen_elementos['muros']['texturas_usadas'][0] if resumen_elementos['muros']['texturas_usadas'] else 'N/A',
-            resumen_elementos['puertas']['cantidad'],
-            resumen_elementos['puertas']['texturas_usadas'][0] if resumen_elementos['puertas']['texturas_usadas'] else 'N/A',
-            resumen_elementos['ventanas']['cantidad'],
-            resumen_elementos['ventanas']['texturas_usadas'][0] if resumen_elementos['ventanas']['texturas_usadas'] else 'N/A'
+            resumen_elementos['muros']['cantidad'], _tex('muros'),
+            resumen_elementos['puertas']['cantidad'], _tex('puertas'),
+            resumen_elementos['ventanas']['cantidad'], _tex('ventanas'),
+            resumen_elementos['pisos']['cantidad'], _tex('pisos'),
+            resumen_elementos['techos']['cantidad'], _tex('techos'),
         )
         
         # Preparar el payload multimodal con imágenes

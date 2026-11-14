@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useModelStore } from '@/entities/model3D/store';
+import type { RoofType } from '@/entities/model3D/api';
 import { useSession } from '@/entities/session/store';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { BackgroundTask } from '@/shared/ui/loader';
@@ -34,6 +35,8 @@ export function DashboardPage() {
   const uploadGlb = useModelStore((s) => s.saveGlb);
   const createEmpty = useModelStore((s) => s.createEmpty);
   const removeModel = useModelStore((s) => s.remove);
+  const regenerateModel = useModelStore((s) => s.regenerate);
+  const [regenId, setRegenId] = useState<number | null>(null);
 
   const planInputRef = useRef<HTMLInputElement>(null);
   const glbInputRef = useRef<HTMLInputElement>(null);
@@ -42,6 +45,7 @@ export function DashboardPage() {
   const [creating, setCreating] = useState(false);
   const [task, setTask] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [roofType, setRoofType] = useState<RoofType>('plano');
 
   useEffect(() => {
     fetchModels().catch(() => toast.error('Error', 'No se pudieron cargar los modelos.'));
@@ -53,7 +57,7 @@ export function DashboardPage() {
     if (!file || !user) return;
     setTask('Subiendo y procesando plano...');
     try {
-      await uploadPlan(file, user.id);
+      await uploadPlan(file, user.id, roofType);
       toast.success('Exito', 'Modelo subido con exito.');
     } catch (error) {
       toast.error('Error', serverMessage(error, 'No se pudo subir el modelo.'));
@@ -106,6 +110,21 @@ export function DashboardPage() {
     }
   }
 
+  async function onConfirmRegenerate() {
+    if (regenId == null) return;
+    const id = regenId;
+    setRegenId(null);
+    setTask('Regenerando modelo 3D...');
+    try {
+      await regenerateModel(id);
+      toast.success('Listo', 'Modelo regenerado con ventanas y puertas mejoradas.');
+    } catch (error) {
+      toast.error('Error', serverMessage(error, 'No se pudo regenerar el modelo.'));
+    } finally {
+      setTask(null);
+    }
+  }
+
   function openModel(model: (typeof list)[number]) {
     localStorage.setItem('modelo', JSON.stringify(model));
     navigate('/private/editor');
@@ -121,6 +140,20 @@ export function DashboardPage() {
         <div className="flex flex-wrap gap-2">
           <input ref={planInputRef} type="file" accept="image/*" hidden onChange={onPlanSelected} />
           <input ref={glbInputRef} type="file" accept=".glb,.gltf" hidden onChange={onGlbSelected} />
+          <label className="flex items-center gap-2 text-sm text-muted">
+            Techo
+            <select
+              value={roofType}
+              onChange={(e) => setRoofType(e.target.value as RoofType)}
+              disabled={isLoading}
+              className="h-9 rounded-md border border-border bg-surface px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              aria-label="Tipo de techo al subir un plano"
+            >
+              <option value="plano">Plano</option>
+              <option value="dos_aguas">Dos aguas</option>
+              <option value="ninguno">Sin techo</option>
+            </select>
+          </label>
           <Button variant="outline" onClick={() => planInputRef.current?.click()} disabled={isLoading}>
             <UploadIcon width={16} height={16} /> Subir plano
           </Button>
@@ -201,6 +234,16 @@ export function DashboardPage() {
                     <Button size="sm" onClick={() => openModel(model)}>
                       Abrir editor
                     </Button>
+                    {model.detections_json && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setRegenId(model.id)}
+                        title="Reconstruir el 3D con ventanas (vidrio, marco, dintel) y puertas mejoradas"
+                      >
+                        Regenerar 3D
+                      </Button>
+                    )}
                     <Button
                       size="sm"
                       variant="ghost"
@@ -230,6 +273,27 @@ export function DashboardPage() {
           <img src={preview} alt="Vista previa del plano" className="max-h-[85vh] max-w-[90vw] rounded-xl border border-border" />
         </div>
       )}
+
+      <Dialog open={regenId != null} onOpenChange={(v) => !v && setRegenId(null)}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Regenerar modelo 3D</DialogTitle>
+            <DialogDescription>
+              Se reconstruirá el modelo #{regenId} desde el plano original, con ventanas con vidrio, marco y dintel, y
+              puertas de 2.10 m encajadas en su muro. Se conserva el tipo de techo.
+              <strong className="mt-2 block text-warning">
+                Se perderán los cambios que hiciste a mano en el editor para este plano.
+              </strong>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRegenId(null)}>
+              Cancelar
+            </Button>
+            <Button onClick={onConfirmRegenerate}>Regenerar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={deleteId != null} onOpenChange={(v) => !v && setDeleteId(null)}>
         <DialogContent className="max-w-sm">

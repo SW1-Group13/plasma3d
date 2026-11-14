@@ -2,6 +2,61 @@ import { fileURLToPath, URL } from 'node:url';
 import react from '@vitejs/plugin-react';
 import { defineConfig, loadEnv } from 'vite';
 import tailwindcss from '@tailwindcss/vite';
+import { VitePWA } from 'vite-plugin-pwa';
+
+/**
+ * PWA: la web se puede instalar en el celular ("Agregar a pantalla de inicio").
+ * El service worker cachea solo la app (JS/CSS/íconos/texturas); los datos de
+ * /api nunca se cachean y los modelos .glb van siempre a la red primero.
+ */
+const pwa = VitePWA({
+  registerType: 'prompt',
+  injectRegister: false, // se registra en src/app/pwa.ts (con aviso de actualización)
+  includeAssets: ['favicon/favicon.svg', 'pwa/apple-touch-icon.png'],
+  manifest: {
+    name: 'Plasma3D – De planos 2D a modelos 3D',
+    short_name: 'Plasma3D',
+    description: 'Convierte planos 2D en modelos 3D, mide, presupuesta y analiza con IA.',
+    lang: 'es',
+    start_url: '/private/dashboard',
+    scope: '/',
+    display: 'standalone',
+    orientation: 'any',
+    background_color: '#0a0e1a',
+    theme_color: '#0a0e1a',
+    icons: [
+      { src: '/pwa/pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+      { src: '/pwa/pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+      { src: '/pwa/maskable-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+    ],
+  },
+  workbox: {
+    globPatterns: ['**/*.{js,css,html,svg,woff2}', 'pwa/*.png'],
+    maximumFileSizeToCacheInBytes: 4 * 1024 * 1024, // el chunk de three.js es grande
+    navigateFallback: '/index.html',
+    navigateFallbackDenylist: [/^\/api/, /^\/media/, /^\/static/, /^\/ws/, /^\/admin/],
+    runtimeCaching: [
+      {
+        // Texturas: casi no cambian
+        urlPattern: ({ url }) => url.pathname.startsWith('/static/textures/'),
+        handler: 'CacheFirst',
+        options: { cacheName: 'texturas', expiration: { maxEntries: 60, maxAgeSeconds: 30 * 24 * 3600 } },
+      },
+      {
+        // Modelos 3D: siempre la versión del servidor; sin red, la última vista
+        urlPattern: ({ url }) => url.pathname.startsWith('/media/') && url.pathname.endsWith('.glb'),
+        handler: 'NetworkFirst',
+        options: { cacheName: 'modelos-glb', expiration: { maxEntries: 30 } },
+      },
+    ],
+  },
+  // También en `npm run dev`, para poder instalarla al probar por un túnel HTTPS.
+  devOptions: {
+    enabled: true,
+    type: 'module',
+    navigateFallbackAllowlist: [/^\/(?!api|media|static|ws|admin).*/],
+  },
+});
 
 // El .env vive en la raiz del proyecto (un nivel arriba de plasma3d_web)
 const envDir = fileURLToPath(new URL('..', import.meta.url));
@@ -22,7 +77,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir,
-    plugins: [react(), tailwindcss()],
+    plugins: [react(), tailwindcss(), pwa],
     define: {
       global: 'globalThis',
     },
@@ -34,6 +89,14 @@ export default defineConfig(({ mode }) => {
     server: {
       host: true,
       port: frontendPort,
+      // Celular por IP de la LAN (IPs se permiten siempre) o por un túnel HTTPS
+      // (cloudflared / ngrok) para poder instalar la PWA. Más hosts: VITE_ALLOWED_HOSTS=a.com,b.com
+      allowedHosts: [
+        '.trycloudflare.com',
+        '.ngrok-free.app',
+        '.ngrok.app',
+        ...(env.VITE_ALLOWED_HOSTS ? env.VITE_ALLOWED_HOSTS.split(',').map((h) => h.trim()) : []),
+      ],
       watch: {
         // Polling: necesario para HMR dentro de Docker en Windows/macOS.
         usePolling: true,
@@ -44,6 +107,7 @@ export default defineConfig(({ mode }) => {
     preview: {
       host: true,
       port: frontendPort,
+      allowedHosts: ['.trycloudflare.com', '.ngrok-free.app', '.ngrok.app'],
       proxy,
     },
     build: {

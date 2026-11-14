@@ -20,7 +20,7 @@ export function PublicLayout() {
           <div className="flex items-center gap-1 text-sm">
             <Link
               to="/login"
-              className="rounded-md px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              className="rounded-md px-2 py-2 text-muted sm:px-3 transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
             >
               Iniciar sesion
             </Link>

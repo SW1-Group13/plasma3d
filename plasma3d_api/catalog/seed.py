@@ -25,7 +25,28 @@ DEFAULT_LAYERS = [
         'descripcion': 'Vanos de ventana',
         'orden': 2,
     },
+    {
+        'nombre': 'Pisos',
+        'color': '#d6d3cc',
+        'grosor_linea': 0.15,
+        'tipo_linea': 'continuous',
+        'descripcion': 'Losa de piso',
+        'orden': 3,
+    },
+    {
+        'nombre': 'Techos',
+        'color': '#b5623c',
+        'grosor_linea': 0.15,
+        'tipo_linea': 'continuous',
+        'descripcion': 'Cubierta / techo',
+        'orden': 4,
+    },
 ]
+
+# Agregados despues de la primera version: se crean tambien en bases de
+# datos que ya tenian capas/materiales.
+ADDED_LAYERS = ('Pisos', 'Techos')
+ADDED_MATERIALS = ('Ceramica piso',)
 
 DEFAULT_MATERIALS = [
     {'nombre': 'Ladrillo rojo', 'categoria': 'Mampostería', 'textura_path': '/static/textures/ladrillo.jpg', 'color_difuso': '#A0522D'},
@@ -35,6 +56,7 @@ DEFAULT_MATERIALS = [
     {'nombre': 'Yeso blanco', 'categoria': 'Revestimiento', 'color_difuso': '#F3F1EC', 'rugosidad': 0.95},
     {'nombre': 'Estuco', 'categoria': 'Revestimiento', 'color_difuso': '#E4DCCB'},
     {'nombre': 'Cemento', 'categoria': 'Revestimiento', 'textura_path': '/static/textures/concreto.png', 'color_difuso': '#C9C9C4'},
+    {'nombre': 'Ceramica piso', 'categoria': 'Piso', 'textura_path': '/static/textures/textura_suelo.jpg', 'color_difuso': '#D6D3CC', 'rugosidad': 0.6},
     {'nombre': 'Roble', 'categoria': 'Madera', 'textura_path': '/static/textures/madera-lisa.jpg', 'color_difuso': '#B98A54'},
     {'nombre': 'Pino', 'categoria': 'Madera', 'textura_path': '/static/textures/puerta-madera.jpg', 'color_difuso': '#C9A06A'},
     {'nombre': 'Nogal', 'categoria': 'Madera', 'textura_path': '/static/textures/tablas-desgastadas.jpg', 'color_difuso': '#5C4033'},
@@ -54,6 +76,12 @@ DEFAULT_MATERIALS = [
 
 def seed_layers(Layer):
     if Layer.objects.exists():
+        for data in DEFAULT_LAYERS:
+            if data['nombre'] in ADDED_LAYERS:
+                Layer.objects.get_or_create(
+                    nombre=data['nombre'],
+                    defaults={k: v for k, v in data.items() if k != 'nombre'},
+                )
         return
     for data in DEFAULT_LAYERS:
         Layer.objects.create(**data)
@@ -61,6 +89,10 @@ def seed_layers(Layer):
 
 def seed_materials(Material):
     if Material.objects.exists():
+        for data in DEFAULT_MATERIALS:
+            if (data['nombre'] in ADDED_MATERIALS
+                    and not Material.objects.filter(nombre=data['nombre']).exists()):
+                Material.objects.create(**data)
         return
     for data in DEFAULT_MATERIALS:
         Material.objects.create(**data)
