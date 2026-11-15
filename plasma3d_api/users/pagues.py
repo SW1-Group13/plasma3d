@@ -134,7 +134,8 @@ def create_payment_intent(request):
         intent = stripe.PaymentIntent.create(
             amount=centavos,
             currency=MONEDA,
-            payment_method_types=['card'],
+            # Stripe administra los métodos de pago desde el Dashboard.
+            # payment_method_types=['card'],  # Ya no es compatible con la API configurada.
             description='Plasma3D - {}'.format(plan),
             receipt_email=user.email or None,
             metadata={'usuario_id': str(user.id), 'plan': plan},
