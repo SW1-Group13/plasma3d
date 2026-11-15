@@ -50,7 +50,7 @@ SLAB_THICKNESS_M = 0.15
 ROOF_THICKNESS_M = 0.12
 ROOF_PITCH_DEG = 25.0
 ROOF_OVERHANG_M = 0.30  # Alero
-FOOTPRINT_CLOSE_M = 0.30  # Cierra pequeñas uniones abiertas entre muros
+FOOTPRINT_CLOSE_M = 0.60  # Cierra uniones abiertas entre muros (piso/techo)
 ROOF_TYPES = ("ninguno", "plano", "dos_aguas")
 
 
@@ -60,6 +60,10 @@ def _pixel_to_meter_from_det(det: dict, fallback=0.01):
 
     Usa averageDoor si existe (asumiendo 0.90 m de ancho de puerta).
     """
+    # Escala decidida por plans/pipeline.py (ancho real, puertas, ...).
+    mpp = det.get("metersPerPixel")
+    if mpp:
+        return float(mpp)
     avg = float(det.get("averageDoor") or 0.0)
     return (0.90 / avg) if avg > 4 else fallback
 
@@ -140,6 +144,29 @@ def _is_external_wall(roi, px2m, img_width, img_height):
     on_bottom = max(y1_m, y2_m) >= height_m - margin
 
     return on_left or on_right or on_top or on_bottom
+
+
+def _classify_external(walls, openings=()):
+    """
+    Marca como externo cada muro que toca el contorno exterior del edificio
+    (unión de muros y vanos, con los huecos interiores rellenos).
+    """
+    try:
+        polys = [w[0] for w in walls] + list(openings)
+        shape = unary_union([p.buffer(0.15, join_style=2) for p in polys])
+        geoms = list(shape.geoms) if isinstance(shape, MultiPolygon) else [shape]
+        rings = [Polygon(g.exterior).buffer(-0.15, join_style=2).exterior for g in geoms]
+        out = []
+        for poly, _, idx in walls:
+            thick = min(poly.bounds[2] - poly.bounds[0], poly.bounds[3] - poly.bounds[1])
+            tol = max(0.05, thick * 0.75)
+            # Debe correr A LO LARGO del contorno (un tabique que solo lo
+            # toca en una punta sigue siendo interno).
+            ext = any(poly.intersection(r.buffer(tol)).area >= 0.5 * poly.area for r in rings)
+            out.append((poly, ext, idx))
+        return out
+    except Exception:
+        return walls
 
 
 def _opening_polygon_from_roi(p, px2m):
@@ -345,6 +372,8 @@ def _snap_opening(obox, wall_boxes):
 
     hosts = []
     for w in wall_boxes:
+        if w.area < 0.97 * box(*w.bounds).area:
+            continue  # muro diagonal: su caja no es el muro
         wa0, wa1, wc0, wc1 = span(w)
         if (wa1 - wa0) < (wc1 - wc0):
             continue  # perpendicular
@@ -486,6 +515,63 @@ def _band(poly, z0, z1, color=COLOR_WALL):
     return _colorize(m, color)
 
 
+OPENING_CUT_REACH_M = 0.35  # el vano corta muros paralelos hasta esto de su eje
+LOOSE_PIECE_M = 0.05  # dintel/pilar a más de esto de su muro: pieza suelta
+
+
+def _pier_gap(pier, snapped):
+    """Largo del pilar a lo largo del muro (lo que separa a los dos vanos)."""
+    if not snapped:
+        x0, y0, x1, y1 = pier.bounds
+        return min(x1 - x0, y1 - y0)
+    horiz = min(snapped, key=lambda s_: s_[1].distance(pier))[2]
+    x0, y0, x1, y1 = pier.bounds
+    return (x1 - x0) if horiz else (y1 - y0)
+
+
+def _place_piece(wall_boxes, piece, horiz):
+    """
+    Ubica una pieza de muro de un vano (dintel, antepecho, pilar) en SU muro:
+    el muro PARALELO (misma orientación que el vano) cuya franja de grosor
+    contiene la pieza. La pieza toma el eje y grosor de ese muro, así no
+    sobresale como una lámina.
+
+    Si ningún muro paralelo la contiene, la pieza queda como estaba (nunca
+    se arma con un muro perpendicular ni se descarta: eso dejaba la puerta
+    sin dintel o una placa atravesada).
+
+    Returns: (índice del muro anfitrión, polígono de la pieza)
+    """
+    px0, py0, px1, py1 = piece.bounds
+    pcx, pcy = (px0 + px1) / 2.0, (py0 + py1) / 2.0
+    best, best_d = None, None
+    for i, w in enumerate(wall_boxes):
+        hx0, hy0, hx1, hy1 = w.bounds
+        if w.area < 0.97 * box(hx0, hy0, hx1, hy1).area:
+            continue  # diagonal
+        w_h = (hx1 - hx0) >= (hy1 - hy0)
+        if w_h != horiz:
+            continue  # perpendicular: nunca
+        if horiz:
+            if not (hy0 - 0.05 <= pcy <= hy1 + 0.05):
+                continue
+            along = max(hx0 - px1, px0 - hx1, 0.0)
+        else:
+            if not (hx0 - 0.05 <= pcx <= hx1 + 0.05):
+                continue
+            along = max(hy0 - py1, py0 - hy1, 0.0)
+        if along > 0.30:
+            continue
+        if best is None or along < best_d:
+            best, best_d = i, along
+    if best is None:
+        host = min(range(len(wall_boxes)), key=lambda i: wall_boxes[i].distance(piece))
+        return host, piece
+    hx0, hy0, hx1, hy1 = wall_boxes[best].bounds
+    shaped = box(px0, hy0, px1, hy1) if horiz else box(hx0, py0, hx1, py1)
+    return best, shaped
+
+
 def _opening_fillers(kind, poly):
     """Muro que queda por encima/debajo del vano (mismo color que el muro)."""
     if kind == "window":
@@ -516,22 +602,38 @@ def _footprint_polygon(wall_polys, opening_polys):
     union = unary_union(list(wall_polys) + list(opening_polys)).buffer(0)
     if union.is_empty:
         return None
-    closed = union.buffer(FOOTPRINT_CLOSE_M, join_style=2).buffer(
-        -FOOTPRINT_CLOSE_M, join_style=2
-    )
-    main = _largest_polygon(closed)
-    hull = union.convex_hull
-    if main is None:
-        return hull if isinstance(hull, Polygon) else None
-
-    footprint = Polygon(main.exterior).simplify(
-        0.05, preserve_topology=True
-    ).buffer(0)
-    # Si el relleno es mucho menor que la envolvente, los muros no cierran
-    # (plano abierto/incompleto): usar la envolvente convexa.
-    if footprint.is_empty or footprint.area < 0.5 * hull.area:
-        return hull if isinstance(hull, Polygon) else None
-    return footprint
+    total_len = sum(max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1]) for p in wall_polys)
+    # Cierre progresivo: la menor distancia que deja una sola forma que
+    # contiene casi todos los muros. Así una casa en L queda en L (la
+    # envolvente convexa agregaba un triángulo fuera de la casa).
+    candidates = []
+    # Nunca más allá de los muros reales: el cierre con esquinas en punta
+    # (mitre) dejaba "pinchos" de varios metros en esquinas agudas que
+    # llevaban el piso y muros inventados hasta la terraza.
+    hull = union.convex_hull.buffer(0.05)
+    for close in (FOOTPRINT_CLOSE_M, 1.2, 2.0, 3.0):
+        closed = union.buffer(close, join_style=2, mitre_limit=1.5).buffer(-close, join_style=2, mitre_limit=1.5)
+        main = _largest_polygon(closed.intersection(hull))
+        if main is None:
+            continue
+        footprint = Polygon(main.exterior).simplify(0.05, preserve_topology=True).buffer(0)
+        inside = sum(
+            max(p.bounds[2] - p.bounds[0], p.bounds[3] - p.bounds[1])
+            for p in wall_polys if footprint.buffer(0.05).contains(p.representative_point())
+        )
+        candidates.append((footprint, inside))
+    if candidates:
+        # Área "estable" (cierre máximo): el contorno elegido debe cubrir casi
+        # toda la casa, no solo la parte que ya cerraba (muros cortados).
+        stable = max(fp.area for fp, _ in candidates)
+        for footprint, inside in candidates:
+            if footprint.area >= 0.9 * stable and (not total_len or inside >= 0.85 * total_len):
+                return footprint
+    # Último recurso: la forma más grande cerrada (nunca la envolvente
+    # convexa, que se sale de la casa).
+    closed = union.buffer(3.0, join_style=2, mitre_limit=1.5).buffer(-3.0, join_style=2, mitre_limit=1.5)
+    main = _largest_polygon(closed.intersection(union.convex_hull.buffer(0.05)))
+    return Polygon(main.exterior).buffer(0) if main is not None else None
 
 
 def _extrude_mapped(poly, z_of_xy, thickness_of_xy, color):
@@ -655,7 +757,7 @@ def _roof_meshes(footprint, roof_type):
 
 
 def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
-                     roof_type="plano"):
+                     roof_type="plano", fill_gaps=True, drawn=None, control_out=None):
     """
     Construir escena 3D completa desde detecciones.
 
@@ -663,6 +765,10 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
         det_json: Diccionario con datos de detección
         min_score: Score mínimo para incluir detecciones
         cut_openings: Si se deben recortar vanos en muros
+        fill_gaps: True rellena huecos entre muros sin puerta/ventana
+            detectada; False los deja como paso (con dintel)
+        drawn: comprobador de la imagen del plano (walls_fix.make_ink_checker):
+            un hueco solo se rellena si ahí hay pared dibujada (igual al plano)
 
     Returns:
         trimesh.Scene o None
@@ -673,6 +779,7 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
 
     # Lista de tuplas (polygon, is_external, wall_index)
     walls = []
+    diag_walls = []  # muros diagonales/curvos (polígonos girados)
     opening_polys = []
     raw_openings = []  # (kind, caja detectada en metros)
     doors = []
@@ -682,7 +789,17 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
     for roi, name, sc in _iter_rois(det_json):
         if sc < min_score:
             continue
-        if name == "wall":
+        if name == "wall" and roi.get('line'):
+            # Muro diagonal (o tramo de muro curvo): rectángulo girado a lo
+            # largo de su eje. No pasa por fix_walls (que es solo H/V).
+            lx1, ly1, lx2, ly2 = (float(v) * px2m for v in roi['line'])
+            thick_px = float(roi.get('thickness') or 0)
+            thick_m = max(0.08, thick_px * px2m) if thick_px else WALL_THICKNESS_M
+            poly = LineString([(lx1, ly1), (lx2, ly2)]).buffer(thick_m / 2.0, cap_style=2, join_style=2)
+            if not poly.is_empty:
+                diag_walls.append((poly, False, 9000 + wall_index))
+                wall_index += 1
+        elif name == "wall":
             # Convertir ROI a rectángulo en metros
             x1_m = roi['x1'] * px2m
             y1_m = roi['y1'] * px2m
@@ -708,8 +825,84 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
                 max(roi['x1'], roi['x2']) * px2m, max(roi['y1'], roi['y2']) * px2m,
             )))
 
-    if not walls:
+    if not walls and not diag_walls:
         return None
+
+    # Muros continuos: une tramos, cierra esquinas y quita duplicados. Los
+    # espacios con una puerta/ventana detectada nunca se rellenan.
+    from .walls_fix import complete_perimeter, fix_walls
+    if walls:
+        walls, passages = fix_walls(
+            walls, [o for _, o in raw_openings], fill_gaps=fill_gaps, drawn=drawn
+        )
+    else:
+        passages = []
+    # Grosor y posición reales de cada muro, medidos en el dibujo (paredes
+    # exteriores rayadas: sin fachadas escalonadas ni ventanas corridas).
+    if walls and not (det_json.get('quality') or {}).get('boceto') and             __import__('os').environ.get('PLAN_FIT_THICKNESS', '1') != '0':
+        try:
+            from .walls_fix import fit_wall_thickness
+            walls, _n_fit = fit_wall_thickness(walls, drawn)
+            det_json.setdefault('quality', {})['muros_ajustados'] = _n_fit
+        except Exception as exc:  # nunca romper la generación por esto
+            print('[fit_wall_thickness] {}'.format(exc))
+    # Los diagonales entran después (el contorno los tiene en cuenta: así no
+    # se "inventa" una esquina recta donde hay una ochava).
+    walls = list(walls) + diag_walls
+    # Borde exterior cerrado aunque un mueble tape la pared en el dibujo.
+    walls, _ = complete_perimeter(walls, [o for _, o in raw_openings], passages)
+    # Uniones prolijas: sin picos, rendijas, escalones ni restos sueltos.
+    import os
+    from .walls_fix import clean_joints, joint_report
+    sketch = bool((det_json.get('quality') or {}).get('boceto'))
+    open_polys = [o for _, o in raw_openings] + list(passages)
+    if os.environ.get('PLAN_CLEAN_JOINTS', '1') != '0':
+        try:
+            walls = clean_joints(walls, open_polys, sketch=sketch, drawn=drawn)
+        except Exception as exc:  # nunca romper la generación por esto
+            print('[clean_joints] {}'.format(exc))
+    # Fidelidad al plano: recorta lo que no está dibujado y agrega paredes
+    # dibujadas que faltaban (necesita la imagen: drawn).
+    if os.environ.get('PLAN_FIDELITY', '1') != '0':
+        try:
+            from .walls_fix import fidelity_check
+            walls, fid = fidelity_check(walls, open_polys, drawn, sketch=sketch)
+            if fid:
+                det_json.setdefault('quality', {})['fidelidad'] = fid
+            # segunda pasada: los muros agregados o recortados también quedan prolijos
+            walls = clean_joints(walls, open_polys, sketch=sketch, drawn=drawn)
+        except Exception as exc:  # nunca romper la generación por esto
+            print('[fidelity_check] {}'.format(exc))
+    # Regla final: lo que no está dibujado no va (copias paralelas, tramos
+    # sin tinta, contornos inventados largos). Después, uniones prolijas.
+    if os.environ.get('PLAN_INK_AUDIT', '1') != '0':
+        try:
+            from .walls_fix import ink_audit
+            walls, aud = ink_audit(walls, open_polys, drawn)
+            if aud:
+                det_json.setdefault('quality', {})['auditoria'] = aud
+                walls = clean_joints(walls, open_polys, sketch=sketch, drawn=drawn)
+        except Exception as exc:  # nunca romper la generación por esto
+            print('[ink_audit] {}'.format(exc))
+    # El plano manda: comparación píxel a píxel (sobrantes, rendijas,
+    # faltantes) + imagen de control.
+    if os.environ.get('PLAN_PIXEL_FIDELITY', '1') != '0':
+        try:
+            from .walls_fix import pixel_fidelity
+            walls, pxr, control = pixel_fidelity(walls, open_polys, drawn, sketch=sketch)
+            if pxr:
+                det_json.setdefault('quality', {})['fidelidad_px'] = pxr
+            if control is not None and control_out is not None:
+                control_out['image'] = control
+        except Exception as exc:  # nunca romper la generación por esto
+            print('[pixel_fidelity] {}'.format(exc))
+    try:
+        det_json.setdefault('quality', {})['uniones'] = joint_report(walls, open_polys, sketch=sketch)
+    except Exception:
+        pass
+    # Exterior = toca el contorno del edificio (no el borde de la imagen:
+    # con márgenes en el plano todos quedaban como "internos").
+    walls = _classify_external(walls, [o for _, o in raw_openings])
 
     # Vanos encajados en su muro: espesor real, centrados y sin huecos laterales
     wall_boxes = [w[0] for w in walls]
@@ -718,10 +911,37 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
     snapped = [(kind,) + _snap_opening(obox, wall_boxes) for kind, obox in raw_openings]
 
     # Pilares de muro entre vanos vecinos (ventana doble, puertas juntas)
+    loose = 0  # piezas que no encontraron un muro paralelo (quedan como estaban)
+
+    def _orient_of(poly):
+        # orientación del vano más cercano (un pilar corto no la dice solo)
+        if not snapped:
+            x0, y0, x1, y1 = poly.bounds
+            return (x1 - x0) >= (y1 - y0)
+        return min(snapped, key=lambda s_: s_[1].distance(poly))[2]
+
     for pier in _gap_piers(snapped):
-        host = min(range(len(wall_boxes)), key=lambda i: wall_boxes[i].distance(pier))
-        fillers.setdefault(host, []).append(_band(pier, 0.0, WALL_HEIGHT_M))
-        opening_polys.append(pier)  # para el contorno del piso
+        # Pilar angosto (<= 15 cm) entre dos vanos: siempre (si no, queda una
+        # ranura de piso a techo). Más ancho: solo si el plano tiene pared ahí.
+        narrow = _pier_gap(pier, snapped) <= 0.15
+        if not narrow and drawn is not None and drawn(pier) is False:
+            continue  # entre esos vanos el plano no tiene pared: no se inventa
+        host, shaped = _place_piece(wall_boxes, pier, _orient_of(pier))
+        if shaped is pier:
+            loose += 1
+        fillers.setdefault(host, []).append(_band(shaped, 0.0, WALL_HEIGHT_M))
+        opening_polys.append(shaped)  # para el contorno del piso
+
+    # Pasos sin puerta ("Dejar paso"): abiertos con muro encima (dintel)
+    for passage in passages:
+        px0_, py0_, px1_, py1_ = passage.bounds
+        host, shaped = _place_piece(wall_boxes, passage, (px1_ - px0_) >= (py1_ - py0_))
+        if shaped is passage:
+            loose += 1
+        band = _band(shaped, DOOR_HEIGHT_M, WALL_HEIGHT_M)
+        if band is not None:
+            fillers.setdefault(host, []).append(band)
+        opening_polys.append(passage)
 
     for kind, poly, horiz in snapped:
         opening_polys.append(poly)
@@ -732,16 +952,38 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
         if cut_openings:
             # El corte sobresale un poco de las CARAS del muro (evita láminas),
             # pero no a lo largo: así el antepecho/dintel empalma sin rendija.
+            # El corte atraviesa TODOS los muros paralelos pegados (±35 cm del
+            # eje del vano): una copia corrida del muro nunca tapa la puerta.
             bx0, by0, bx1, by1 = poly.bounds
+            cy, cx = (by0 + by1) / 2.0, (bx0 + bx1) / 2.0
+            reach = max(OPENING_CUT_REACH_M, (by1 - by0 if horiz else bx1 - bx0) / 2.0 + EPS_CUT)
             cut_polys.append(
-                box(bx0, by0 - EPS_CUT, bx1, by1 + EPS_CUT) if horiz
-                else box(bx0 - EPS_CUT, by0, bx1 + EPS_CUT, by1)
+                box(bx0, cy - reach, bx1, cy + reach) if horiz
+                else box(cx - reach, by0, cx + reach, by1)
             )
-            host = min(range(len(wall_boxes)), key=lambda i: wall_boxes[i].distance(poly))
-            fillers.setdefault(host, []).extend(_opening_fillers(kind, poly))
+            host, shaped = _place_piece(wall_boxes, poly, horiz)
+            if shaped is poly:
+                loose += 1
+            fillers.setdefault(host, []).extend(_opening_fillers(kind, shaped))
+
+    det_json.setdefault('quality', {})['piezas_sueltas'] = loose
 
     scene = trimesh.Scene()
     openings_union = unary_union(cut_polys).buffer(0) if cut_polys else None
+
+    # Control: ningún muro (ya recortado) puede quedar delante de un vano
+    front = 0
+    for kind, poly, horiz in snapped:
+        bx0, by0, bx1, by1 = poly.bounds
+        cy, cx = (by0 + by1) / 2.0, (bx0 + bx1) / 2.0
+        band = (box(bx0 + 0.03, cy - OPENING_CUT_REACH_M, bx1 - 0.03, cy + OPENING_CUT_REACH_M) if horiz
+                else box(cx - OPENING_CUT_REACH_M, by0 + 0.03, cx + OPENING_CUT_REACH_M, by1 - 0.03))
+        for wall_poly, _, _ in walls:
+            rest = wall_poly.difference(openings_union) if openings_union is not None else wall_poly
+            if rest.intersection(band).area > 1e-3:
+                front += 1
+                break
+    det_json.setdefault('quality', {})['muro_delante_de_vano'] = front
 
     # Crear mesh individual para cada muro
     for pos, (wall_poly, is_external, w_idx) in enumerate(walls):
@@ -761,6 +1003,11 @@ def build_scene_mesh(det_json: dict, min_score=0.0, cut_openings=True,
             # Nombre específico según tipo de muro
             wall_type = "external" if is_external else "internal"
             node_name = f"wall_{wall_type}_{w_idx}"
+            # dos tramos con el mismo índice (un muro partido) no se pisan
+            k = 1
+            while node_name in scene.graph.nodes:
+                node_name = f"wall_{wall_type}_{w_idx}_{k}"
+                k += 1
             scene.add_geometry(wall_mesh, node_name=node_name)
 
     for i, mesh in enumerate(doors):

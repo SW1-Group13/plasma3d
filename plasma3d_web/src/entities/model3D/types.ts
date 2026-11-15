@@ -8,6 +8,19 @@ export interface Model3D {
   height: number;
   created_at: string;
   usuario: number;
+  /** Informe de la detección (muros, puertas, escala, avisos). */
+  calidad?: PlanQuality | null;
+}
+
+export type ScaleSource = 'usuario' | 'puertas' | 'puertas_dibujadas' | 'estimada';
+
+export interface PlanQuality {
+  muros: number;
+  puertas: number;
+  ventanas: number;
+  escala: ScaleSource;
+  ancho_m: number | null;
+  avisos: string[];
 }
 
 export interface Detection {

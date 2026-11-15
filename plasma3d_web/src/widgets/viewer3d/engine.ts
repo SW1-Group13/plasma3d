@@ -21,6 +21,7 @@ import {
   type ModelSummary,
 } from '@/entities/model3D/three/Modelo3D';
 import {
+  ensureBoxUVs,
   ensurePlanarUVs,
   horizontalRepeatFor,
   textureRepeatFor,
@@ -43,6 +44,9 @@ import {
   makePresentationFog,
   type PresentationRig,
 } from '@/widgets/viewer3d/presentation';
+import { createMaterialEffect } from '@/widgets/viewer3d/materialEffects';
+import { patternFor, patternMaps } from '@/widgets/viewer3d/proceduralTextures';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 /**
  * Texturas temporales del modo Animado para piezas sin textura propia
@@ -55,6 +59,13 @@ const PRESENTATION_LOOK: Record<string, { url?: string; tint: string }> = {
   door: { url: '/static/textures/puerta-madera.jpg', tint: '#ffffff' },
   roof: { url: '/static/textures/tablas-desgastadas.jpg', tint: '#c0583a' },
 };
+/** Mapas de una pieza con textura (la foto del usuario no trae relieve). */
+export interface TexturedMaps {
+  map: THREE.Texture;
+  normalMap: THREE.Texture | null;
+  roughnessMap: THREE.Texture | null;
+}
+
 /** Milisegundos sin tocar la cámara antes de reanudar el giro automático. */
 const PRESENTATION_RESUME_MS = 3000;
 
@@ -83,6 +94,12 @@ interface PresentationState {
   originals: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
   /** Material de presentación que se le puso a cada pieza. */
   looks: Map<THREE.Mesh, THREE.Material>;
+  /** Animación por cuadro de cada pieza (según su material). */
+  effects: Map<THREE.Mesh, (time: number) => void>;
+  environment: THREE.Scene['environment'];
+  envTexture: THREE.Texture;
+  reducedMotion: boolean;
+  startTime: number;
   resumeTimer?: number;
   onStart: () => void;
   onEnd: () => void;
@@ -117,8 +134,18 @@ const DEFAULT_MATERIAL_BY_KIND: Record<MeasureKind, string> = {
   door: 'Roble',
   window: 'Vidrio transparente',
   floor: 'Ceramica piso',
-  roof: 'Cemento', // se tiñe con el color terracota de la capa Techos
+  roof: 'Teja de arcilla', // se tiñe con el color terracota de la capa Techos
 };
+
+/** Si el material por defecto no está en el catálogo, se usa este. */
+const FALLBACK_MATERIAL_BY_KIND: Partial<Record<MeasureKind, string>> = {
+  roof: 'Cemento', // catálogos viejos (sin materiales de techo)
+};
+
+/** ¿Es el material por defecto de ese tipo de pieza (actual o anterior)? */
+function isDefaultMaterial(kind: MeasureKind, nombre: string): boolean {
+  return DEFAULT_MATERIAL_BY_KIND[kind] === nombre || FALLBACK_MATERIAL_BY_KIND[kind] === nombre;
+}
 
 function isRectType(type: DrawType): type is 'floor' | 'roof' {
   return type === 'floor' || type === 'roof';
@@ -339,6 +366,7 @@ export class EditorEngine {
     this.scene.add(this.measureGroup);
 
     this.renderer.setAnimationLoop(() => {
+      this.updatePresentationEffects();
       if (this.tween) {
         this.updateTween();
       } else {
@@ -894,6 +922,7 @@ export class EditorEngine {
       () => {
         if (this.model) this.model.getObject3D().add(this.pivot);
         this.initAllMeshes();
+        this.repairMaterialIds();
         this.refreshVisibility();
         this.refreshAppearance();
         onLoaded?.();
@@ -1127,6 +1156,7 @@ export class EditorEngine {
 
   setMaterials(materials: Material[]) {
     this.materials = materials;
+    this.repairMaterialIds();
     this.refreshAppearance();
     this.emitSelection();
   }
@@ -1155,8 +1185,11 @@ export class EditorEngine {
     if (layer) mesh.userData.layerName = layer.nombre;
     if (mesh.userData.color === undefined) mesh.userData.color = 'bylayer';
     if (mesh.userData.materialId === undefined) {
-      const name = DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind] ?? '';
-      mesh.userData.materialId = name ? this.materials.find((m) => m.nombre === name)?.id ?? '' : '';
+      const byName = (name?: string) => (name ? this.materials.find((m) => m.nombre === name)?.id : undefined);
+      mesh.userData.materialId =
+        byName(DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind]) ?? byName(FALLBACK_MATERIAL_BY_KIND[kind as MeasureKind]) ?? '';
+      // Catálogo aún sin cargar: se completa en repairMaterialIds().
+      if (!mesh.userData.materialId && this.materials.length === 0) mesh.userData.materialPending = true;
     }
     if (mesh.userData.elevation === undefined) mesh.userData.elevation = 0;
     if (!mesh.userData.baseDims) {
@@ -1369,34 +1402,131 @@ export class EditorEngine {
     return texture;
   }
 
+  /**
+   * Material que debe verse aunque Texturas esté OFF: el elegido por el
+   * usuario (o el agente) o cualquiera distinto del de por defecto. El de por
+   * defecto sin elegir conserva el color de la capa (aspecto de siempre).
+   */
+  private visibleMaterial(mesh: THREE.Mesh): Material | undefined {
+    const material = this.materialById(mesh.userData.materialId);
+    if (!material) return undefined;
+    if (mesh.userData.materialExplicit) return material;
+    const kind = ((mesh.userData.kind as string) ?? this.kindOf(mesh)) as MeasureKind;
+    return isDefaultMaterial(kind, material.nombre) ? undefined : material;
+  }
+
+  /**
+   * Color base del patrón: el propio del usuario, el de la capa para el techo
+   * por defecto (terracota/café) o el del material.
+   */
+  private patternColor(mesh: THREE.Mesh, material: Material): string {
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    if (raw !== 'bylayer') return raw;
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    if (kind === 'roof' && !mesh.userData.materialExplicit) {
+      return this.resolveLayer(mesh)?.color ?? '#8a4a2a';
+    }
+    return material.color_difuso || '#cccccc';
+  }
+
+  /**
+   * Mapas de textura a escala real: patrón generado para los materiales del
+   * catálogo, o la foto subida por el usuario (1 repetición por metro).
+   * Null para el vidrio (sin patrón).
+   */
+  private texturedMaps(mesh: THREE.Mesh, material: Material): TexturedMaps | null {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    const pattern = patternFor(material, kind);
+    if (pattern === 'vidrio') return null;
+    ensureBoxUVs(mesh);
+    const custom = material.textura_url && !material.textura_url.startsWith('/static/');
+    if (custom) {
+      const map = this.textureCopy(material.textura_url!);
+      if (!map) return null;
+      map.wrapS = map.wrapT = THREE.RepeatWrapping;
+      map.repeat.set(1 / (material.escala_textura?.[0] || 1), 1 / (material.escala_textura?.[1] || 1));
+      return { map, normalMap: null, roughnessMap: null };
+    }
+    return patternMaps(pattern, this.patternColor(mesh, material));
+  }
+
+  /**
+   * Color que la pieza tiene con Texturas OFF: el propio, el del material
+   * elegido o el de su capa (misma regla que applyMeshAppearance).
+   */
+  /**
+   * Piezas con un material que ya no existe en el catálogo (ids de otra base o
+   * borrados) o que se cargaron antes que el catálogo: pasan al material por
+   * defecto de su tipo. "(sin material)" elegido a propósito se respeta.
+   */
+  private repairMaterialIds() {
+    if (this.materials.length === 0) return;
+    this.allMeshes().forEach((mesh) => {
+      const id = mesh.userData.materialId as string | undefined;
+      const missing = id ? !this.materialById(id) : Boolean(mesh.userData.materialPending);
+      if (!missing) return;
+      const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+      mesh.userData.materialId = this.defaultMaterialFor(kind)?.id ?? '';
+      mesh.userData.materialExplicit = false;
+      delete mesh.userData.materialPending;
+    });
+  }
+
+  /** Material por defecto del catálogo para un tipo de pieza (o su respaldo). */
+  private defaultMaterialFor(kind: string): Material | undefined {
+    const byName = (name?: string) => (name ? this.materials.find((m) => m.nombre === name) : undefined);
+    return byName(DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind]) ?? byName(FALLBACK_MATERIAL_BY_KIND[kind as MeasureKind]);
+  }
+
+  private offColor(mesh: THREE.Mesh): string {
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    if (raw !== 'bylayer') return raw;
+    const shown = this.visibleMaterial(mesh);
+    if (shown) return shown.color_difuso;
+    return this.resolveLayer(mesh)?.color ?? '#9aa4b2';
+  }
+
   private applyMeshAppearance(mesh: THREE.Mesh) {
     const layer = this.resolveLayer(mesh);
     const raw = (mesh.userData.color as string) ?? 'bylayer';
     const hasOverride = raw !== 'bylayer';
     const effectiveColor = hasOverride ? raw : layer?.color ?? '#9aa4b2';
     const transparency = layer?.transparencia ?? 0;
-    const material = this.showTextures ? this.materialById(mesh.userData.materialId) : undefined;
+    // El material asignado se ve siempre: con Texturas ON además su imagen;
+    // con OFF, su color (salvo el material por defecto, que usa el de la capa).
+    const assigned = this.materialById(mesh.userData.materialId);
+    const material = this.showTextures ? assigned : undefined;
+    const shown = this.showTextures ? undefined : this.visibleMaterial(mesh);
     const prevMaterial = mesh.material as THREE.MeshStandardMaterial | undefined;
 
-    if (material) {
-      const base = this.textureFor(material.textura_url);
-      let map: THREE.Texture | null = null;
-      if (base) {
-        ensurePlanarUVs(mesh);
-        map = base.clone();
-        map.needsUpdate = true;
-        map.wrapS = map.wrapT = THREE.RepeatWrapping;
-        const [u, v] = this.isStructural(mesh) ? horizontalRepeatFor(mesh) : textureRepeatFor(mesh);
-        map.repeat.set(u * material.escala_textura[0], v * material.escala_textura[1]);
-      }
+    if (shown) {
       mesh.material = new THREE.MeshStandardMaterial({
-        map,
-        color: new THREE.Color(effectiveColor),
-        roughness: material.rugosidad,
+        color: new THREE.Color(hasOverride ? raw : shown.color_difuso),
+        roughness: shown.rugosidad,
+        metalness: shown.metalico,
+        transparent: shown.opacidad < 1 || transparency > 0,
+        opacity: shown.opacidad * (1 - transparency / 100),
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      });
+    } else if (material) {
+      // Texturas ON: patrón realista a escala (ladrillo, piedra, tejas…).
+      const textured = this.texturedMaps(mesh, material);
+      mesh.material = new THREE.MeshStandardMaterial({
+        map: textured?.map ?? null,
+        normalMap: textured?.normalMap ?? null,
+        roughnessMap: textured?.roughnessMap ?? null,
+        normalScale: new THREE.Vector2(0.8, 0.8),
+        color: new THREE.Color(textured ? '#ffffff' : this.patternColor(mesh, material)),
+        roughness: textured ? 1 : material.rugosidad,
         metalness: material.metalico,
         transparent: material.opacidad < 1 || transparency > 0,
         opacity: material.opacidad * (1 - transparency / 100),
         side: THREE.DoubleSide,
+        // Las piezas no traen normales: se calculan por cara en el shader.
+        flatShading: true,
         polygonOffset: true,
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1,
@@ -1428,6 +1558,8 @@ export class EditorEngine {
     if (prevMaterial && prevMaterial !== nextMaterial) {
       const prevMap = prevMaterial.map;
       if (prevMap && !Array.from(this.textureCache.values()).includes(prevMap)) prevMap.dispose();
+      prevMaterial.normalMap?.dispose();
+      prevMaterial.roughnessMap?.dispose();
       prevMaterial.dispose();
     }
     // En modo Animado la pieza mantiene su aspecto de presentación.
@@ -1459,7 +1591,10 @@ export class EditorEngine {
 
   setSelectedMaterial(id: string) {
     if (this.selection.length === 0) return;
-    this.selection.forEach((mesh) => (mesh.userData.materialId = id));
+    this.selection.forEach((mesh) => {
+      mesh.userData.materialId = id;
+      mesh.userData.materialExplicit = Boolean(id);
+    });
     this.refreshAppearance();
     this.emitSelection();
   }
@@ -1939,6 +2074,7 @@ export class EditorEngine {
     meshes.forEach((m) => {
       previous.set(m, (m.userData.materialId as string) ?? '');
       m.userData.materialId = materialId;
+      m.userData.materialExplicit = Boolean(materialId);
     });
     this.refreshAppearance();
     this.emitSelection();
@@ -2073,6 +2209,11 @@ export class EditorEngine {
       labelsDisplay: this.labelRenderer.domElement.style.display,
       originals: new Map(),
       looks: new Map(),
+      effects: new Map(),
+      environment: this.scene.environment,
+      envTexture: this.createEnvironment(),
+      reducedMotion,
+      startTime: performance.now(),
       onStart: () => {
         window.clearTimeout(state.resumeTimer);
         this.orbit.autoRotate = false;
@@ -2099,6 +2240,9 @@ export class EditorEngine {
     this.grid.visible = false;
     this.scene.background = backgroundTexture;
     this.scene.fog = makePresentationFog(radius);
+    // Entorno para que metales, vidrios y barnices reflejen.
+    this.scene.environment = state.envTexture;
+    this.scene.environmentIntensity = 0.6;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMappingExposure = 1.15;
@@ -2165,6 +2309,11 @@ export class EditorEngine {
     this.grid.visible = state.gridVisible;
     this.scene.background = state.background;
     this.scene.fog = state.fog;
+    this.scene.environment = state.environment;
+    this.scene.environmentIntensity = 1;
+    this.scene.environmentRotation.set(0, 0, 0);
+    state.envTexture.dispose();
+    state.effects.clear();
     state.backgroundTexture.dispose();
     this.renderer.shadowMap.enabled = state.shadows;
     this.renderer.toneMappingExposure = state.exposure;
@@ -2211,6 +2360,7 @@ export class EditorEngine {
     if (stale && stale !== current) this.disposeEditorMaterial(stale);
 
     state.originals.set(mesh, mesh.material);
+    state.effects.delete(mesh);
     const look = this.buildPresentationLook(mesh, current as THREE.MeshStandardMaterial);
     mesh.material = look;
     state.looks.set(mesh, look);
@@ -2223,6 +2373,25 @@ export class EditorEngine {
 
   private buildPresentationLook(mesh: THREE.Mesh, current: THREE.MeshStandardMaterial): THREE.Material {
     const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+
+    // Material de la pieza (elegido o por defecto): patrón realista + efecto.
+    // Sin material del catálogo (ids viejos): se usa el de por defecto de su tipo.
+    const assigned = this.materialById(mesh.userData.materialId) ?? this.defaultMaterialFor(kind);
+    if (assigned) {
+      // Animado sigue el modo: ON → patrón con relieve; OFF → colores lisos del editor.
+      const maps = this.showTextures ? this.texturedMaps(mesh, assigned) : null;
+      const color = this.showTextures ? this.patternColor(mesh, assigned) : this.offColor(mesh);
+      const effect = createMaterialEffect(assigned, maps, color);
+      const standard = effect.material as THREE.MeshStandardMaterial;
+      if (!maps && standard.isMeshStandardMaterial && !standard.transparent && standard.metalness < 0.5) {
+        // Liso: rugosidad media y algo de reflejo para que no quede plano ni quemado.
+        standard.roughness = 0.75;
+        standard.envMapIntensity = 0.5;
+      }
+      effect.material.userData.ownMap = Boolean(maps);
+      if (effect.update) this.presentation?.effects.set(mesh, effect.update);
+      return effect.material;
+    }
 
     // Ventanas: vidrio que brilla en cian.
     if (kind === 'window') {
@@ -2244,7 +2413,7 @@ export class EditorEngine {
     const look = (current.isMeshStandardMaterial ? current.clone() : new THREE.MeshStandardMaterial()) as THREE.MeshStandardMaterial;
     const preset = PRESENTATION_LOOK[kind];
     // Sin textura propia: textura temporal según el tipo de pieza.
-    if (!current.map && preset) {
+    if (!current.map && preset && this.showTextures) {
       look.color.set(preset.tint);
       const map = preset.url ? this.textureCopy(preset.url) : null;
       if (map) {
@@ -2271,9 +2440,37 @@ export class EditorEngine {
     return look;
   }
 
+  /** Entorno de reflejos (sala neutra de three) para el modo Animado. */
+  private createEnvironment(): THREE.Texture {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const room = new RoomEnvironment();
+    const texture = pmrem.fromScene(room, 0.04).texture;
+    room.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry?.dispose();
+      (mesh.material as THREE.Material | undefined)?.dispose?.();
+    });
+    pmrem.dispose();
+    return texture;
+  }
+
+  /** Animaciones de los materiales en modo Animado (cada cuadro). */
+  private updatePresentationEffects() {
+    const state = this.presentation;
+    if (!state || state.reducedMotion) return;
+    const t = (performance.now() - state.startTime) / 1000;
+    // Reflejos que recorren las piezas (metal, vidrio, barniz).
+    this.scene.environmentRotation.y = t * 0.25;
+    state.effects.forEach((update) => update(t));
+  }
+
   private disposeLook(material: THREE.Material) {
     const standard = material as THREE.MeshStandardMaterial;
-    if (material.userData.ownMap && standard.map) standard.map.dispose();
+    if (material.userData.ownMap) {
+      standard.map?.dispose();
+      standard.normalMap?.dispose();
+      standard.roughnessMap?.dispose();
+    }
     material.dispose();
   }
 

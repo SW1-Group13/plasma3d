@@ -56,6 +56,8 @@ class Plan3DJob(models.Model):
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+    # Informe de la detección: muros/puertas/ventanas, escala y avisos.
+    calidad = models.JSONField(null=True, blank=True)
     width = models.IntegerField(default=0)
     height = models.IntegerField(default=0)
 

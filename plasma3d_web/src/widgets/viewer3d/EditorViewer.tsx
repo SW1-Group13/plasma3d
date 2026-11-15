@@ -21,6 +21,9 @@ import {
 import { LayersDialog } from '@/widgets/viewer3d/LayersDialog';
 import { MaterialsDialog } from '@/widgets/viewer3d/MaterialsDialog';
 import { NewMaterialDialog } from '@/widgets/viewer3d/NewMaterialDialog';
+import { patternFor, patternPreview } from '@/widgets/viewer3d/proceduralTextures';
+import { EFFECT_LABEL, effectFamily } from '@/widgets/viewer3d/materialEffects';
+import { KIND_LABELS, describeMaterial, groupMaterials, materialTags } from '@/entities/materials/descriptions';
 import { TEXTURES } from '@/entities/model3D/three/textures';
 import { useLayerStore } from '@/entities/layers/store';
 import { useMaterialStore } from '@/entities/materials/store';
@@ -293,7 +296,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     if (!canvas) return;
 
     const engine = new EditorEngine(canvas);
-    engineRef.current = engine;    engine.setSelectionListener((info) => {
+    engineRef.current = engine;
+    engine.setSelectionListener((info) => {
       setSelected(info);
       // Celular: tocar una pieza abre la hoja de Propiedades.
       if (info && isMobileViewport()) setPropsOpen(true);
@@ -597,7 +601,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                 : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
             )}
           >
-            <PlayCircleIcon width={15} height={15} /> <Lbl>Animado</Lbl>
+            <PlayCircleIcon width={15} height={15} />{' '}
+            <Lbl>{animated ? `Animado · ${showTextures ? 'Texturas' : 'Colores'}` : 'Animado'}</Lbl>
           </button>
 
           <div className="flex shrink-0 items-center gap-1 sm:ml-auto">
@@ -1013,23 +1018,73 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                     className="cursor-pointer rounded-lg border border-border bg-surface-2 px-2 py-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
                   >
                     <option value="">(sin material)</option>
-                    {materials.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.nombre}
-                      </option>
-                    ))}
+                    {(() => {
+                      const { recommended, groups } = groupMaterials(materials, selected.kind);
+                      return (
+                        <>
+                          {recommended.length > 0 && (
+                            <optgroup label={`Recomendados para ${KIND_LABELS[selected.kind] ?? 'esta pieza'}`}>
+                              {recommended.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.nombre}
+                                </option>
+                              ))}
+                            </optgroup>
+                          )}
+                          {groups.map((group) => (
+                            <optgroup key={group.key} label={group.label}>
+                              {group.items.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.nombre}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                        </>
+                      );
+                    })()}
                     <option value="__new__">＋ Nuevo material…</option>
                   </select>
                   {(() => {
                     const mat = materials.find((m) => m.id === selected.materialId);
                     if (!mat) return null;
-                    return mat.textura_url ? (
-                      <img src={mat.textura_url} alt={mat.nombre} className="h-20 w-full rounded-lg border border-border object-cover" />
-                    ) : (
-                      <div className="h-20 w-full rounded-lg border border-border" style={{ backgroundColor: mat.color_difuso }} />
+                    return (
+                      <div className="flex flex-col gap-2 rounded-lg border border-border bg-surface-2/40 p-2">
+                        <div className="relative h-16 w-full overflow-hidden rounded-md border border-border" style={{ backgroundColor: mat.color_difuso }}>
+                          {(() => {
+                            // Misma textura que se verá en el modelo (Texturas ON y Animado).
+                            const pattern = patternFor(mat, selected.kind);
+                            if (pattern === 'vidrio') return null;
+                            const custom = mat.textura_url && !mat.textura_url.startsWith('/static/');
+                            return (
+                              <img
+                                src={custom ? mat.textura_url : patternPreview(pattern, mat.color_difuso)}
+                                alt=""
+                                className="h-full w-full object-cover"
+                              />
+                            );
+                          })()}
+                        </div>
+                        <div>
+                          <p className="text-xs font-semibold text-foreground">{mat.nombre}</p>
+                          <p className="text-[11px] leading-snug text-muted">{describeMaterial(mat)}</p>
+                        </div>
+                        <div className="flex flex-wrap gap-1">
+                          {materialTags(mat).map((tag) => (
+                            <span key={tag} className="rounded-full border border-border px-1.5 py-0.5 text-[10px] text-muted">
+                              {tag}
+                            </span>
+                          ))}
+                        </div>
+                        <p className="flex items-start gap-1 text-[11px] text-cyan-200">
+                          <PlayCircleIcon width={12} height={12} className="mt-0.5 shrink-0" />
+                          En Animado: {EFFECT_LABEL[effectFamily(mat)]}
+                        </p>
+                        <p className="text-[10px] text-muted">Cambiar el material también cambia el presupuesto.</p>
+                      </div>
                     );
                   })()}
-                  <p className="text-[10px] text-muted">El material se ve con Texturas ON (Realista).</p>
+                  <p className="text-[10px] text-muted">Texturas ON muestra además la imagen del material.</p>
                 </div>
               </>
             )}

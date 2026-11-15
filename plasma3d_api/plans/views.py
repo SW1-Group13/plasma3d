@@ -64,7 +64,51 @@ def _roof_type_from(request):
     return roof_type if roof_type in ROOF_TYPES else "plano"
 
 
-def process_and_save_glb(job, det, roof_type="plano"):
+def _real_width_from(request):
+    """Ancho total real del plano en metros (opcional, mejora la escala)."""
+    raw = str(request.data.get("real_width_m") or "").replace(",", ".").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if 1.0 <= value <= 500.0 else None
+
+
+def _enrich(det, image, real_width_m):
+    """IA + detector clásico + escala (plans/pipeline.py)."""
+    from .pipeline import enrich_detections, raw_ml
+    if real_width_m is None:
+        real_width_m = det.get('realWidthM')
+    merged = enrich_detections(raw_ml(det), image, real_width_m)
+    if real_width_m:
+        merged['realWidthM'] = real_width_m
+    return merged
+
+
+def _fill_gaps_from(request):
+    """Huecos sin puerta: rellenar (default) o dejar paso ('paso'/'false'/'0')."""
+    value = str(request.data.get("fill_gaps", "true")).strip().lower()
+    return value not in ("0", "false", "no", "paso", "dejar_paso")
+
+
+def _ink_checker(job, det):
+    """Comprobador de la imagen del plano para que el 3D quede igual al plano."""
+    if not job.plan_image:
+        return None
+    try:
+        from PIL import Image
+        from .three import _pixel_to_meter_from_det
+        from .walls_fix import make_ink_checker
+        with job.plan_image.open('rb') as fh:
+            image = Image.open(fh)
+            image.load()
+        sketch = bool((det.get('quality') or {}).get('boceto'))
+        return make_ink_checker(image, _pixel_to_meter_from_det(det, fallback=0.01), sketch=sketch)
+    except Exception:
+        return None
+
+
+def process_and_save_glb(job, det, roof_type="plano", fill_gaps=True, drawn=None):
     """
     Generar GLB en memoria y guardar metadatos.
 
@@ -72,6 +116,7 @@ def process_and_save_glb(job, det, roof_type="plano"):
         job: Instancia de Plan3DJob
         det: Diccionario con datos de detección
         roof_type: 'ninguno' | 'plano' | 'dos_aguas'
+        fill_gaps: rellenar huecos entre muros sin puerta/ventana
 
     Returns:
         job: Instancia actualizada de Plan3DJob
@@ -79,9 +124,26 @@ def process_and_save_glb(job, det, roof_type="plano"):
     from .three import build_scene_mesh, export_glb
 
     # Generar el modelo 3D (GLB) con piso y techo
+    control = {}
     mesh = build_scene_mesh(
-        det, min_score=0.0, cut_openings=True, roof_type=roof_type
+        det, min_score=0.0, cut_openings=True, roof_type=roof_type,
+        fill_gaps=fill_gaps,
+        drawn=drawn if drawn is not None else _ink_checker(job, det),
+        control_out=control,
     )
+    # Imagen de control (verde = coincide con el plano, rojo = sobra,
+    # azul = falta) junto al GLB, para revisar el resultado.
+    if control.get('image') is not None:
+        try:
+            buf = io.BytesIO()
+            control['image'].save(buf, format='PNG')
+            storage = job.glb_model.storage
+            name = storage.save('{}/control/job_{}_control.png'.format(
+                os.path.dirname(job.glb_model.name or 'outputs') or 'outputs', job.id),
+                ContentFile(buf.getvalue()))
+            det.setdefault('quality', {}).setdefault('fidelidad_px', {})['control_png'] = storage.url(name)
+        except Exception as exc:
+            print('[control] {}'.format(exc))
     if mesh is not None:
         glb_buf = io.BytesIO()
         export_glb(mesh, glb_buf)
@@ -91,6 +153,10 @@ def process_and_save_glb(job, det, roof_type="plano"):
             ContentFile(glb_buf.getvalue()),
             save=False
         )
+
+    # Informe de calidad (plans/pipeline.py)
+    if det.get("quality") is not None:
+        job.calidad = det["quality"]
 
     # Guardar dimensiones
     job.width = det.get("Width", 0)
@@ -151,6 +217,10 @@ def create_plan3d_job(request):
             status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
         )
 
+    # Foto de una hoja / escaneo torcido: enderezar antes de detectar.
+    from .preprocess import prepare_plan_image
+    img, prep_steps = prepare_plan_image(img)
+
     # Crear el job (con usuario) para conocer su carpeta en media
     job = Plan3DJob.objects.create(usuario=usuario_instance)
     job.plan_file.save(plan_file.name, ContentFile(data), save=False)
@@ -168,6 +238,9 @@ def create_plan3d_job(request):
     # Ejecutar inferencia
     from .inference import run_inference
     det = run_inference(img)
+    det = _enrich(det, img, _real_width_from(request))
+    if prep_steps and det.get('quality') is not None:
+        det['quality']['preparacion'] = prep_steps
 
     # Guardar JSON de detecciones
     json_bytes = json.dumps(det, ensure_ascii=False).encode('utf-8')
@@ -182,7 +255,7 @@ def create_plan3d_job(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det, _roof_type_from(request))
+    process_and_save_glb(job, det, _roof_type_from(request), _fill_gaps_from(request))
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -238,7 +311,7 @@ def create_plan_json(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det, _roof_type_from(request))
+    process_and_save_glb(job, det, _roof_type_from(request), _fill_gaps_from(request))
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -456,8 +529,25 @@ def regenerar_plan(request, pk):
         _roof_type_from(request) if request.data.get("roof_type")
         else (_roof_type_from_glb(job) if job.glb_model else "plano")
     )
+    if job.plan_image:
+        try:
+            from PIL import Image
+            with job.plan_image.open('rb') as fh:
+                image = Image.open(fh)
+                image.load()
+            det = _enrich(det, image, _real_width_from(request))
+            old_det = job.detections_json.name
+            job.detections_json.save(
+                'job_{}_detections.json'.format(job.id),
+                ContentFile(json.dumps(det, ensure_ascii=False).encode('utf-8')),
+                save=False,
+            )
+            if old_det and old_det != job.detections_json.name:
+                job.detections_json.storage.delete(old_det)
+        except Exception as exc:
+            print('[regenerar] no se pudo combinar con el detector: {}'.format(exc))
     old = job.glb_model.name if job.glb_model else None
-    process_and_save_glb(job, det, roof_type)
+    process_and_save_glb(job, det, roof_type, _fill_gaps_from(request))
     if old and job.glb_model.name != old:
         try:
             job.glb_model.storage.delete(old)  # no acumular versiones viejas
