@@ -19,6 +19,7 @@ import {
   classifyMeshName,
   type ElementType,
   type ModelSummary,
+  type WallOpeningCut,
 } from '@/entities/model3D/three/Modelo3D';
 import {
   ensureBoxUVs,
@@ -231,7 +232,7 @@ export class EditorEngine {
   private multiSelect = false;
   private translationSnap: number | null = null;
   private pivot = new THREE.Object3D();
-  private dragStart: { pivot: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrix: THREE.Matrix4 }[] } | null = null;
+  private dragStart: { pivotWorld: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrixWorld: THREE.Matrix4 }[] } | null = null;
   private marqueeStart: { x: number; y: number } | null = null;
   private marqueeActive = false;
   private toolMode: 'select' | 'hand' = 'select';
@@ -330,9 +331,14 @@ export class EditorEngine {
       const dragging = Boolean((event as unknown as { value: boolean }).value);
       this.orbit.enabled = !dragging;
       if (!dragging) this.justDraggedAt = Date.now();
-      if (dragging) this.captureTransformStart();
-      else {
+      if (dragging) {
+        if (this.selection.length > 1) this.captureTransformStart();
+      } else {
         this.dragStart = null;
+        this.clampSelectionToFloor();
+        if (this.selection.length > 1) this.syncPivot();
+        this.selection.forEach((mesh) => this.refreshHostedWallForOpening(mesh, true));
+        this.emitSelection();
         // Escalar un vano: convertir la escala en medidas reales y
         // reconstruirlo (si no, el marco y la cruz quedan deformados).
         if (this.transformControls.mode === 'scale') {
@@ -344,6 +350,13 @@ export class EditorEngine {
     });
 
     this.transformControls.addEventListener('objectChange', () => {
+      // Una sola pieza se transforma directamente: evita duplicar el delta
+      // entre el objeto y un pivote auxiliar, especialmente en piezas recién creadas.
+      if (this.selection.length === 1) {
+        this.refreshHostedWallForOpening(this.selection[0], false);
+        this.emitSelection();
+        return;
+      }
       this.applyTransformDelta();
     });
 
@@ -581,7 +594,14 @@ export class EditorEngine {
       mesh.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(mesh);
       if (box.min.y < 0) {
-        mesh.position.y += -box.min.y;
+        const worldPosition = mesh.getWorldPosition(new THREE.Vector3());
+        worldPosition.y += -box.min.y;
+        if (mesh.parent) {
+          mesh.parent.updateWorldMatrix(true, false);
+          mesh.position.copy(mesh.parent.worldToLocal(worldPosition));
+        } else {
+          mesh.position.copy(worldPosition);
+        }
         mesh.updateMatrix();
       }
     });
@@ -785,9 +805,17 @@ export class EditorEngine {
   private syncPivot() {
     if (this.selection.length === 0) return;
     const centroid = new THREE.Vector3();
-    this.selection.forEach((mesh) => centroid.add(mesh.position));
+    this.selection.forEach((mesh) => {
+      mesh.updateWorldMatrix(true, false);
+      centroid.add(mesh.getWorldPosition(new THREE.Vector3()));
+    });
     centroid.multiplyScalar(1 / this.selection.length);
-    this.pivot.position.copy(centroid);
+    if (this.pivot.parent) {
+      this.pivot.parent.updateWorldMatrix(true, false);
+      this.pivot.position.copy(this.pivot.parent.worldToLocal(centroid));
+    } else {
+      this.pivot.position.copy(centroid);
+    }
     this.pivot.quaternion.identity();
     this.pivot.scale.set(1, 1, 1);
     this.pivot.updateMatrixWorld(true);
@@ -805,6 +833,9 @@ export class EditorEngine {
 
     if (meshes.length === 0) {
       this.transformControls.detach();
+    } else if (meshes.length === 1) {
+      this.dragStart = null;
+      this.transformControls.attach(meshes[0]);
     } else {
       this.syncPivot();
       this.transformControls.attach(this.pivot);
@@ -875,37 +906,42 @@ export class EditorEngine {
 
   private captureTransformStart() {
     if (this.selection.length === 0) return;
-    this.pivot.updateMatrix();
+    this.pivot.updateWorldMatrix(true, false);
     this.dragStart = {
-      pivot: this.pivot.matrix.clone(),
+      pivotWorld: this.pivot.matrixWorld.clone(),
       meshes: this.selection.map((mesh) => {
-        mesh.updateMatrix();
-        return { mesh, matrix: mesh.matrix.clone() };
+        mesh.updateWorldMatrix(true, false);
+        return { mesh, matrixWorld: mesh.matrixWorld.clone() };
       }),
     };
   }
 
   private applyTransformDelta() {
     if (!this.dragStart) return;
-    this.pivot.updateMatrix();
-    const inverse = new THREE.Matrix4().copy(this.dragStart.pivot).invert();
-    const delta = new THREE.Matrix4().multiplyMatrices(this.pivot.matrix, inverse);
+    this.pivot.updateWorldMatrix(true, false);
+    const inverse = new THREE.Matrix4().copy(this.dragStart.pivotWorld).invert();
+    const deltaWorld = new THREE.Matrix4().multiplyMatrices(this.pivot.matrixWorld, inverse);
     // Shift: bloquear el movimiento vertical (arriba/abajo) al trasladar.
     if (this.lockVertical && this.transformControls.mode === 'translate') {
       const pos = new THREE.Vector3();
       const quat = new THREE.Quaternion();
       const scale = new THREE.Vector3();
-      delta.decompose(pos, quat, scale);
+      deltaWorld.decompose(pos, quat, scale);
       pos.y = 0;
-      delta.compose(pos, quat, scale);
+      deltaWorld.compose(pos, quat, scale);
     }
-    this.dragStart.meshes.forEach(({ mesh, matrix }) => {
-      const next = new THREE.Matrix4().multiplyMatrices(delta, matrix);
-      next.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    this.dragStart.meshes.forEach(({ mesh, matrixWorld }) => {
+      const nextWorld = new THREE.Matrix4().multiplyMatrices(deltaWorld, matrixWorld);
+      const parent = mesh.parent;
+      if (parent) parent.updateWorldMatrix(true, false);
+      const nextLocal = parent
+        ? new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(nextWorld)
+        : nextWorld;
+      nextLocal.decompose(mesh.position, mesh.quaternion, mesh.scale);
       mesh.updateMatrix();
     });
     this.clampSelectionToFloor();
-    this.syncPivot();
+    this.selection.forEach((mesh) => this.refreshHostedWallForOpening(mesh, false));
     this.emitSelection();
   }
 
@@ -1192,6 +1228,7 @@ export class EditorEngine {
       if (!mesh.userData.materialId && this.materials.length === 0) mesh.userData.materialPending = true;
     }
     if (mesh.userData.elevation === undefined) mesh.userData.elevation = 0;
+    if (!mesh.userData.elementId) mesh.userData.elementId = THREE.MathUtils.generateUUID();
     if (!mesh.userData.baseDims) {
       mesh.updateMatrixWorld(true);
       const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
@@ -1624,6 +1661,51 @@ export class EditorEngine {
     return k === 'door' || k === 'window';
   }
 
+  private refreshHostedWallForOpening(mesh: THREE.Mesh, detachOutside: boolean) {
+    if (!this.isOpening(mesh) || !this.model) return;
+    const hostId = mesh.userData.hostWallId as string | undefined;
+    if (!hostId) return;
+    const wall = this.model.getWalls().find((candidate) => candidate.userData.elementId === hostId);
+    if (!wall) {
+      delete mesh.userData.hostWallId;
+      return;
+    }
+    this.refreshWallOpeningGeometry(wall, detachOutside);
+  }
+
+  private refreshWallOpeningGeometry(wall: THREE.Mesh, detachOutside: boolean) {
+    if (!this.model || !wall.userData.generatedSegment) return;
+    const dims = wall.userData.baseDims as { thickness: number; height: number; length: number } | undefined;
+    if (!dims) return;
+
+    wall.updateWorldMatrix(true, false);
+    const hosted = [...this.model.getDoors(), ...this.model.getWindows()].filter(
+      (opening) => opening.userData.hostWallId === wall.userData.elementId,
+    );
+    const cuts: WallOpeningCut[] = [];
+    hosted.forEach((opening) => {
+      opening.updateWorldMatrix(true, false);
+      const centerLocal = wall.worldToLocal(opening.getWorldPosition(new THREE.Vector3()));
+      const openingDims = this.openingDims(opening);
+      const bottom = centerLocal.y - openingDims.alto / 2 + dims.height / 2;
+      const outside =
+        Math.abs(centerLocal.x) > dims.thickness / 2 + 0.25 ||
+        centerLocal.z - openingDims.ancho / 2 < -dims.length / 2 - 0.1 ||
+        centerLocal.z + openingDims.ancho / 2 > dims.length / 2 + 0.1 ||
+        bottom < -0.05 ||
+        bottom + openingDims.alto > dims.height + 0.05;
+
+      if (detachOutside && outside) {
+        delete opening.userData.hostWallId;
+        return;
+      }
+      cuts.push({ center: centerLocal.z, width: openingDims.ancho, bottom, height: openingDims.alto });
+    });
+
+    this.model.setWallOpenings(wall, cuts);
+    if (detachOutside) this.ensureEdges(wall);
+  }
+
   /** Medidas actuales de un vano: ancho (a lo largo del muro), alto, alféizar, espesor. */
   openingDims(mesh: THREE.Mesh): OpeningDims {
     const kind = this.measureKindOf(mesh) === 'window' ? 'window' : 'door';
@@ -1684,6 +1766,7 @@ export class EditorEngine {
       (mesh.material as THREE.MeshStandardMaterial)?.emissive?.setHex(0x2a3550);
       this.syncPivot();
     }
+    this.refreshHostedWallForOpening(mesh, false);
     this.emitSelection();
   }
 
@@ -1710,10 +1793,21 @@ export class EditorEngine {
     });
     const h = host as { mesh: THREE.Mesh; a: THREE.Vector3; dir: THREE.Vector3; dist: number } | null;
     if (!h || h.dist > 1.5) return { ok: false, mensaje: 'No hay un muro a menos de 1.5 m.' };
+    if (!h.mesh.userData.generatedSegment) {
+      return { ok: false, mensaje: 'El hueco automático solo está disponible en muros dibujados en el editor.' };
+    }
 
-    const wallThickness = pieceQuantities(h.mesh, 'wall').thickness;
+    const wallDims = h.mesh.userData.baseDims as { thickness: number; height: number; length: number };
+    const wallThickness = wallDims.thickness;
     const normal = new THREE.Vector3(-h.dir.z, 0, h.dir.x);
-    const t = mid.clone().sub(h.a).dot(h.dir);
+    if (dims.ancho > wallDims.length) {
+      return { ok: false, mensaje: 'La abertura es más ancha que el muro seleccionado.' };
+    }
+    const t = THREE.MathUtils.clamp(
+      mid.clone().sub(h.a).dot(h.dir),
+      dims.ancho / 2,
+      wallDims.length - dims.ancho / 2,
+    );
     let s0 = t - dims.ancho / 2;
     let s1 = t + dims.ancho / 2;
 
@@ -1745,10 +1839,21 @@ export class EditorEngine {
       if (left !== null) s0 = left;
       if (right !== null) s1 = right;
     }
+    s0 = Math.max(0, s0);
+    s1 = Math.min(wallDims.length, s1);
 
     const ancho = s1 - s0;
     const center = h.a.clone().add(h.dir.clone().multiplyScalar((s0 + s1) / 2));
+    const oldHostId = mesh.userData.hostWallId as string | undefined;
+    const newHostId = h.mesh.userData.elementId as string;
+    if (oldHostId && oldHostId !== newHostId) {
+      delete mesh.userData.hostWallId;
+      const oldHost = this.model?.getWalls().find((wall) => wall.userData.elementId === oldHostId);
+      if (oldHost) this.refreshWallOpeningGeometry(oldHost, true);
+    }
+    mesh.userData.hostWallId = newHostId;
     this.rebuildOpening(mesh, { ...dims, ancho, espesor: wallThickness }, { mid: center, dir: h.dir });
+    this.refreshHostedWallForOpening(mesh, true);
     return {
       ok: true,
       mensaje: `Ajustada a ${h.mesh.name}: ancho ${ancho.toFixed(2)} m, espesor ${wallThickness.toFixed(2)} m.`,
@@ -1822,8 +1927,21 @@ export class EditorEngine {
   deleteSelected() {
     if (this.selection.length === 0 || !this.model) return;
     const meshes = [...this.selection];
+    const removedWallIds = new Set(
+      meshes.filter((mesh) => mesh.userData.generatedSegment).map((mesh) => mesh.userData.elementId as string),
+    );
+    const hostIds = new Set(
+      meshes.map((mesh) => mesh.userData.hostWallId as string | undefined).filter((id): id is string => Boolean(id)),
+    );
+    [...this.model.getDoors(), ...this.model.getWindows()].forEach((opening) => {
+      if (removedWallIds.has(opening.userData.hostWallId as string)) delete opening.userData.hostWallId;
+    });
     this.transformControls.detach();
     meshes.forEach((mesh) => this.model?.removeElement(mesh));
+    hostIds.forEach((id) => {
+      const wall = this.model?.getWalls().find((candidate) => candidate.userData.elementId === id);
+      if (wall) this.refreshWallOpeningGeometry(wall, true);
+    });
     this.selection = [];
     this.selected = null;
     this.onSelection(null);

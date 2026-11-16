@@ -74,6 +74,65 @@ export function buildDoorGeometry(thickness: number, height: number, length: num
   );
 }
 
+export interface WallOpeningCut {
+  /** Centro a lo largo del eje local Z del muro. */
+  center: number;
+  width: number;
+  /** Altura del borde inferior medida desde la base del muro. */
+  bottom: number;
+  height: number;
+}
+
+/** Geometría de muro con huecos pasantes para puertas y ventanas. */
+export function buildWallWithOpeningsGeometry(
+  thickness: number,
+  height: number,
+  length: number,
+  openings: WallOpeningCut[],
+): THREE.BufferGeometry {
+  if (openings.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+
+  const halfLength = length / 2;
+  const halfHeight = height / 2;
+  const cuts = openings
+    .map((opening) => ({
+      left: Math.max(-halfLength, opening.center - opening.width / 2),
+      right: Math.min(halfLength, opening.center + opening.width / 2),
+      bottom: Math.max(0, opening.bottom),
+      top: Math.min(height, opening.bottom + opening.height),
+    }))
+    .filter((cut) => cut.right - cut.left > 0.001 && cut.top - cut.bottom > 0.001);
+  if (cuts.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+
+  const uniqueSorted = (values: number[]) =>
+    values.sort((a, b) => a - b).filter((value, index, all) => index === 0 || Math.abs(value - all[index - 1]) > 0.001);
+  const xCuts = uniqueSorted([-halfLength, halfLength, ...cuts.flatMap((cut) => [cut.left, cut.right])]);
+  const yCuts = uniqueSorted([0, height, ...cuts.flatMap((cut) => [cut.bottom, cut.top])]);
+  const pieces: THREE.BufferGeometry[] = [];
+
+  for (let xi = 0; xi < xCuts.length - 1; xi += 1) {
+    const left = xCuts[xi];
+    const right = xCuts[xi + 1];
+    const center = (left + right) / 2;
+    for (let yi = 0; yi < yCuts.length - 1; yi += 1) {
+      const bottom = yCuts[yi];
+      const top = yCuts[yi + 1];
+      const middleY = (bottom + top) / 2;
+      const insideOpening = cuts.some(
+        (cut) => center > cut.left && center < cut.right && middleY > cut.bottom && middleY < cut.top,
+      );
+      if (insideOpening) continue;
+
+      const piece = new THREE.BoxGeometry(thickness, top - bottom, right - left);
+      piece.translate(0, middleY - halfHeight, center);
+      pieces.push(piece);
+    }
+  }
+
+  if (pieces.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+  return merge(pieces, () => new THREE.BoxGeometry(thickness, height, length));
+}
+
 /**
  * Techo a dos aguas sobre un rectángulo (largo L en X, luz S en Z), con la
  * base y=0 en el arranque de los muros. Dos faldones + los dos hastiales,
@@ -675,6 +734,7 @@ export class Modelo3D {
 
     if (type === 'wall') {
       mesh.name = `wall_internal_${Date.now()}`;
+      mesh.userData.generatedSegment = true;
       this.walls.push(mesh);
     } else if (type === 'door') {
       mesh.name = `door_${Date.now()}`;
@@ -686,8 +746,19 @@ export class Modelo3D {
 
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.baseDims = { thickness, height, length };
     this.objeto.add(mesh);
     return mesh;
+  }
+
+  setWallOpenings(mesh: THREE.Mesh, openings: WallOpeningCut[]) {
+    if (!mesh.userData.generatedSegment || !this.walls.includes(mesh)) return;
+    const dims = mesh.userData.baseDims as { thickness: number; height: number; length: number } | undefined;
+    if (!dims) return;
+    const old = mesh.geometry;
+    mesh.geometry = buildWallWithOpeningsGeometry(dims.thickness, dims.height, dims.length, openings);
+    mesh.userData.openingCuts = openings;
+    old.dispose();
   }
 
   /**
