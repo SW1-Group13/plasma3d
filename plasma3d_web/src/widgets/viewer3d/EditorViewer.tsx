@@ -226,6 +226,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [snap, setSnap] = useState(0);
   const [rotSnap, setRotSnap] = useState(0);
   const [isBusy, setIsBusy] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const [createHint, setCreateHint] = useState<DrawType | null>(null);
   const [roofDrawKind, setRoofDrawKind] = useState<RoofDrawKind>(readStoredRoofDrawKind);
   const [measuresOpen, setMeasuresOpen] = useState(false);
@@ -467,20 +468,28 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     return new File([blob], filename, { type: 'model/gltf-binary' });
   }
 
-  async function onExport() {
+  async function onExport(format: 'glb' | 'gltf' | 'stl') {
     const engine = engineRef.current;
     if (!engine) return;
+    setExportOpen(false);
     setIsBusy(true);
     try {
       const id = JSON.parse(localStorage.getItem('modelo') || '{}').id ?? Date.now();
-      const { blob, filename } = await engine.exportGlb(`job_${id}.glb`);
+      const filename = `job_${id}.${format}`;
+      const { blob, filename: out } =
+        format === 'glb'
+          ? await engine.exportGlb(filename)
+          : format === 'gltf'
+            ? await engine.exportGltf(filename)
+            : await engine.exportStl(filename);
       const link = document.createElement('a');
       link.href = URL.createObjectURL(blob);
-      link.download = filename.endsWith('.glb') ? filename : `${filename}.glb`;
+      link.download = out;
       link.click();
       URL.revokeObjectURL(link.href);
+      toast.success('Exportado', `Modelo exportado en ${format.toUpperCase()}.`);
     } catch {
-      toast.error('Error', 'No se pudo exportar el modelo.');
+      toast.error('Error', `No se pudo exportar el modelo en ${format.toUpperCase()}.`);
     } finally {
       setIsBusy(false);
     }
@@ -557,9 +566,43 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor">
             <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
           </RibbonAction>
-          <RibbonAction onClick={onExport} disabled={isBusy} title="Exportar GLB">
-            <DownloadIcon width={15} height={15} /> <Lbl>Exportar</Lbl>
-          </RibbonAction>
+          <div className="relative">
+            <RibbonAction
+              onClick={() => setExportOpen((v) => !v)}
+              disabled={isBusy}
+              title="Exportar modelo (GLB, GLTF o STL)"
+            >
+              <DownloadIcon width={15} height={15} /> <Lbl>Exportar</Lbl>
+            </RibbonAction>
+            {exportOpen && (
+              <>
+                <button
+                  type="button"
+                  className="fixed inset-0 z-40 cursor-default"
+                  aria-label="Cerrar menu de exportacion"
+                  onClick={() => setExportOpen(false)}
+                />
+                <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-lg border border-border bg-surface p-1 shadow-xl shadow-black/40">
+                  {(
+                    [
+                      { id: 'glb', label: 'GLB (binario)' },
+                      { id: 'gltf', label: 'GLTF (JSON)' },
+                      { id: 'stl', label: 'STL (geometría)' },
+                    ] as const
+                  ).map((option) => (
+                    <button
+                      key={option.id}
+                      type="button"
+                      onClick={() => void onExport(option.id)}
+                      className="flex w-full cursor-pointer items-center gap-2 rounded-md px-3 py-2 text-left text-xs text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+                    >
+                      <DownloadIcon width={14} height={14} /> {option.label}
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
           <RibbonAction onClick={onAnalyzeClick} disabled={isBusy} title="Analisis estructural">
             <SparklesIcon width={15} height={15} /> <Lbl>Analizar</Lbl>
           </RibbonAction>

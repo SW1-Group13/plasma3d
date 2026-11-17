@@ -1,7 +1,17 @@
 from django.urls import path
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-from .views import UsuarioViewSet,RegistroView, LoginView, LogoutView, update_usuario
+from .views import (
+    UsuarioViewSet,
+    RegistroView,
+    LoginView,
+    LogoutView,
+    update_usuario,
+    admin_metricas,
+    admin_pagos,
+    admin_usuario_update,
+    admin_usuarios,
+)
 from .pagues import (
     confirm_payment,
     create_payment_intent,
@@ -24,5 +34,9 @@ urlpatterns = [
     path('payment/historial/', payment_history, name='payment-history'),
     path('payment/downgrade/', downgrade_plan, name='payment-downgrade'),
     path('payment/webhook/', stripe_webhook, name='payment-webhook'),
+    path('admin/metricas/', admin_metricas, name='admin-metricas'),
+    path('admin/usuarios/', admin_usuarios, name='admin-usuarios'),
+    path('admin/usuarios/<int:pk>/', admin_usuario_update, name='admin-usuario-update'),
+    path('admin/pagos/', admin_pagos, name='admin-pagos'),
     path('', include(router.urls)),
 ]

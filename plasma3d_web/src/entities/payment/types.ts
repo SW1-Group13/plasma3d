@@ -21,6 +21,10 @@ export interface Pago {
 export interface PaymentConfig {
   publishable_key: string;
   enabled: boolean;
+  /** La publishable key pertenece a la cuenta de la secret key. */
+  keys_match?: boolean | null;
+  /** Motivo visible si las claves no coinciden. */
+  warning?: string | null;
   precios?: Partial<Record<PlanId, number>>;
   moneda?: string;
 }

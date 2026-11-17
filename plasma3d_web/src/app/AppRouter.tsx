@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { PublicLayout } from '@/widgets/layout/PublicLayout';
 import { PrivateLayout } from '@/widgets/layout/PrivateLayout';
 import { RequireAuth } from '@/app/RequireAuth';
+import { RequireAdmin } from '@/app/RequireAdmin';
 import { HomePage } from '@/pages/HomePage';
 import { LoginPage } from '@/pages/LoginPage';
 import { RegisterPage } from '@/pages/RegisterPage';
@@ -9,6 +10,7 @@ import { DashboardPage } from '@/pages/DashboardPage';
 import { EditorPage } from '@/pages/EditorPage';
 import { PerfilPage } from '@/pages/PerfilPage';
 import { PaymentPage } from '@/pages/PaymentPage';
+import { AdminPage } from '@/pages/AdminPage';
 
 export function AppRouter() {
   return (
@@ -34,6 +36,14 @@ export function AppRouter() {
         <Route path="perfil" element={<PerfilPage />} />
         <Route path="editor" element={<EditorPage />} />
         <Route path="pago" element={<PaymentPage />} />
+        <Route
+          path="admin"
+          element={
+            <RequireAdmin>
+              <AdminPage />
+            </RequireAdmin>
+          }
+        />
         <Route path="*" element={<Navigate to="/private/perfil" replace />} />
       </Route>
 

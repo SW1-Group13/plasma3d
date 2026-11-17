@@ -1,11 +1,11 @@
-from django.shortcuts import render
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from .models import AnalisisRiesgo
 from .services_agente import MAX_CHARS_MENSAJE, AgenteError, responder_agente
-from .services_gemini import analizar_modelo_glb
+from .services_riesgo import analizar_archivo, analizar_plan
 
 
 @api_view(['POST'])
@@ -56,41 +56,104 @@ def agente_chat(request):
 @api_view(['POST'])
 def analizar_glb(request):
     """
-    Analizar archivos .glb con Gemini AI.
+    Analiza un modelo .glb o .gltf subido y devuelve un informe de riesgo.
 
-    Recibe un archivo .glb y retorna análisis de daños estructurales
-    y sugerencias de materiales.
-
-    Returns:
-        Response con análisis o mensaje de error
+    Usa Gemini si GEMINI_API_KEY está configurada; si no, aplica el motor
+    de reglas (muros/puertas/ventanas) para que el análisis siempre responda.
     """
     if 'archivo' not in request.FILES:
-        error_msg = (
-            'No se ha enviado ningún archivo. '
-            'Por favor envía un archivo con la clave "archivo"'
-        )
         return Response(
-            {'error': error_msg},
-            status=status.HTTP_400_BAD_REQUEST
+            {
+                'error': (
+                    'No se ha enviado ningún archivo. '
+                    'Envía un archivo con la clave "archivo".'
+                )
+            },
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    archivo_glb = request.FILES['archivo']
-
-    # Validar que sea un archivo .glb
-    if not archivo_glb.name.endswith('.glb'):
+    archivo = request.FILES['archivo']
+    nombre = (archivo.name or '').lower()
+    if not (nombre.endswith('.glb') or nombre.endswith('.gltf')):
         return Response(
-            {'error': 'El archivo debe ser de tipo .glb'},
-            status=status.HTTP_400_BAD_REQUEST
+            {'error': 'El archivo debe ser .glb o .gltf'},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Llamar al servicio de Gemini
-    resultado = analizar_modelo_glb(archivo_glb)
-
+    resultado = analizar_archivo(archivo)
     if resultado.get('success'):
         return Response(resultado, status=status.HTTP_200_OK)
-    else:
+    return Response(resultado, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def analizar_plan_view(request, pk):
+    """Analiza el modelo guardado de un Plan3DJob y guarda el resultado."""
+    from plans.models import Plan3DJob
+
+    try:
+        plan = Plan3DJob.objects.get(pk=pk)
+    except Plan3DJob.DoesNotExist:
         return Response(
-            resultado,
-            status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            {'detail': 'Modelo no encontrado.'},
+            status=status.HTTP_404_NOT_FOUND,
         )
 
+    user = request.user
+    es_admin = getattr(user, 'rol', None) == 'administrador'
+    if plan.usuario_id and plan.usuario_id != getattr(user, 'id', None) and not es_admin:
+        return Response(
+            {'detail': 'No puedes analizar este modelo.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    data = analizar_plan(plan)
+    if not data.get('success'):
+        return Response(data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    AnalisisRiesgo.objects.create(
+        usuario=user if getattr(user, 'id', None) else None,
+        plan=plan,
+        resultado=data['analisis'],
+        nivel_riesgo=data.get('nivel_riesgo', 'bajo'),
+        fuente=data.get('fuente', 'heuristica'),
+    )
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def listar_analisis_plan(request, pk):
+    """Historial de análisis de riesgo de un modelo."""
+    from plans.models import Plan3DJob
+
+    try:
+        plan = Plan3DJob.objects.get(pk=pk)
+    except Plan3DJob.DoesNotExist:
+        return Response(
+            {'detail': 'Modelo no encontrado.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    user = request.user
+    es_admin = getattr(user, 'rol', None) == 'administrador'
+    if plan.usuario_id and plan.usuario_id != getattr(user, 'id', None) and not es_admin:
+        return Response(
+            {'detail': 'No puedes ver este análisis.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    analisis = AnalisisRiesgo.objects.filter(plan=plan)[:20]
+    return Response(
+        [
+            {
+                'id': a.id,
+                'nivel_riesgo': a.nivel_riesgo,
+                'fuente': a.fuente,
+                'created_at': a.created_at,
+                'resultado': a.resultado,
+            }
+            for a in analisis
+        ]
+    )

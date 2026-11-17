@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
+import { userApi } from '@/entities/user/api';
 import { Button } from '@/shared/ui/button';
 import {
   CubeIcon,
@@ -8,16 +9,23 @@ import {
   LayoutDashboardIcon,
   LogOutIcon,
   MenuIcon,
+  ShieldIcon,
   UserIcon,
   XIcon,
 } from '@/shared/ui/icons';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
 
-const links = [
+const links: {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboardIcon;
+  adminOnly?: boolean;
+}[] = [
   { to: '/private/dashboard', label: 'Dashboard', icon: LayoutDashboardIcon },
   { to: '/private/perfil', label: 'Perfil', icon: UserIcon },
   { to: '/private/pago', label: 'Pagos', icon: CreditCardIcon },
+  { to: '/private/admin', label: 'Admin', icon: ShieldIcon, adminOnly: true },
 ];
 
 export function PrivateLayout() {
@@ -25,8 +33,28 @@ export function PrivateLayout() {
   const location = useLocation();
   const fullBleed = location.pathname.startsWith('/private/editor');
   const user = useSession((s) => s.user);
+  const setUser = useSession((s) => s.setUser);
   const logout = useSession((s) => s.logout);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Mantiene el rol/avatar sincronizados (p. ej. si un admin te cambia el rol).
+  useEffect(() => {
+    if (!user?.id) return;
+    let alive = true;
+    userApi
+      .get(user.id)
+      .then((fresh) => {
+        if (alive) setUser(fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [user?.id, setUser]);
+
+  const visibleLinks = links.filter(
+    (link) => !link.adminOnly || user?.rol === 'administrador',
+  );
 
   // Cerrar el menú móvil al navegar o con Esc.
   useEffect(() => setMenuOpen(false), [location.pathname]);
@@ -67,7 +95,7 @@ export function PrivateLayout() {
             </Link>
 
             <div className="hidden items-center gap-1 text-sm sm:flex">
-              {links.map(({ to, label, icon: Icon }) => (
+              {visibleLinks.map(({ to, label, icon: Icon }) => (
                 <NavLink
                   key={to}
                   to={to}
@@ -166,7 +194,7 @@ export function PrivateLayout() {
               </div>
             )}
 
-            {links.map(({ to, label, icon: Icon }) => (
+            {visibleLinks.map(({ to, label, icon: Icon }) => (
               <NavLink
                 key={to}
                 to={to}

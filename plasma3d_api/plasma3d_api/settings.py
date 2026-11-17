@@ -195,3 +195,10 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 # Gemini API Configuration
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+
+# Administrador por defecto (se crea/asegura despues de cada migrate).
+# Si ADMIN_PASSWORD esta vacio no se crea, pero si el email ya existe se
+# asegura igualmente su rol de administrador.
+ADMIN_NOMBRE = os.getenv('ADMIN_NOMBRE', 'Administrador')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@plasma3d.local')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')

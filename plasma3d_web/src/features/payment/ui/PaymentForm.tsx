@@ -109,6 +109,7 @@ export function PaymentForm({ onChanged }: PaymentFormProps) {
         enabled={enabled}
         loading={!config && !configError}
         premiumPrice={config?.precios?.usuario_premium}
+        warning={config?.warning}
         onChanged={onChanged}
       />
     </Elements>
@@ -119,10 +120,11 @@ interface CheckoutFormProps {
   enabled: boolean;
   loading: boolean;
   premiumPrice?: number;
+  warning?: string | null;
   onChanged?: () => void;
 }
 
-function CheckoutForm({ enabled, loading, premiumPrice, onChanged }: CheckoutFormProps) {
+function CheckoutForm({ enabled, loading, premiumPrice, warning, onChanged }: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
   const user = useSession((s) => s.user);
@@ -335,7 +337,9 @@ function CheckoutForm({ enabled, loading, premiumPrice, onChanged }: CheckoutFor
               </Button>
               {loading && <p className="text-xs text-muted">Cargando pasarela de pago...</p>}
               {!loading && !enabled && (
-                <p className="text-xs text-danger">Pagos no configurados en el servidor.</p>
+                <p className="text-xs text-danger">
+                  {warning ?? 'Pagos no configurados en el servidor.'}
+                </p>
               )}
               {enabled && (
                 <p className="text-xs text-muted">

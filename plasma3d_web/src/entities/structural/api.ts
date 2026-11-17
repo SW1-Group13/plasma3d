@@ -11,4 +11,20 @@ export const structuralApi = {
     );
     return data;
   },
+
+  /** Analiza el modelo guardado (GLB/GLTF) sin volver a subir el archivo. */
+  async analyzePlan(planId: number): Promise<StructuralAnalysis> {
+    const { data } = await http.post<StructuralAnalysis>(
+      `api/suggestion_risk/plans/${planId}/analizar/`,
+      {},
+    );
+    return data;
+  },
+
+  async history(planId: number) {
+    const { data } = await http.get<
+      { id: number; nivel_riesgo: string; fuente: string; created_at: string; resultado: StructuralAnalysis['analisis'] }[]
+    >(`api/suggestion_risk/plans/${planId}/analisis/`);
+    return data;
+  },
 };

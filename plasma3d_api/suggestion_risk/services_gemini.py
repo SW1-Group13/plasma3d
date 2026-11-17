@@ -73,8 +73,13 @@ def extraer_info_glb(archivo_glb):
         dict: Información extraída del modelo incluyendo texturas
     """
     try:
-        # Guardar temporalmente el archivo
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.glb') as tmp_file:
+        # Guardar temporalmente el archivo (GLB binario o GLTF JSON)
+        suffix = os.path.splitext(
+            str(getattr(archivo_glb, 'name', '') or '')
+        )[1].lower()
+        if suffix not in ('.glb', '.gltf'):
+            suffix = '.glb'
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             archivo_glb.seek(0)
             tmp_file.write(archivo_glb.read())
             tmp_path = tmp_file.name
