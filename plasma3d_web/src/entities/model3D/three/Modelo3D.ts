@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import type { ModelJson, TextureRef } from '@/entities/model3D/types';
 import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
 import {
@@ -522,22 +523,29 @@ export class Modelo3D {
     });
   }
 
-  exportAsGLB(filename = 'modelo.glb'): Promise<{ blob: Blob; filename: string }> {
+  private detachEdges(): () => void {
+    const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
+    this.objeto?.traverse((child) => {
+      if (child.name === '__edges' && child.parent) {
+        detached.push({ parent: child.parent, child });
+      }
+    });
+    detached.forEach(({ child }) => child.removeFromParent());
+    return () => detached.forEach(({ parent, child }) => parent.add(child));
+  }
+
+  private exportGLTF(
+    binary: boolean,
+    filename: string,
+    mime: string,
+  ): Promise<{ blob: Blob; filename: string }> {
     return new Promise((resolve, reject) => {
       if (!this.objeto) {
         reject(new Error('No hay modelo cargado'));
         return;
       }
 
-      const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
-      this.objeto.traverse((child) => {
-        if (child.name === '__edges' && child.parent) {
-          detached.push({ parent: child.parent, child });
-        }
-      });
-      detached.forEach(({ child }) => child.removeFromParent());
-      const restore = () => detached.forEach(({ parent, child }) => parent.add(child));
-
+      const restore = this.detachEdges();
       const exporter = new GLTFExporter();
       exporter.parse(
         this.objeto,
@@ -545,8 +553,8 @@ export class Modelo3D {
           restore();
           const blob =
             result instanceof ArrayBuffer
-              ? new Blob([result], { type: 'model/gltf-binary' })
-              : new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+              ? new Blob([result], { type: mime })
+              : new Blob([JSON.stringify(result, null, 2)], { type: mime });
           resolve({ blob, filename });
         },
         (error) => {
@@ -555,8 +563,48 @@ export class Modelo3D {
         },
         // onlyVisible:false → lo oculto en pantalla (techo, capas apagadas)
         // se sigue guardando; ocultar es solo una opción de vista.
-        { binary: true, onlyVisible: false },
+        { binary, onlyVisible: false },
       );
+    });
+  }
+
+  exportAsGLB(filename = 'modelo.glb'): Promise<{ blob: Blob; filename: string }> {
+    return this.exportGLTF(true, filename, 'model/gltf-binary');
+  }
+
+  /** Exporta un .gltf (JSON autocontenido, con buffers/imágenes embebidos). */
+  exportAsGLTF(filename = 'modelo.gltf'): Promise<{ blob: Blob; filename: string }> {
+    return this.exportGLTF(false, filename, 'model/gltf+json');
+  }
+
+  /** Exporta un .stl binario (geometría, sin materiales). */
+  exportAsSTL(filename = 'modelo.stl'): Promise<{ blob: Blob; filename: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.objeto) {
+        reject(new Error('No hay modelo cargado'));
+        return;
+      }
+
+      const restore = this.detachEdges();
+      try {
+        const exporter = new STLExporter();
+        const result = exporter.parse(this.objeto, { binary: true });
+        restore();
+        let parts: BlobPart[];
+        if (result instanceof DataView) {
+          const copy = new Uint8Array(result.byteLength);
+          copy.set(
+            new Uint8Array(result.buffer, result.byteOffset, result.byteLength),
+          );
+          parts = [copy.buffer as ArrayBuffer];
+        } else {
+          parts = [result];
+        }
+        resolve({ blob: new Blob(parts, { type: 'model/stl' }), filename });
+      } catch (error) {
+        restore();
+        reject(error);
+      }
     });
   }
 

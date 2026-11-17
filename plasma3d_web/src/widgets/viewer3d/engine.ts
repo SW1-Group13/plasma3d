@@ -2004,6 +2004,18 @@ export class EditorEngine {
     return this.model.exportAsGLB(filename);
   }
 
+  async exportGltf(filename: string) {
+    if (!this.model) throw new Error('Sin modelo');
+    this.setPresentationMode(false);
+    return this.model.exportAsGLTF(filename);
+  }
+
+  async exportStl(filename: string) {
+    if (!this.model) throw new Error('Sin modelo');
+    this.setPresentationMode(false);
+    return this.model.exportAsSTL(filename);
+  }
+
   /**
    * Resumen para el presupuesto. Corrige lo que `toJSONSummary` no sabe:
    * - material = el del catálogo asignado a la pieza (no se adivina por la

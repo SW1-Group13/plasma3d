@@ -8,6 +8,7 @@ class Usuario(models.Model):
     ROLES = (
         ('usuario_normal', 'Usuario Normal'),
         ('usuario_premium', 'Usuario Premium'),
+        ('administrador', 'Administrador'),
     )
 
     nombre = models.CharField(max_length=100)

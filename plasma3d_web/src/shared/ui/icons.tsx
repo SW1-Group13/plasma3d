@@ -244,3 +244,19 @@ export const PrinterIcon = (props: IconProps) => (
     <path d="M7 14h10v7H7z" />
   </svg>
 );
+
+export const ShieldIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M12 3 4.5 6v5.5c0 4.6 3.2 7.7 7.5 9.5 4.3-1.8 7.5-4.9 7.5-9.5V6L12 3Z" />
+    <path d="m9 12 2 2 4-4" />
+  </svg>
+);
+
+export const UsersIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
+    <circle cx="9" cy="7" r="4" />
+    <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
+    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);

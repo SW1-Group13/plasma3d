@@ -12,12 +12,12 @@ from users.models import Usuario
 @parser_classes([MultiPartParser, FormParser])
 def upload_glb(request):
     """
-    Subir archivo GLB y crear registro de Plan3DJob.
+    Subir archivo GLB/GLTF y crear registro de Plan3DJob.
 
     El almacenamiento lo resuelve el campo FileField (STORAGE_BACKEND).
 
     Args:
-        request: Request con archivo GLB y usuario_id
+        request: Request con archivo 3D y usuario_id
 
     Returns:
         Response con URL del archivo subido o mensaje de error
@@ -29,9 +29,10 @@ def upload_glb(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    if not glb_file.name.endswith('.glb'):
+    nombre = (glb_file.name or '').lower()
+    if not (nombre.endswith('.glb') or nombre.endswith('.gltf')):
         return Response(
-            {'error': 'Solo se permiten archivos .glb'},
+            {'error': 'Solo se permiten archivos .glb o .gltf'},
             status=status.HTTP_400_BAD_REQUEST
         )
 

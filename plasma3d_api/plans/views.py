@@ -421,14 +421,14 @@ def delete_plan(request, pk):
 @parser_classes([MultiPartParser, FormParser])
 def reemplazar_glb(request):
     """
-    Reemplazar un archivo GLB existente.
+    Reemplazar un archivo GLB/GLTF existente.
 
     Espera:
-        - file_glb: archivo .glb (por ejemplo "job_2.glb")
+        - file_glb: archivo .glb o .gltf (por ejemplo "job_2.glb")
         - usuario: id del usuario que realiza la acción
 
     Returns:
-        Plan3DJob serializado con el nuevo archivo GLB
+        Plan3DJob serializado con el nuevo archivo
     """
     new_glb = request.FILES.get('file_glb')
     usuario_id = request.data.get('usuario')
@@ -444,18 +444,19 @@ def reemplazar_glb(request):
 
     if not new_glb:
         return Response(
-            {"detail": "No se envió archivo .glb"},
+            {"detail": "No se envió archivo .glb/.gltf"},
             status=status.HTTP_400_BAD_REQUEST
         )
-    match = re.search(r'job_(\d+)\.glb$', new_glb.name)
+    match = re.search(r'job_(\d+)\.(glb|gltf)$', new_glb.name, re.IGNORECASE)
     if not match:
-        detail_msg = "Nombre de archivo no válido (debe ser job_<id>.glb)"
+        detail_msg = "Nombre de archivo no válido (debe ser job_<id>.glb o job_<id>.gltf)"
         return Response(
             {"detail": detail_msg},
             status=status.HTTP_400_BAD_REQUEST
         )
 
     job_id = int(match.group(1))
+    extension = match.group(2).lower()
 
     try:
         job = Plan3DJob.objects.get(id=job_id)
@@ -465,12 +466,12 @@ def reemplazar_glb(request):
             status=status.HTTP_404_NOT_FOUND
         )
 
-    # Reemplazar archivo GLB existente con nombre único (evitar cache)
+    # Reemplazar archivo existente con nombre único (evitar cache)
     if job.glb_model:
         job.glb_model.delete(save=False)
 
     timestamp = int(time.time())
-    new_name = f"job_{job.id}_{timestamp}.glb"
+    new_name = f"job_{job.id}_{timestamp}.{extension}"
     job.glb_model.save(new_name, new_glb, save=False)
 
     job.usuario = usuario

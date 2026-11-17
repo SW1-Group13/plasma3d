@@ -1,10 +1,14 @@
+# syntax=docker/dockerfile:1.7
 # ==========================================================
 # plasma3d-api - Desarrollo (Django + Mask R-CNN / TensorFlow 1.15)
 # ==========================================================
 FROM python:3.6.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PIP_DEFAULT_TIMEOUT=1000 \
+    PIP_RETRIES=10 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -16,11 +20,19 @@ RUN sed -i 's|deb.debian.org|archive.debian.org|g' /etc/apt/sources.list \
        build-essential \
        libpq-dev \
        git \
+       libgl1-mesa-glx \
+       libglib2.0-0 \
+       libsm6 \
+       libxext6 \
+       libxrender1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependencias de Python (cache de capas)
 COPY requirements.txt /app/
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Cache de pip: si una descarga se corta, los wheels ya bajados se conservan.
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --upgrade "pip<22" \
+    && pip install --prefer-binary --timeout 1000 --retries 10 -r requirements.txt
 
 # Codigo fuente
 COPY . /app/

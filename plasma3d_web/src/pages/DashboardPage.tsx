@@ -4,6 +4,9 @@ import { useModelStore } from '@/entities/model3D/store';
 import type { GapMode, RoofType } from '@/entities/model3D/api';
 import type { PlanQuality } from '@/entities/model3D/types';
 import { useSession } from '@/entities/session/store';
+import { structuralApi } from '@/entities/structural/api';
+import type { StructuralAnalysis } from '@/entities/structural/types';
+import { RiskDialog } from '@/features/risk/ui/RiskDialog';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { BackgroundTask } from '@/shared/ui/loader';
 import { Button } from '@/shared/ui/button';
@@ -17,7 +20,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog';
-import { CubeIcon, LayersIcon, PlusIcon, TrashIcon, UploadIcon } from '@/shared/ui/icons';
+import { CubeIcon, LayersIcon, PlusIcon, SparklesIcon, TrashIcon, UploadIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 function serverMessage(error: unknown, fallback: string): string {
@@ -46,6 +49,10 @@ export function DashboardPage() {
   const [creating, setCreating] = useState(false);
   const [task, setTask] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [riskOpen, setRiskOpen] = useState(false);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskAnalysis, setRiskAnalysis] = useState<StructuralAnalysis | null>(null);
+  const [riskPlanId, setRiskPlanId] = useState<number | null>(null);
   const [roofType, setRoofType] = useState<RoofType>('plano');
   const [gapMode, setGapMode] = useState<GapMode>('rellenar');
   // Ancho total real del plano en metros (opcional): escala exacta.
@@ -82,8 +89,8 @@ export function DashboardPage() {
     try {
       await uploadGlb(file, user.id);
       toast.success('Exito', 'Modelo 3D subido con exito.');
-    } catch {
-      toast.error('Error', 'No se pudo subir el modelo 3D.');
+    } catch (error) {
+      toast.error('Error', serverMessage(error, 'No se pudo subir el modelo 3D.'));
     } finally {
       setTask(null);
     }
@@ -133,6 +140,22 @@ export function DashboardPage() {
     }
   }
 
+  async function onAnalyzeRisk(model: (typeof list)[number]) {
+    setRiskPlanId(model.id);
+    setRiskAnalysis(null);
+    setRiskOpen(true);
+    setRiskLoading(true);
+    try {
+      const data = await structuralApi.analyzePlan(model.id);
+      setRiskAnalysis(data);
+    } catch (error) {
+      setRiskOpen(false);
+      toast.error('Error', serverMessage(error, 'No se pudo analizar el riesgo del modelo.'));
+    } finally {
+      setRiskLoading(false);
+    }
+  }
+
   function openModel(model: (typeof list)[number]) {
     localStorage.setItem('modelo', JSON.stringify(model));
     navigate('/private/editor');
@@ -143,7 +166,7 @@ export function DashboardPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Mis modelos</h1>
-          <p className="mt-1 text-sm text-muted">Sube un plano o un GLB y editalo en 3D.</p>
+          <p className="mt-1 text-sm text-muted">Sube un plano, un GLB o un GLTF y edítalo en 3D.</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <input
@@ -198,7 +221,7 @@ export function DashboardPage() {
             <UploadIcon width={16} height={16} /> Subir plano
           </Button>
           <Button variant="outline" onClick={() => glbInputRef.current?.click()} disabled={isLoading}>
-            <UploadIcon width={16} height={16} /> Subir GLB
+            <UploadIcon width={16} height={16} /> Subir GLB/GLTF
           </Button>
           <Button onClick={onCreateModel} disabled={creating || isLoading}>
             <PlusIcon width={16} height={16} /> Crear modelo
@@ -287,6 +310,14 @@ export function DashboardPage() {
                     )}
                     <Button
                       size="sm"
+                      variant="outline"
+                      onClick={() => onAnalyzeRisk(model)}
+                      title="Analizar el riesgo estructural con IA"
+                    >
+                      <SparklesIcon width={14} height={14} /> Riesgo IA
+                    </Button>
+                    <Button
+                      size="sm"
                       variant="ghost"
                       className="ml-auto text-muted hover:text-danger"
                       onClick={() => setDeleteId(model.id)}
@@ -314,6 +345,14 @@ export function DashboardPage() {
           <img src={preview} alt="Vista previa del plano" className="max-h-[85vh] max-w-[90vw] rounded-xl border border-border" />
         </div>
       )}
+
+      <RiskDialog
+        open={riskOpen}
+        onOpenChange={setRiskOpen}
+        analysis={riskAnalysis}
+        loading={riskLoading}
+        planId={riskPlanId}
+      />
 
       <Dialog open={regenId != null} onOpenChange={(v) => !v && setRegenId(null)}>
         <DialogContent className="max-w-sm">
