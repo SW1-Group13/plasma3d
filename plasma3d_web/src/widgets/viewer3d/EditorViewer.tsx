@@ -236,16 +236,15 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [snap, setSnap] = useState(0);
   const [rotSnap, setRotSnap] = useState(0);
   const [isBusy, setIsBusy] = useState(false);
-<<<<<<< Updated upstream
   const [exportOpen, setExportOpen] = useState(false);
-=======
+
   // Autoguardado: 'saved' | 'dirty' (cambios pendientes) | 'saving' | 'error'.
   const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving' | 'error'>('saved');
   const dirtyRef = useRef(false);
   const savingRef = useRef(false);
   const autosaveTimer = useRef<number | undefined>(undefined);
   const saveNowRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
->>>>>>> Stashed changes
+
   const [createHint, setCreateHint] = useState<DrawType | null>(null);
   const [roofDrawKind, setRoofDrawKind] = useState<RoofDrawKind>(readStoredRoofDrawKind);
   const [measuresOpen, setMeasuresOpen] = useState(false);
@@ -699,7 +698,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor (se guarda solo a los 3 s de cada cambio)">
             <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
           </RibbonAction>
-<<<<<<< Updated upstream
+           Updated upstream
           <div className="relative">
             <RibbonAction
               onClick={() => setExportOpen((v) => !v)}
@@ -737,7 +736,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
               </>
             )}
           </div>
-=======
+
           <span
             className={cn(
               'hidden whitespace-nowrap px-1 text-[11px] sm:inline',
@@ -750,10 +749,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             {saveState === 'saved' ? 'Guardado ✓' : saveState === 'saving' ? 'Guardando…' : saveState === 'dirty' ? 'Sin guardar' : 'Error al guardar'}
           </span>
-          <RibbonAction onClick={onExport} disabled={isBusy} title="Exportar GLB">
-            <DownloadIcon width={15} height={15} /> <Lbl>Exportar</Lbl>
-          </RibbonAction>
->>>>>>> Stashed changes
+          
+        
           <RibbonAction onClick={onAnalyzeClick} disabled={isBusy} title="Analisis estructural">
             <SparklesIcon width={15} height={15} /> <Lbl>Analizar</Lbl>
           </RibbonAction>
