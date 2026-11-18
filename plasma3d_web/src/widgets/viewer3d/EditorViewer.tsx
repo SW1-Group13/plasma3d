@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { model3DApi } from '@/entities/model3D/api';
 import {
   EditorEngine,
   type DraftInfo,
@@ -171,7 +172,13 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
     items: [
       { action: 'Mover', keys: 'W' },
       { action: 'Rotar', keys: 'E' },
-      { action: 'Escalar', keys: 'R' },
+      { action: 'Medidas con tiradores (extremos, ancho, alto)', keys: 'R' },
+      { action: 'Arrastrar la pieza seleccionada sobre el piso', keys: 'Clic + arrastrar' },
+      { action: 'Mover en altura con el gizmo', keys: 'Mantener Alt' },
+      { action: 'Girar 90°', keys: 'Q' },
+      { action: 'Duplicar', keys: 'Ctrl+D' },
+      { action: 'Cortar pared o piso (Shift+clic: otro eje)', keys: 'C' },
+      { action: 'Deshacer / Rehacer', keys: 'Ctrl+Z / Ctrl+Y' },
     ],
   },
   {
@@ -221,12 +228,24 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const setShowTextures = useMaterialStore((s) => s.setShowTextures);
 
   const [selected, setSelected] = useState<SelectedInfo | null>(null);
+  // Botón "Colocar": la selección está cerca de otra pieza y se puede encajar.
+  const [canSnap, setCanSnap] = useState(false);
   const [mode, setMode] = useState<TransformMode>('translate');
+  const [history, setHistory] = useState({ canUndo: false, canRedo: false, cutMode: false });
   const [space, setSpace] = useState<'local' | 'world'>('local');
   const [snap, setSnap] = useState(0);
   const [rotSnap, setRotSnap] = useState(0);
   const [isBusy, setIsBusy] = useState(false);
+<<<<<<< Updated upstream
   const [exportOpen, setExportOpen] = useState(false);
+=======
+  // Autoguardado: 'saved' | 'dirty' (cambios pendientes) | 'saving' | 'error'.
+  const [saveState, setSaveState] = useState<'saved' | 'dirty' | 'saving' | 'error'>('saved');
+  const dirtyRef = useRef(false);
+  const savingRef = useRef(false);
+  const autosaveTimer = useRef<number | undefined>(undefined);
+  const saveNowRef = useRef<(silent: boolean) => Promise<void>>(async () => {});
+>>>>>>> Stashed changes
   const [createHint, setCreateHint] = useState<DrawType | null>(null);
   const [roofDrawKind, setRoofDrawKind] = useState<RoofDrawKind>(readStoredRoofDrawKind);
   const [measuresOpen, setMeasuresOpen] = useState(false);
@@ -263,6 +282,16 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     }
   });
 
+  const runSnap = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    const results = engine.snapSelectedPieces();
+    const bad = results.find((r) => !r.ok);
+    if (bad) toast.error('No se pudo colocar', bad.mensaje);
+    else toast.success('Colocada', results.map((r) => r.mensaje).join(' '));
+    setCanSnap(engine.canSnapSelected());
+  }, []);
+
   const applyView = useCallback((next: ViewName) => {
     setViewState(next);
     engineRef.current?.setView(next);
@@ -298,8 +327,16 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
     const engine = new EditorEngine(canvas);
     engineRef.current = engine;
+    engine.setHistoryListener(setHistory);
+    engine.setChangeListener(() => {
+      dirtyRef.current = true;
+      setSaveState('dirty');
+      window.clearTimeout(autosaveTimer.current);
+      autosaveTimer.current = window.setTimeout(() => void saveNowRef.current(true), 3000);
+    });
     engine.setSelectionListener((info) => {
       setSelected(info);
+      setCanSnap(info ? engine.canSnapSelected() : false);
       // Celular: tocar una pieza abre la hoja de Propiedades.
       if (info && isMobileViewport()) setPropsOpen(true);
       // Se dispara al crear y al borrar: mantiene el botón "Techo" al día.
@@ -314,16 +351,36 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     engine.setPresentationListener(setAnimated);
 
     const raw = localStorage.getItem('modelo');
-    let url: string | null = null;
+    let stored: { id?: number; glb_model?: string } | null = null;
     if (raw) {
       try {
-        const model = JSON.parse(raw);
-        if (model?.glb_model) url = assetUrl(String(model.glb_model));
+        stored = JSON.parse(raw);
       } catch {
         localStorage.removeItem('modelo');
       }
     }
-    engine.loadModel(url, TEXTURES, () => {
+    // Pedir al servidor la versión ACTUAL del plano (la guardada en el
+    // navegador puede apuntar a un GLB viejo ya reemplazado).
+    let cancelled = false;
+    const fresh = stored?.id
+      ? model3DApi
+          .list()
+          .then((list) => list.find((m) => m.id === stored?.id) ?? null)
+          .catch(() => null)
+      : Promise.resolve(null);
+    void fresh.then((latest) => {
+      if (cancelled || engineRef.current !== engine) return;
+      const model = latest ?? stored;
+      if (latest) localStorage.setItem('modelo', JSON.stringify(latest));
+      let url: string | null = null;
+      if (model?.glb_model) {
+        const base = assetUrl(String(model.glb_model));
+        // ?v= evita que el navegador o el service worker den una copia vieja.
+        url = `${base}${base.includes('?') ? '&' : '?'}v=${Date.now()}`;
+      }
+      loadInto(url);
+    });
+    const loadInto = (url: string | null) => engine.loadModel(url, TEXTURES, () => {
       setModelLoading(false);
       engine.setView('planta');
       hasRoofRef.current = engine.hasRoof();
@@ -333,6 +390,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     const loadingFallback = window.setTimeout(() => setModelLoading(false), 25000);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(loadingFallback);
       engine.dispose();
       engineRef.current = null;
@@ -384,6 +442,41 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       ) {
         return;
       }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
+        e.preventDefault();
+        if (e.shiftKey) engineRef.current?.redo();
+        else engineRef.current?.undo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || e.key === 'Y')) {
+        e.preventDefault();
+        engineRef.current?.redo();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {
+        e.preventDefault();
+        engineRef.current?.duplicateSelection();
+        return;
+      }
+      if (e.ctrlKey || e.metaKey) return;
+      if (e.key === 'Alt') {
+        e.preventDefault();
+        engineRef.current?.setAllowVertical(true);
+        return;
+      }
+      if (e.key === 'q' || e.key === 'Q') {
+        engineRef.current?.rotateSelection90();
+        return;
+      }
+      if (e.key === 'k' || e.key === 'K') {
+        runSnap();
+        return;
+      }
+      if (e.key === 'c' || e.key === 'C') {
+        const engine = engineRef.current;
+        engine?.setCutMode(!engine.isCutMode());
+        return;
+      }
       if (e.key === 'Shift') engineRef.current?.setLockVertical(true);
       if (e.key === 'w' || e.key === 'W') setMode('translate');
       else if (e.key === 'e' || e.key === 'E') setMode('rotate');
@@ -405,6 +498,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       else if (e.key === '5') applyView('3d');
       else if (e.key === 'Escape') {
         engineRef.current?.setPresentationMode(false);
+        engineRef.current?.setCutMode(false);
         setMeasuresOpen(false);
         engineRef.current?.cancelDraft();
         setCreateHint(null);
@@ -413,8 +507,12 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     window.addEventListener('keydown', onKey);
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Shift') engineRef.current?.setLockVertical(false);
+      if (e.key === 'Alt') engineRef.current?.setAllowVertical(false);
     };
-    const onBlur = () => engineRef.current?.setLockVertical(false);
+    const onBlur = () => {
+      engineRef.current?.setLockVertical(false);
+      engineRef.current?.setAllowVertical(false);
+    };
     window.addEventListener('keyup', onKeyUp);
     window.addEventListener('blur', onBlur);
     return () => {
@@ -422,7 +520,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [applyView]);
+  }, [applyView, runSnap]);
 
   const startCreate = useCallback((type: DrawType) => {
     engineRef.current?.startCreate(type);
@@ -495,20 +593,55 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     }
   }
 
-  async function onSave() {
+  async function saveNow(silent: boolean) {
     if (!user) return;
-    setIsBusy(true);
+    window.clearTimeout(autosaveTimer.current);
+    if (savingRef.current) {
+      // Ya hay un guardado en curso: reintentar cuando termine.
+      autosaveTimer.current = window.setTimeout(() => void saveNowRef.current(silent), 800);
+      return;
+    }
+    savingRef.current = true;
+    dirtyRef.current = false;
+    setSaveState('saving');
+    if (!silent) setIsBusy(true);
     try {
       const file = await buildFile();
       if (!file) throw new Error('Sin modelo');
-      await updateGlb(file, user.id);
-      toast.success('Exito', 'Modelo guardado correctamente.');
+      const updated = await updateGlb(file, user.id);
+      // Guardar la URL NUEVA: sin esto, F5 vuelve a cargar el GLB viejo.
+      localStorage.setItem('modelo', JSON.stringify(updated));
+      setSaveState(dirtyRef.current ? 'dirty' : 'saved');
+      if (!silent) toast.success('Exito', 'Modelo guardado correctamente.');
     } catch {
-      toast.error('Error', 'No se pudo guardar el modelo.');
+      dirtyRef.current = true;
+      setSaveState('error');
+      if (!silent) toast.error('Error', 'No se pudo guardar el modelo.');
     } finally {
-      setIsBusy(false);
+      savingRef.current = false;
+      if (!silent) setIsBusy(false);
+      if (dirtyRef.current) {
+        autosaveTimer.current = window.setTimeout(() => void saveNowRef.current(true), 3000);
+      }
     }
   }
+  saveNowRef.current = saveNow;
+
+  async function onSave() {
+    await saveNow(false);
+  }
+
+  // Avisar antes de recargar/cerrar si quedan cambios sin guardar.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!dirtyRef.current && !savingRef.current) return;
+      void saveNowRef.current(true);
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, []);
 
   async function onAnalyzeClick() {
     setIsBusy(true);
@@ -563,9 +696,10 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
           <Divider />
 
-          <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor">
+          <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor (se guarda solo a los 3 s de cada cambio)">
             <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
           </RibbonAction>
+<<<<<<< Updated upstream
           <div className="relative">
             <RibbonAction
               onClick={() => setExportOpen((v) => !v)}
@@ -603,6 +737,23 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
               </>
             )}
           </div>
+=======
+          <span
+            className={cn(
+              'hidden whitespace-nowrap px-1 text-[11px] sm:inline',
+              saveState === 'saved' && 'text-emerald-400',
+              saveState === 'saving' && 'text-muted',
+              saveState === 'dirty' && 'text-amber-400',
+              saveState === 'error' && 'text-red-400',
+            )}
+            title={saveState === 'error' ? 'No se pudo guardar; se reintentará al siguiente cambio o pulsa Guardar' : undefined}
+          >
+            {saveState === 'saved' ? 'Guardado ✓' : saveState === 'saving' ? 'Guardando…' : saveState === 'dirty' ? 'Sin guardar' : 'Error al guardar'}
+          </span>
+          <RibbonAction onClick={onExport} disabled={isBusy} title="Exportar GLB">
+            <DownloadIcon width={15} height={15} /> <Lbl>Exportar</Lbl>
+          </RibbonAction>
+>>>>>>> Stashed changes
           <RibbonAction onClick={onAnalyzeClick} disabled={isBusy} title="Analisis estructural">
             <SparklesIcon width={15} height={15} /> <Lbl>Analizar</Lbl>
           </RibbonAction>
@@ -691,6 +842,19 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           </ModeButton>
           <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} title="Escalar (R)">
             <ScaleIcon width={15} height={15} /> <Lbl>Escalar</Lbl>
+          </ModeButton>
+          <ModeButton
+            active={history.cutMode}
+            onClick={() => engineRef.current?.setCutMode(!history.cutMode)}
+            title="Cortar pared/piso (C): clic donde cortar. Shift+clic corta en el otro eje. Luego Supr borra el trozo."
+          >
+            <span aria-hidden>✂</span> <Lbl>Cortar</Lbl>
+          </ModeButton>
+          <ModeButton active={false} onClick={() => engineRef.current?.undo()} title="Deshacer (Ctrl+Z)">
+            <span aria-hidden className={history.canUndo ? '' : 'opacity-40'}>↶</span>
+          </ModeButton>
+          <ModeButton active={false} onClick={() => engineRef.current?.redo()} title="Rehacer (Ctrl+Y)">
+            <span aria-hidden className={history.canRedo ? '' : 'opacity-40'}>↷</span>
           </ModeButton>
 
           <Divider />
@@ -790,6 +954,14 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       <div className="relative flex-1 overflow-hidden">
         <canvas ref={canvasRef} className={cn('absolute inset-0 h-full w-full', tool === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default')} />
         <LoadingOverlay show={modelLoading} label="Cargando modelo 3D..." />
+
+        {canSnap && selected && (
+          <div className="absolute left-1/2 top-3 z-20 -translate-x-1/2">
+            <Button size="sm" onClick={runSnap} title="Encaja la pieza con la pared, piso, puerta o ventana más cercana (K)">
+              Colocar (K)
+            </Button>
+          </div>
+        )}
 
         {marquee && (
           <div
@@ -991,11 +1163,29 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
                 <AxisGroup label="Posicion" values={position} step={0.1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updatePosition(axis, value)} />
                 <AxisGroup label="Rotacion (grados)" values={rotation} step={1} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateRotation(axis, value)} />
                 <AxisGroup label="Escala" values={scale} step={0.1} min={0.01} disabled={!selected || selected.count > 1} onChange={(axis, value) => engineRef.current?.updateScale(axis, value)} />
-                <Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetScale()}>
-                  Reset escala
-                </Button>
+                <div className="grid grid-cols-3 gap-1">
+                  <Button variant="ghost" size="sm" onClick={() => engineRef.current?.resetToOriginal()} title="Volver a la medida con la que se creó o cargó">
+                    Medida original
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => engineRef.current?.rotateSelection90()} title="Girar 90° (Q)">
+                    Girar 90°
+                  </Button>
+                  <Button variant="ghost" size="sm" onClick={() => engineRef.current?.duplicateSelection()} title="Duplicar (Ctrl+D)">
+                    Duplicar
+                  </Button>
+                </div>
 
                 {/* Geometria */}
+                {selected.kind === 'floor' && (
+                  <div className="flex flex-col gap-2 border-t border-border pt-3">
+                    <span className="text-xs font-medium uppercase tracking-wide text-muted">Geometria</span>
+                    <div className="grid grid-cols-2 gap-2">
+                      <DimField label="Largo" value={selected.length} onChange={(v) => engineRef.current?.setSelectedDimension('length', v)} />
+                      <DimField label="Ancho" value={selected.thickness} onChange={(v) => engineRef.current?.setSelectedDimension('thickness', v)} />
+                      <DimField label="Espesor" value={selected.height} onChange={(v) => engineRef.current?.setSelectedDimension('height', v)} />
+                    </div>
+                  </div>
+                )}
                 {(selected.kind === 'wall' || selected.kind === 'door' || selected.kind === 'window') && (
                   <div className="flex flex-col gap-2 border-t border-border pt-3">
                     <span className="text-xs font-medium uppercase tracking-wide text-muted">Geometria</span>
@@ -1151,7 +1341,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <span className="hidden sm:inline">Herramienta: {tool === 'hand' ? 'Mano' : 'Seleccionar'}</span>
           <span className="hidden sm:inline">Vista: {VIEWS.find((v) => v.id === view)?.label ?? view}</span>
           <span className="hidden md:inline">Modo: {mode === 'translate' ? 'Mover' : mode === 'rotate' ? 'Rotar' : 'Escalar'}</span>
-          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · T techo · M medidas · I agente · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · Supr borrar</span>
+          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · T techo · M medidas · I agente · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · arrastra la pieza para moverla · R tiradores · K colocar · Q girar · Ctrl+D duplicar · Alt altura · C cortar · Ctrl+Z deshacer · Supr borrar</span>
         </div>
       </div>
 
@@ -1382,13 +1572,31 @@ function DimField({
   return (
     <label className="flex flex-col gap-1">
       <span className="text-[10px] uppercase tracking-wide text-muted">{label}</span>
-      <input
-        type="number"
-        step="0.05"
-        value={Number(value.toFixed(2))}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="h-8 rounded-md border border-border bg-surface-2 px-2 text-xs tabular-nums text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-      />
+      <div className="flex items-center gap-0.5">
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(0.05, Number((value - 0.1).toFixed(3))))}
+          className="h-8 w-6 shrink-0 cursor-pointer rounded-md border border-border bg-surface-2 text-xs text-muted hover:text-foreground"
+          title="-10 cm"
+        >
+          −
+        </button>
+        <input
+          type="number"
+          step="0.05"
+          value={Number(value.toFixed(2))}
+          onChange={(e) => onChange(Number(e.target.value))}
+          className="h-8 w-full min-w-0 rounded-md border border-border bg-surface-2 px-1.5 text-xs tabular-nums text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+        />
+        <button
+          type="button"
+          onClick={() => onChange(Number((value + 0.1).toFixed(3)))}
+          className="h-8 w-6 shrink-0 cursor-pointer rounded-md border border-border bg-surface-2 text-xs text-muted hover:text-foreground"
+          title="+10 cm"
+        >
+          +
+        </button>
+      </div>
     </label>
   );
 }

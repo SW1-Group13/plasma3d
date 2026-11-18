@@ -185,8 +185,15 @@ def _merge_parallel(walls):
     reales cercanos y no se tocan.
     """
     t_typ = _typical_t(walls)
+    # Un sobrante más corto que esto es ruido del borde: no queda como muro
+    # (si quedara, se volvería a unir con otro y el bucle no terminaría).
+    min_rest = max(0.10, t_typ)
+    # Tope de vueltas: cada unión debe acercar al final; si no, se corta aquí
+    # con lo que haya (nunca colgar el servidor por un plano raro).
+    budget = max(50, len(walls) * 6)
     changed = True
-    while changed:
+    while changed and budget > 0:
+        budget -= 1
         changed = False
         for i, a in enumerate(walls):
             for b in walls[i + 1:]:
@@ -213,7 +220,7 @@ def _merge_parallel(walls):
                 rest = []
                 for w in (a, b):
                     for s0, s1 in ((w.a0, lo), (hi, w.a1)):
-                        if s1 - s0 > 0.05:
+                        if s1 - s0 > min_rest:
                             h = w.t / 2
                             rest.append(_Wall(_rect(w.horiz, s0, s1, w.c - h, w.c + h), w.ext, w.idx))
                 walls = [w for w in walls if w is not a and w is not b] + [merged] + rest
@@ -221,6 +228,8 @@ def _merge_parallel(walls):
                 break
             if changed:
                 break
+    if budget <= 0:
+        print('[walls_fix] _merge_parallel: tope de vueltas, se sigue con {} muros'.format(len(walls)))
     return walls
 
 

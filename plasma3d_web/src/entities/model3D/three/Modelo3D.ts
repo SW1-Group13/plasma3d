@@ -861,6 +861,21 @@ export class Modelo3D {
     return mesh;
   }
 
+  /** Vuelve a registrar una malla existente (deshacer, piezas de un corte). */
+  addExisting(mesh: THREE.Mesh) {
+    if (!this.objeto) return;
+    const kind = (mesh.userData.kind as string) ?? classifyMeshName(mesh.name);
+    const arr =
+      kind === 'wall' ? this.walls
+      : kind === 'door' ? this.doors
+      : kind === 'window' ? this.windows
+      : kind === 'floor' ? this.floors
+      : kind === 'roof' ? this.roofs
+      : null;
+    if (arr && !arr.includes(mesh)) arr.push(mesh);
+    if (mesh.parent !== this.objeto) this.objeto.add(mesh);
+  }
+
   removeElement(mesh: THREE.Mesh) {
     if (!this.objeto) return;
     // No disponer del material: puede estar compartido entre varias mallas.

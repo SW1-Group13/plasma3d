@@ -164,7 +164,36 @@ def process_and_save_glb(job, det, roof_type="plano", fill_gaps=True, drawn=None
 
     # Guardar job
     job.save()
+    if not job.glb_model:
+        raise ValueError('no salió ninguna pieza 3D de las detecciones')
     return job
+
+
+def _discard_job(job):
+    """Borra un job que no llegó a tener 3D (nunca dejar un modelo vacío)."""
+    for field in [job.plan_file, job.plan_image, job.detections_json, job.glb_model]:
+        if not field:
+            continue
+        try:
+            field.delete(save=False)
+        except Exception:
+            pass
+    job.delete()
+
+
+def _build_or_discard(job, det, roof_type, fill_gaps=True):
+    """Genera el GLB; si falla, borra el job y devuelve la respuesta de error."""
+    try:
+        process_and_save_glb(job, det, roof_type, fill_gaps)
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        _discard_job(job)
+        return Response(
+            {'detail': 'No se pudo generar el modelo 3D de este plano: {}'.format(exc)},
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
+    return None
 
 
 @api_view(['POST'])
@@ -255,7 +284,9 @@ def create_plan3d_job(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    failed = _build_or_discard(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    if failed is not None:
+        return failed
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -311,7 +342,9 @@ def create_plan_json(request):
     job.save()
 
     # Generar el GLB
-    process_and_save_glb(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    failed = _build_or_discard(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    if failed is not None:
+        return failed
 
     return Response(
         Plan3DJobSerializer(job).data,
@@ -548,7 +581,15 @@ def regenerar_plan(request, pk):
         except Exception as exc:
             print('[regenerar] no se pudo combinar con el detector: {}'.format(exc))
     old = job.glb_model.name if job.glb_model else None
-    process_and_save_glb(job, det, roof_type, _fill_gaps_from(request))
+    try:
+        process_and_save_glb(job, det, roof_type, _fill_gaps_from(request))
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        return Response(
+            {'detail': 'No se pudo regenerar el modelo 3D: {}'.format(exc)},
+            status=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        )
     if old and job.glb_model.name != old:
         try:
             job.glb_model.storage.delete(old)  # no acumular versiones viejas

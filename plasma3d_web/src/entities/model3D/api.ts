@@ -30,12 +30,13 @@ export const model3DApi = {
     return data;
   },
 
-  async updateGlb(file: File, usuario: number): Promise<Model3D[]> {
+  /** Reemplaza el GLB del plano y devuelve el plano con la URL nueva. */
+  async updateGlb(file: File, usuario: number): Promise<Model3D> {
     const formData = new FormData();
     formData.append('file_glb', file);
     formData.append('usuario', usuario.toString());
-    await http.post('api/set_plan/reemplazar_glb/', formData);
-    return model3DApi.list();
+    const { data } = await http.post<Model3D>('api/set_plan/reemplazar_glb/', formData);
+    return data;
   },
 
   async saveGlb(file: File, usuario: number): Promise<SaveModelResponse> {

@@ -26,13 +26,19 @@ DOOR_REF_M = 0.90  # ancho típico de puerta para estimar la escala
 
 
 def stroke_mask(image, max_gray=150, max_sat=0.35):
-    """Píxeles de trazo: oscuros y poco saturados (paredes, líneas)."""
+    """
+    Píxeles de trazo: oscuros y poco saturados (paredes, líneas).
+    Un píxel MUY oscuro es trazo aunque tenga tinte (muros rellenos de azul
+    marino, gris pizarra, café oscuro): su "saturación" es solo ruido del
+    color de relleno. Un piso de color es claro y sigue quedando fuera.
+    """
     rgb = np.asarray(image.convert('RGB'), dtype=np.float32) / 255.0
     mx = rgb.max(axis=2)
     mn = rgb.min(axis=2)
     sat = np.where(mx > 0, (mx - mn) / np.maximum(mx, 1e-6), 0)
     gray = rgb.mean(axis=2) * 255
-    return (gray < max_gray) & (sat < max_sat)
+    very_dark = mx < 0.30  # ningún canal pasa de ~76/255
+    return (gray < max_gray) & ((sat < max_sat) | very_dark)
 
 
 def _runs(mask, horizontal, min_len):

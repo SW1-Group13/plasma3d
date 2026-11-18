@@ -13,7 +13,7 @@ interface ModelStore {
     gapMode?: GapMode,
     realWidthM?: number | null,
   ) => Promise<Model3D>;
-  updateGlb: (file: File, usuario: number) => Promise<void>;
+  updateGlb: (file: File, usuario: number) => Promise<Model3D>;
   saveGlb: (file: File, usuario: number) => Promise<void>;
   createEmpty: (usuario: number) => Promise<void>;
   remove: (id: number) => Promise<void>;
@@ -43,8 +43,9 @@ export const useModelStore = create<ModelStore>((set, get) => ({
   updateGlb: async (file, usuario) => {
     set({ isLoading: true });
     try {
-      const data = await model3DApi.updateGlb(file, usuario);
-      set({ list: data });
+      const updated = await model3DApi.updateGlb(file, usuario);
+      set({ list: get().list.map((m) => (m.id === updated.id ? updated : m)) });
+      return updated;
     } finally {
       set({ isLoading: false });
     }
