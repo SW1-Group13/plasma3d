@@ -9,7 +9,7 @@ from .services_gemini import analizar_modelo_glb, extraer_info_glb
 
 def _contar_desde_calidad(calidad):
     """Conteos que ya calcula el pipeline de deteccion (plans)."""
-    if not isinstance(calidad, dict):
+    if not isinstance(calidad, dict) or not calidad:
         return None
     return {
         'muros': int(calidad.get('muros') or 0),
@@ -20,16 +20,14 @@ def _contar_desde_calidad(calidad):
 
 def _contar_desde_det(det):
     """Conteos a partir del JSON de detecciones (lista de clases)."""
-    if not isinstance(det, dict):
+    if not isinstance(det, dict) or not isinstance(det.get('classes'), list):
         return None
-    clases = det.get('classes') or []
+    clases = det['classes']
     nombres = [
         str((c or {}).get('name', '')).lower()
         for c in clases
         if isinstance(c, dict)
     ]
-    if not nombres:
-        return None
     return {
         'muros': nombres.count('wall'),
         'puertas': nombres.count('door'),
@@ -210,51 +208,53 @@ def _nivel_de(analisis):
 
 
 def analizar_plan(plan):
-    """Analiza un Plan3DJob guardado (Gemini si hay clave, si no reglas)."""
-    conteos = _contar_desde_calidad(getattr(plan, 'calidad', None))
-    avisos = []
-    if isinstance(getattr(plan, 'calidad', None), dict):
-        avisos = plan.calidad.get('avisos') or []
+    """Analiza el GLB guardado o usa los datos del plano si aun no hay GLB."""
+    if plan.glb_model:
+        nombre = os.path.basename(plan.glb_model.name)
+        try:
+            with plan.glb_model.open('rb') as archivo:
+                resultado = analizar_archivo(archivo)
+        except Exception:
+            return {
+                'success': False,
+                'code': 'file_unavailable',
+                'error': 'No se pudo abrir el modelo 3D guardado. Vuelve a guardarlo e inténtalo de nuevo.',
+                'plan_id': plan.id,
+                'nombre_archivo': nombre,
+            }
+        return {
+            **resultado,
+            'plan_id': plan.id,
+            'nombre_archivo': nombre,
+        }
 
+    calidad = getattr(plan, 'calidad', None)
+    conteos = _contar_desde_calidad(calidad)
+    avisos = (calidad.get('avisos') or []) if isinstance(calidad, dict) else []
     if conteos is None and plan.detections_json:
         try:
-            with plan.detections_json.open('rb') as fh:
-                det = json.loads(fh.read().decode('utf-8'))
-            conteos = _contar_desde_det(det)
+            with plan.detections_json.open('rb') as archivo:
+                detecciones = json.loads(archivo.read().decode('utf-8'))
+            conteos = _contar_desde_det(detecciones)
         except Exception:
             conteos = None
 
     if conteos is None:
-        conteos = {'muros': 0, 'puertas': 0, 'ventanas': 0}
+        return {
+            'success': False,
+            'code': 'missing_model_data',
+            'error': 'Este modelo no tiene un GLB ni datos de detección suficientes para analizar.',
+            'plan_id': plan.id,
+        }
 
-    analisis = None
-    fuente = 'heuristica'
-
-    if getattr(settings, 'GEMINI_API_KEY', None) and plan.glb_model:
-        try:
-            with plan.glb_model.open('rb') as fh:
-                respuesta = analizar_modelo_glb(fh)
-            if (
-                respuesta.get('success')
-                and isinstance(respuesta.get('analisis'), dict)
-            ):
-                analisis = respuesta['analisis']
-                fuente = 'gemini'
-        except Exception:
-            analisis = None
-
-    if analisis is None:
-        analisis = _resumen(conteos, avisos, bool(plan.glb_model))
-
+    analisis = _resumen(conteos, avisos, False)
     return {
         'success': True,
         'analisis': analisis,
         'nivel_riesgo': _nivel_de(analisis),
-        'fuente': fuente,
+        'fuente': 'heuristica',
         'plan_id': plan.id,
-        'nombre_archivo': (
-            os.path.basename(plan.glb_model.name) if plan.glb_model else ''
-        ),
+        'nombre_archivo': os.path.basename(plan.plan_file.name),
     }
 
 

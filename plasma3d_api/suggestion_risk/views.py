@@ -1,3 +1,6 @@
+import logging
+
+from django.db import DatabaseError
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -6,6 +9,9 @@ from rest_framework.response import Response
 from .models import AnalisisRiesgo
 from .services_agente import MAX_CHARS_MENSAJE, AgenteError, responder_agente
 from .services_riesgo import analizar_archivo, analizar_plan
+
+
+logger = logging.getLogger(__name__)
 
 
 @api_view(['POST'])
@@ -110,16 +116,31 @@ def analizar_plan_view(request, pk):
 
     data = analizar_plan(plan)
     if not data.get('success'):
-        return Response(data, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        http_status = (
+            status.HTTP_409_CONFLICT
+            if data.get('code') == 'missing_model_data'
+            else status.HTTP_500_INTERNAL_SERVER_ERROR
+        )
+        return Response(data, status=http_status)
 
-    AnalisisRiesgo.objects.create(
-        usuario=user if getattr(user, 'id', None) else None,
-        plan=plan,
-        resultado=data['analisis'],
-        nivel_riesgo=data.get('nivel_riesgo', 'bajo'),
-        fuente=data.get('fuente', 'heuristica'),
+    try:
+        AnalisisRiesgo.objects.create(
+            usuario=user if getattr(user, 'id', None) else None,
+            plan=plan,
+            resultado=data['analisis'],
+            nivel_riesgo=data.get('nivel_riesgo', 'bajo'),
+            fuente=data.get('fuente', 'heuristica'),
+        )
+    except DatabaseError:
+        logger.exception('No se pudo guardar el análisis de riesgo del plan %s', pk)
+        return Response(
+            {**data, 'historial_guardado': False},
+            status=status.HTTP_200_OK,
+        )
+    return Response(
+        {**data, 'historial_guardado': True},
+        status=status.HTTP_200_OK,
     )
-    return Response(data, status=status.HTTP_200_OK)
 
 
 @api_view(['GET'])

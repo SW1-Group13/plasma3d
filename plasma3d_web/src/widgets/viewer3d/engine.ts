@@ -15,6 +15,7 @@ import {
 import {
   Modelo3D,
   buildDoorGeometry,
+  buildGableRoofGeometry,
   buildWindowFrameGeometry,
   classifyMeshName,
   type ElementType,
@@ -29,6 +30,7 @@ import {
 } from '@/entities/model3D/three/uv';
 import {
   DOOR_HEIGHT_M,
+  ROOF_OVERHANG_M,
   ROOF_THICKNESS_M,
   SLAB_THICKNESS_M,
   WALL_HEIGHT_M,
@@ -129,6 +131,39 @@ export interface DraftInfo {
   depth?: number;
 }
 
+/** Geometría temporal de una propuesta del agente, en coordenadas del mundo. */
+export type AgentPreviewItem =
+  | {
+      kind: 'segment';
+      x1: number; z1: number; x2: number; z2: number;
+      type?: 'wall' | 'door' | 'window';
+      height?: number;
+      thickness?: number;
+    }
+  | {
+      kind: 'slab';
+      x1: number; z1: number; x2: number; z2: number;
+      type?: 'floor' | 'roof';
+      roofKind?: RoofDrawKind;
+    };
+
+export type AgentMoveDirection = 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+
+/** Referencias vivas; la propuesta solo existe mientras está abierto este editor. */
+export interface AgentMoveProposal {
+  direction: AgentMoveDirection;
+  distanceM: number;
+  dx: number;
+  dz: number;
+  from: { x: number; z: number };
+  to: { x: number; z: number };
+  selected: THREE.Mesh;
+  targets: THREE.Mesh[];
+  modelRevision: number;
+  changeRevision: number;
+  blockingReason?: string;
+}
+
 /** Material del catálogo que recibe cada tipo de pieza al crearse. */
 const DEFAULT_MATERIAL_BY_KIND: Record<MeasureKind, string> = {
   wall: 'Ladrillo rojo',
@@ -210,6 +245,8 @@ type SceneSnapshot = {
   material: THREE.Material | THREE.Material[];
 }[];
 
+type HistoryEntry = { snapshot: SceneSnapshot; agentId: number | null };
+
 export class EditorEngine {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -221,6 +258,7 @@ export class EditorEngine {
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
   private grid!: THREE.GridHelper;
+  private theme: 'dark' | 'light' = 'dark';
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private layers: Layer[] = [];
   private materials: Material[] = [];
@@ -252,6 +290,7 @@ export class EditorEngine {
   private onMarquee: (rect: { x: number; y: number; w: number; h: number } | null) => void = () => {};
   private drafting: { type: DrawType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
   private preview: THREE.Mesh | null = null;
+  private agentPreview = new THREE.Group();
   private orthoMode = false;
   private lockVertical = false;
   private multiSelect = false;
@@ -259,8 +298,12 @@ export class EditorEngine {
   private pivot = new THREE.Object3D();
   private dragStart: { pivotWorld: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrixWorld: THREE.Matrix4 }[] } | null = null;
   private marqueeStart: { x: number; y: number } | null = null;
-  private undoStack: SceneSnapshot[] = [];
-  private redoStack: SceneSnapshot[] = [];
+  private undoStack: HistoryEntry[] = [];
+  private redoStack: HistoryEntry[] = [];
+  private agentTransaction: { before: SceneSnapshot } | null = null;
+  private nextAgentTransactionId = 1;
+  private changeRevision = 0;
+  private modelRevision = 0;
   private lastUndoKey: { key: string; at: number } | null = null;
   private cutMode = false;
   private mode: TransformMode = 'translate';
@@ -342,6 +385,7 @@ export class EditorEngine {
     // Luces y helpers
     this.grid = new THREE.GridHelper(30, 30, 0x334155, 0x1e293b);
     this.scene.add(this.grid);
+    this.setTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
     const intensity = 0.6;
@@ -377,6 +421,8 @@ export class EditorEngine {
     );
     this.preview.visible = false;
     this.scene.add(this.preview);
+    this.agentPreview.name = 'agent-preview';
+    this.scene.add(this.agentPreview);
 
     // Gizmo de transformacion (fix three r169+)
     this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
@@ -460,6 +506,30 @@ export class EditorEngine {
 
   setSelectionListener(listener: SelectionListener) {
     this.onSelection = listener;
+  }
+
+  setTheme(theme: 'dark' | 'light') {
+    if (this.theme === theme) return;
+    this.theme = theme;
+    const light = theme === 'light';
+    const canvasColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-canvas').trim();
+    this.renderer.setClearColor(light ? canvasColor || '#f6f8fc' : 0x0a0e1a);
+
+    const oldGrid = this.grid;
+    const grid = new THREE.GridHelper(
+      30,
+      30,
+      light ? 0x94a3b8 : 0x334155,
+      light ? 0xd6dfeb : 0x1e293b,
+    );
+    grid.visible = oldGrid.visible;
+    this.scene.remove(oldGrid);
+    this.scene.add(grid);
+    this.grid = grid;
+    oldGrid.geometry.dispose();
+    if (Array.isArray(oldGrid.material)) oldGrid.material.forEach((material) => material.dispose());
+    else oldGrid.material.dispose();
   }
 
   private onResize() {
@@ -1033,6 +1103,14 @@ export class EditorEngine {
 
   loadModel(url: string | null, textures: { name: string; url: string }[], onLoaded?: () => void) {
     this.setPresentationMode(false);
+    this.clearAgentPreview();
+    this.agentTransaction = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.lastUndoKey = null;
+    this.changeRevision++;
+    this.modelRevision++;
+    this.emitHistory();
     this.model?.dispose();
     this.model = new Modelo3D(
       this.scene,
@@ -1801,7 +1879,7 @@ export class EditorEngine {
       cuts.push({ center: centerLocal.z, width: openingDims.ancho, bottom, height: openingDims.alto });
     });
 
-    this.model.setWallOpenings(wall, cuts);
+    this.model.setWallOpenings(wall, cuts, Boolean(this.agentTransaction));
     if (detachOutside) this.ensureEdges(wall);
   }
 
@@ -1848,7 +1926,7 @@ export class EditorEngine {
       kind === 'window'
         ? buildWindowFrameGeometry(d.espesor, d.alto, d.ancho)
         : buildDoorGeometry(d.espesor, d.alto, d.ancho);
-    old.dispose();
+    if (!this.agentTransaction?.before.some((entry) => entry.geometry === old)) old.dispose();
 
     const parent = mesh.parent ?? this.model.getObject3D();
     parent.updateMatrixWorld(true);
@@ -2305,12 +2383,83 @@ export class EditorEngine {
     }));
   }
 
+  private sceneChanged(before: SceneSnapshot): boolean {
+    const current = this.snapshot();
+    if (before.length !== current.length) return true;
+    const byMesh = new Map(before.map((entry) => [entry.mesh, entry]));
+    return current.some((entry) => {
+      const old = byMesh.get(entry.mesh);
+      return !old || old.geometry !== entry.geometry ||
+        !old.position.equals(entry.position) || !old.quaternion.equals(entry.quaternion) ||
+        !old.scale.equals(entry.scale) ||
+        JSON.stringify(old.userData) !== JSON.stringify(entry.userData);
+    });
+  }
+
+  /** Una acción completa del agente ocupa un solo paso del historial. */
+  beginAgentTransaction() {
+    if (!this.model) throw new Error('No hay un plano cargado.');
+    if (this.agentTransaction) throw new Error('Ya hay una acción del agente en curso.');
+    this.agentTransaction = { before: this.snapshot() };
+  }
+
+  commitAgentTransaction(): number | null {
+    const transaction = this.agentTransaction;
+    if (!transaction) throw new Error('La acción del agente ya no está activa.');
+    this.agentTransaction = null;
+    this.refreshVisibility();
+    this.refreshAppearance();
+    this.emitSelection();
+    if (!this.sceneChanged(transaction.before)) return null;
+    const agentId = this.nextAgentTransactionId++;
+    this.undoStack.push({ snapshot: transaction.before, agentId });
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
+    this.lastUndoKey = null;
+    this.changeRevision++;
+    this.emitHistory();
+    queueMicrotask(() => this.onChange());
+    return agentId;
+  }
+
+  /** Revierte una acción incompleta sin activar el autoguardado. */
+  rollbackAgentTransaction() {
+    const transaction = this.agentTransaction;
+    if (!transaction) return;
+    this.agentTransaction = null;
+    if (!this.sceneChanged(transaction.before)) return;
+    this.restore(transaction.before);
+    this.changeRevision++;
+    this.emitHistory();
+  }
+
+  canUndoAgentTransaction(id: number): boolean {
+    const top = this.undoStack.at(-1);
+    return top?.agentId === id;
+  }
+
+  /** Deshace solo si la última edición general fue la acción indicada de IA. */
+  undoAgentTransaction(id?: number): boolean {
+    const top = this.undoStack.at(-1);
+    if (top?.agentId == null || (id !== undefined && top.agentId !== id)) return false;
+    return this.undo();
+  }
+
+  getChangeRevision(): number {
+    return this.changeRevision;
+  }
+
+  getModelRevision(): number {
+    return this.modelRevision;
+  }
+
   /**
    * Guarda el estado antes de un cambio. `key` agrupa cambios seguidos del
    * mismo campo (p. ej. teclear en el panel) en un solo paso de deshacer.
    */
   pushUndo(key?: string) {
     if (!this.model) return;
+    this.changeRevision++;
     // Avisar al editor (autoguardado) justo después de aplicar el cambio.
     queueMicrotask(() => this.onChange());
     const now = Date.now();
@@ -2319,7 +2468,7 @@ export class EditorEngine {
       return;
     }
     this.lastUndoKey = key ? { key, at: now } : null;
-    this.undoStack.push(this.snapshot());
+    this.undoStack.push({ snapshot: this.snapshot(), agentId: null });
     if (this.undoStack.length > 60) this.undoStack.shift();
     this.redoStack = [];
     this.emitHistory();
@@ -2332,11 +2481,8 @@ export class EditorEngine {
     const keep = new Set(snap.map((s) => s.mesh));
     this.allMeshes().forEach((m) => {
       if (keep.has(m)) return;
-      // Sacar de escena sin liberar la geometría (rehacer puede reusarla).
-      const geo = m.geometry;
-      m.geometry = new THREE.BufferGeometry();
-      model.removeElement(m);
-      m.geometry = geo;
+      // La geometría debe seguir disponible para rehacer.
+      model.removeElement(m, true);
     });
     snap.forEach((s) => {
       const m = s.mesh;
@@ -2361,21 +2507,23 @@ export class EditorEngine {
   }
 
   undo() {
-    const snap = this.undoStack.pop();
-    if (!snap) return false;
+    const entry = this.undoStack.pop();
+    if (!entry) return false;
     queueMicrotask(() => this.onChange());
-    this.redoStack.push(this.snapshot());
-    this.restore(snap);
+    this.redoStack.push({ snapshot: this.snapshot(), agentId: entry.agentId });
+    this.restore(entry.snapshot);
+    this.changeRevision++;
     this.emitHistory();
     return true;
   }
 
   redo() {
-    const snap = this.redoStack.pop();
-    if (!snap) return false;
+    const entry = this.redoStack.pop();
+    if (!entry) return false;
     queueMicrotask(() => this.onChange());
-    this.undoStack.push(this.snapshot());
-    this.restore(snap);
+    this.undoStack.push({ snapshot: this.snapshot(), agentId: entry.agentId });
+    this.restore(entry.snapshot);
+    this.changeRevision++;
     this.emitHistory();
     return true;
   }
@@ -2983,9 +3131,12 @@ export class EditorEngine {
     if (mesh) {
       const kind = this.measureKindOf(mesh);
       const q = kind ? pieceQuantities(mesh, kind) : null;
+      const center = mesh.getWorldPosition(new THREE.Vector3());
       seleccion = {
+        id: mesh.userData.elementId as string | undefined,
         nombre: mesh.name,
         tipo: kind ?? 'otro',
+        posicion_mundo_m: { x: r2(center.x), z: r2(center.z) },
         material: this.materialById(mesh.userData.materialId as string)?.nombre ?? null,
         piezas_seleccionadas: this.selection.length,
         ...(q
@@ -3018,6 +3169,7 @@ export class EditorEngine {
         });
 
     return {
+      revision_plano: this.changeRevision,
       unidad: this.measureUnit,
       vista: this.view,
       tipos: { wall: 'muros', door: 'puertas', window: 'ventanas', floor: 'pisos', roof: 'techos' },
@@ -3050,6 +3202,247 @@ export class EditorEngine {
 
   private agentCounter = 0;
 
+  /** Prepara un movimiento en ejes de planta sin modificar el modelo. */
+  prepareAgentMove(direction: AgentMoveDirection, distanceM: number): AgentMoveProposal {
+    if (!this.model) throw new Error('No hay un plano cargado.');
+    if (this.selection.length !== 1) {
+      throw new Error(this.selection.length === 0
+        ? 'Selecciona primero la pieza que quieres mover.'
+        : 'Selecciona una sola pieza para moverla con la IA.');
+    }
+    if (!Number.isFinite(distanceM) || distanceM < 0.01 || distanceM > 50) {
+      throw new Error('La distancia debe estar entre 0.01 y 50 m.');
+    }
+    const vector: Record<AgentMoveDirection, [number, number]> = {
+      derecha: [1, 0], izquierda: [-1, 0], arriba: [0, -1], abajo: [0, 1],
+    };
+    const axis = vector[direction];
+    if (!axis) throw new Error('Dirección inválida para la vista de planta.');
+    const selected = this.selection[0];
+    const kind = this.measureKindOf(selected);
+    if (!kind || !['wall', 'door', 'window', 'floor', 'roof'].includes(kind) || !this.agentHas(selected)) {
+      throw new Error('La pieza seleccionada no se puede mover con el agente.');
+    }
+    const dx = axis[0] * distanceM;
+    const dz = axis[1] * distanceM;
+    const fromWorld = selected.getWorldPosition(new THREE.Vector3());
+    const from = { x: fromWorld.x, z: fromWorld.z };
+    const to = { x: from.x + dx, z: from.z + dz };
+    const hosted = kind === 'wall' && selected.userData.elementId
+      ? [...this.model.getDoors(), ...this.model.getWindows()].filter(
+          (opening) => opening.userData.hostWallId === selected.userData.elementId,
+        )
+      : [];
+    const targets = [selected, ...hosted];
+    let blockingReason: string | undefined;
+    if (targets.some((mesh) => {
+      const box = new THREE.Box3().setFromObject(mesh).translate(new THREE.Vector3(dx, 0, dz));
+      return Math.max(Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z)) > 200;
+    })) {
+      blockingReason = 'El movimiento dejaría una pieza fuera del área de trabajo (±200 m).';
+    }
+    if (!blockingReason && (kind === 'door' || kind === 'window')) {
+      blockingReason = this.agentOpeningMoveBlockReason(selected, to);
+    }
+    return {
+      direction, distanceM, dx, dz, from, to, selected, targets,
+      modelRevision: this.modelRevision, changeRevision: this.changeRevision,
+      ...(blockingReason ? { blockingReason } : {}),
+    };
+  }
+
+  /** Impide que una abertura asociada se salga de los límites de su muro. */
+  private agentOpeningMoveBlockReason(opening: THREE.Mesh, to: { x: number; z: number }): string | undefined {
+    const hostId = opening.userData.hostWallId as string | undefined;
+    if (!hostId) return undefined; // Abertura suelta: el usuario ya puede moverla libremente.
+    const wall = this.model?.getWalls().find((candidate) => candidate.userData.elementId === hostId);
+    if (!wall) return 'La abertura ya no tiene su muro asociado. Usa Colocar antes de moverla.';
+    const wallAxis = pieceAxis(wall);
+    const vx = wallAxis.b.x - wallAxis.a.x;
+    const vz = wallAxis.b.z - wallAxis.a.z;
+    const wallLength = Math.hypot(vx, vz);
+    if (wallLength < 0.01) return 'El muro asociado no tiene un eje válido.';
+    const ux = vx / wallLength;
+    const uz = vz / wallLength;
+    const rx = to.x - wallAxis.a.x;
+    const rz = to.z - wallAxis.a.z;
+    const along = rx * ux + rz * uz;
+    const across = Math.abs(rx * -uz + rz * ux);
+    const current = opening.getWorldPosition(new THREE.Vector3());
+    const currentAcross = (current.x - wallAxis.a.x) * -uz + (current.z - wallAxis.a.z) * ux;
+    const nextAcross = rx * -uz + rz * ux;
+    const openingAxis = pieceAxis(opening);
+    const openingLength = Math.hypot(openingAxis.b.x - openingAxis.a.x, openingAxis.b.z - openingAxis.a.z);
+    const wallThickness = pieceQuantities(wall, 'wall').thickness;
+    if (along < openingLength / 2 - 0.05 || along > wallLength - openingLength / 2 + 0.05 ||
+        across > wallThickness / 2 + 0.03 || Math.abs(nextAcross - currentAcross) > 0.03) {
+      return 'La puerta o ventana quedaría fuera de su muro. Muévela a lo largo del muro o ajusta la distancia.';
+    }
+    return undefined;
+  }
+
+  private agentMoveStaleReason(proposal: AgentMoveProposal): string | null {
+    if (this.modelRevision !== proposal.modelRevision || !this.model) return 'El plano cambió. Pide el movimiento de nuevo.';
+    if (this.changeRevision !== proposal.changeRevision) return 'El plano cambió durante la vista previa. Pide el movimiento de nuevo.';
+    if (this.selection.length !== 1 || this.selection[0] !== proposal.selected) {
+      return 'La pieza seleccionada cambió. Pide el movimiento de nuevo.';
+    }
+    if (proposal.targets.some((mesh) => !this.agentHas(mesh))) {
+      return 'Una de las piezas del movimiento ya no está en el plano.';
+    }
+    return null;
+  }
+
+  validateAgentMoveProposal(proposal: AgentMoveProposal): string | null {
+    return this.agentMoveStaleReason(proposal) ?? proposal.blockingReason ?? null;
+  }
+
+  /** Fantasma en la posición final; excluye las piezas movidas al buscar choques. */
+  setAgentMovePreview(proposal: AgentMoveProposal): string[] {
+    const stale = this.agentMoveStaleReason(proposal);
+    if (stale) throw new Error(stale);
+    this.clearAgentPreview();
+    const moving = new Set(proposal.targets);
+    const existing = this.allMeshes()
+      .filter((mesh) => mesh.visible && !moving.has(mesh))
+      .map((mesh) => ({ mesh, box: new THREE.Box3().setFromObject(mesh) }));
+    const warnings: string[] = [];
+    if (this.isOpening(proposal.selected) && !proposal.selected.userData.hostWallId) {
+      warnings.push('La puerta o ventana no está asociada a un muro; seguirá suelta.');
+    }
+    if (['floor', 'roof'].includes(this.measureKindOf(proposal.selected) ?? '')) {
+      warnings.push('Comprueba que la pieza siga alineada con los muros después de moverla.');
+    }
+    proposal.targets.forEach((mesh, index) => {
+      mesh.updateWorldMatrix(true, false);
+      const ghost = new THREE.Mesh(mesh.geometry.clone(), new THREE.MeshBasicMaterial({
+        color: proposal.blockingReason ? 0xef4444 : 0x22d3ee,
+        transparent: true, opacity: 0.45, depthTest: false, depthWrite: false,
+        side: THREE.DoubleSide,
+      }));
+      mesh.matrixWorld.decompose(ghost.position, ghost.quaternion, ghost.scale);
+      ghost.position.x += proposal.dx;
+      ghost.position.z += proposal.dz;
+      ghost.renderOrder = 100;
+      this.agentPreview.add(ghost);
+      const box = new THREE.Box3().setFromObject(ghost);
+      const hostId = mesh.userData.hostWallId as string | undefined;
+      const collided = existing.find(({ mesh: other, box: otherBox }) => {
+        if (hostId && other.userData.elementId === hostId) return false;
+        const intersection = box.clone().intersect(otherBox);
+        if (intersection.isEmpty()) return false;
+        const size = intersection.getSize(new THREE.Vector3());
+        return size.x > 0.04 && size.y > 0.04 && size.z > 0.04;
+      });
+      if (collided) {
+        warnings.push(`${index === 0 ? 'La pieza' : 'Una abertura asociada'} puede solaparse con ${collided.mesh.name}.`);
+        if (!proposal.blockingReason) (ghost.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
+      }
+    });
+    return warnings.slice(0, 8);
+  }
+
+  /** Aplica el vector en coordenadas mundo dentro de la transacción del chat. */
+  applyAgentMove(proposal: AgentMoveProposal) {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
+    const invalid = this.validateAgentMoveProposal(proposal);
+    if (invalid) throw new Error(invalid);
+    const delta = new THREE.Vector3(proposal.dx, 0, proposal.dz);
+    proposal.targets.forEach((mesh) => {
+      const parent = mesh.parent;
+      if (!parent) throw new Error('Una pieza del movimiento ya no está en el plano.');
+      parent.updateWorldMatrix(true, false);
+      const world = mesh.getWorldPosition(new THREE.Vector3());
+      mesh.position.copy(parent.worldToLocal(world.add(delta)));
+      mesh.updateMatrix();
+      mesh.updateWorldMatrix(true, false);
+    });
+    if (this.isOpening(proposal.selected) && proposal.selected.userData.hostWallId) {
+      this.refreshHostedWallForOpening(proposal.selected, false);
+    }
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  /** Dibuja una propuesta fuera del modelo guardable y señala choques con piezas existentes. */
+  setAgentPreview(items: AgentPreviewItem[]): string[] {
+    this.clearAgentPreview();
+    if (!this.model) return ['No hay un plano cargado.'];
+    const existing = this.allMeshes()
+      .filter((mesh) => mesh.visible)
+      .map((mesh) => ({ mesh, box: new THREE.Box3().setFromObject(mesh) }));
+    const warnings: string[] = [];
+
+    items.forEach((item, index) => {
+      const values = [item.x1, item.z1, item.x2, item.z2];
+      if (values.some((value) => !Number.isFinite(value))) {
+        warnings.push(`La pieza ${index + 1} tiene coordenadas inválidas.`);
+        return;
+      }
+      const width = Math.abs(item.x2 - item.x1);
+      const depth = Math.abs(item.z2 - item.z1);
+      let geometry: THREE.BufferGeometry;
+      let y = 0;
+      let angle = 0;
+      if (item.kind === 'segment') {
+        const type = item.type ?? 'wall';
+        const dims = this.elementDims(type);
+        const height = item.height ?? dims.height;
+        const thickness = item.thickness ?? dims.thickness;
+        const length = Math.hypot(width, depth);
+        geometry = new THREE.BoxGeometry(thickness, height, length);
+        y = dims.sill + height / 2;
+        angle = Math.atan2(item.x2 - item.x1, item.z2 - item.z1);
+      } else {
+        const roof = item.type === 'roof';
+        const thickness = roof ? ROOF_THICKNESS_M : SLAB_THICKNESS_M;
+        if (roof && item.roofKind === 'dos_aguas') {
+          const alongX = width >= depth;
+          geometry = buildGableRoofGeometry(alongX ? width : depth, alongX ? depth : width);
+          if (!alongX) geometry.rotateY(Math.PI / 2);
+        } else {
+          const overhang = roof ? ROOF_OVERHANG_M : 0;
+          geometry = new THREE.BoxGeometry(width + 2 * overhang, thickness, depth + 2 * overhang);
+          y = roof ? WALL_HEIGHT_M + thickness / 2 : -thickness / 2;
+        }
+      }
+      const ghost = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+        color: 0x22d3ee, transparent: true, opacity: 0.4,
+        depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+      }));
+      ghost.position.set((item.x1 + item.x2) / 2, y, (item.z1 + item.z2) / 2);
+      ghost.rotation.y = angle;
+      ghost.renderOrder = 100;
+      this.agentPreview.add(ghost);
+
+      const box = new THREE.Box3().setFromObject(ghost);
+      const collided = existing.find(({ box: other }) => {
+        const intersection = box.clone().intersect(other);
+        if (intersection.isEmpty()) return false;
+        const size = intersection.getSize(new THREE.Vector3());
+        return size.x > 0.04 && size.y > 0.04 && size.z > 0.04;
+      });
+      if (collided) {
+        warnings.push(`La pieza ${index + 1} puede solaparse con ${collided.mesh.name}.`);
+        (ghost.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
+      }
+    });
+    return warnings.slice(0, 8);
+  }
+
+  clearAgentPreview() {
+    this.agentPreview.children.slice().forEach((child) => {
+      this.agentPreview.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+        else child.material.dispose();
+      }
+    });
+  }
+
   /** Muro/puerta/ventana de (x1,z1) a (x2,z2). Devuelve la malla creada. */
   agentCreateSegment(
     type: ElementType,
@@ -3059,6 +3452,7 @@ export class EditorEngine {
     z2: number,
     opts: { thickness?: number; height?: number } = {},
   ): THREE.Mesh | null {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return null;
     const dims = this.elementDims(type);
     const parent = this.model.getObject3D();
@@ -3088,6 +3482,7 @@ export class EditorEngine {
     z2: number,
     roofKind: RoofDrawKind = 'plano',
   ): THREE.Mesh | null {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return null;
     const parent = this.model.getObject3D();
     parent.updateMatrixWorld(true);
@@ -3134,6 +3529,7 @@ export class EditorEngine {
 
   /** Asigna material; devuelve los anteriores para poder deshacer. */
   agentSetMaterial(meshes: THREE.Mesh[], materialId: string): Map<THREE.Mesh, string> {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     const previous = new Map<THREE.Mesh, string>();
     meshes.forEach((m) => {
       previous.set(m, (m.userData.materialId as string) ?? '');
@@ -3153,12 +3549,13 @@ export class EditorEngine {
 
   /** Elimina piezas (las que estaban seleccionadas se deseleccionan). */
   agentRemove(meshes: THREE.Mesh[]) {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return;
     const set = new Set(meshes);
     if (this.selection.some((m) => set.has(m))) {
       this.setSelection(this.selection.filter((m) => !set.has(m)));
     }
-    meshes.forEach((m) => this.model?.removeElement(m));
+    meshes.forEach((m) => this.model?.removeElement(m, Boolean(this.agentTransaction)));
     this.emitSelection();
   }
 
@@ -3204,6 +3601,7 @@ export class EditorEngine {
     const obj = this.model.getObject3D();
     if (!obj) return;
     obj.position[axis] = value;
+    this.changeRevision++;
   }
 
   // ------------------------------------------------------------------
@@ -3549,6 +3947,7 @@ export class EditorEngine {
   }
 
   dispose() {
+    this.clearAgentPreview();
     this.setPresentationMode(false);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
@@ -3564,6 +3963,9 @@ export class EditorEngine {
     this.transformControls.dispose();
     this.orbit.dispose();
     this.model?.dispose();
+    this.grid.geometry.dispose();
+    if (Array.isArray(this.grid.material)) this.grid.material.forEach((material) => material.dispose());
+    else this.grid.material.dispose();
     this.renderer.dispose();
   }
 }

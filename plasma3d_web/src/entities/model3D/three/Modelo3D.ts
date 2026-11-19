@@ -139,7 +139,7 @@ export function buildWallWithOpeningsGeometry(
  * base y=0 en el arranque de los muros. Dos faldones + los dos hastiales,
  * unidos en una sola geometría. La cumbrera va a lo largo de X.
  */
-function buildGableRoofGeometry(L: number, S: number): THREE.BufferGeometry {
+export function buildGableRoofGeometry(L: number, S: number): THREE.BufferGeometry {
   const o = ROOF_OVERHANG_M;
   const t = ROOF_THICKNESS_M;
   const H = WALL_HEIGHT_M;
@@ -799,14 +799,14 @@ export class Modelo3D {
     return mesh;
   }
 
-  setWallOpenings(mesh: THREE.Mesh, openings: WallOpeningCut[]) {
+  setWallOpenings(mesh: THREE.Mesh, openings: WallOpeningCut[], preservePreviousGeometry = false) {
     if (!mesh.userData.generatedSegment || !this.walls.includes(mesh)) return;
     const dims = mesh.userData.baseDims as { thickness: number; height: number; length: number } | undefined;
     if (!dims) return;
     const old = mesh.geometry;
     mesh.geometry = buildWallWithOpeningsGeometry(dims.thickness, dims.height, dims.length, openings);
     mesh.userData.openingCuts = openings;
-    old.dispose();
+    if (!preservePreviousGeometry) old.dispose();
   }
 
   /**
@@ -876,10 +876,10 @@ export class Modelo3D {
     if (mesh.parent !== this.objeto) this.objeto.add(mesh);
   }
 
-  removeElement(mesh: THREE.Mesh) {
+  removeElement(mesh: THREE.Mesh, preserveGeometry = false) {
     if (!this.objeto) return;
     // No disponer del material: puede estar compartido entre varias mallas.
-    mesh.geometry.dispose();
+    if (!preserveGeometry) mesh.geometry.dispose();
     this.objeto.remove(mesh);
     this.walls = this.walls.filter((m) => m !== mesh);
     this.doors = this.doors.filter((m) => m !== mesh);

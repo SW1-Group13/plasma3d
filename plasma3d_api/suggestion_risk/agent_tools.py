@@ -136,6 +136,18 @@ DECLARACIONES = [
         "parameters": _obj({"categoria": _cat(), "nombre": _STR}),
     },
     {
+        "name": "mover_seleccion",
+        "description": "Mueve una única pieza que el usuario ya seleccionó en el editor. "
+                       "Las direcciones son fijas en la vista Planta, no según la cámara: "
+                       "derecha = +x, izquierda = -x, arriba/norte = -z, abajo/sur = +z. "
+                       "La distancia debe venir del usuario y expresarse en metros; "
+                       "si falta la selección o la distancia, pregunta antes de llamar esta herramienta.",
+        "parameters": _obj({
+            "direccion": {"type": "STRING", "enum": ["derecha", "izquierda", "arriba", "abajo"]},
+            "distancia_m": {"type": "NUMBER", "description": "Distancia positiva en metros, indicada por el usuario"},
+        }, ["direccion", "distancia_m"]),
+    },
+    {
         "name": "eliminar",
         "description": "Elimina la selección o todas las piezas de una categoría. "
                        "El usuario debe confirmarlo en el chat.",

@@ -24,8 +24,9 @@ import { CubeIcon, LayersIcon, PlusIcon, SparklesIcon, TrashIcon, UploadIcon } f
 import { toast } from '@/shared/ui/toast';
 
 function serverMessage(error: unknown, fallback: string): string {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' && detail.length > 0 ? detail : fallback;
+  const data = (error as { response?: { data?: { detail?: string; error?: string } } })?.response?.data;
+  const message = data?.detail ?? data?.error;
+  return typeof message === 'string' && message.length > 0 ? message : fallback;
 }
 
 export function DashboardPage() {
@@ -52,7 +53,9 @@ export function DashboardPage() {
   const [riskOpen, setRiskOpen] = useState(false);
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskAnalysis, setRiskAnalysis] = useState<StructuralAnalysis | null>(null);
+  const [riskError, setRiskError] = useState<string | null>(null);
   const [riskPlanId, setRiskPlanId] = useState<number | null>(null);
+  const riskRequestRef = useRef(0);
   const [roofType, setRoofType] = useState<RoofType>('plano');
   const [gapMode, setGapMode] = useState<GapMode>('rellenar');
   // Ancho total real del plano en metros (opcional): escala exacta.
@@ -140,18 +143,36 @@ export function DashboardPage() {
     }
   }
 
-  async function onAnalyzeRisk(model: (typeof list)[number]) {
-    setRiskPlanId(model.id);
+  async function onAnalyzeRisk(planId: number) {
+    const requestId = ++riskRequestRef.current;
+    setRiskPlanId(planId);
     setRiskAnalysis(null);
+    setRiskError(null);
     setRiskOpen(true);
     setRiskLoading(true);
     try {
-      const data = await structuralApi.analyzePlan(model.id);
+      const data = await structuralApi.analyzePlan(planId);
+      if (requestId !== riskRequestRef.current) return;
+      if (!data.success || !data.analisis?.resumen_general ||
+          !Array.isArray(data.analisis.elementos_bien_hechos) ||
+          !Array.isArray(data.analisis.elementos_mal_hechos) ||
+          !Array.isArray(data.analisis.recomendaciones)) {
+        setRiskError('El servidor devolvió un análisis incompleto. Inténtalo de nuevo.');
+        return;
+      }
       setRiskAnalysis(data);
     } catch (error) {
-      setRiskOpen(false);
-      toast.error('Error', serverMessage(error, 'No se pudo analizar el riesgo del modelo.'));
+      if (requestId !== riskRequestRef.current) return;
+      setRiskError(serverMessage(error, 'No se pudo analizar el riesgo del modelo.'));
     } finally {
+      if (requestId === riskRequestRef.current) setRiskLoading(false);
+    }
+  }
+
+  function onRiskOpenChange(open: boolean) {
+    setRiskOpen(open);
+    if (!open) {
+      riskRequestRef.current++;
       setRiskLoading(false);
     }
   }
@@ -311,7 +332,7 @@ export function DashboardPage() {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => onAnalyzeRisk(model)}
+                      onClick={() => void onAnalyzeRisk(model.id)}
                       title="Analizar el riesgo estructural con IA"
                     >
                       <SparklesIcon width={14} height={14} /> Riesgo IA
@@ -348,10 +369,12 @@ export function DashboardPage() {
 
       <RiskDialog
         open={riskOpen}
-        onOpenChange={setRiskOpen}
+        onOpenChange={onRiskOpenChange}
         analysis={riskAnalysis}
         loading={riskLoading}
         planId={riskPlanId}
+        error={riskError}
+        onRetry={riskPlanId == null ? undefined : () => void onAnalyzeRisk(riskPlanId)}
       />
 
       <Dialog open={regenId != null} onOpenChange={(v) => !v && setRegenId(null)}>

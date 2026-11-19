@@ -2,11 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import axios from 'axios';
 import {
   agentApi,
+  type AgentAction,
   type AgentActionResult,
   type AgentStep,
+  type AgentStepRequest,
   type GeminiContent,
 } from '@/entities/agent/api';
-import { runAgentAction, type AgentHost } from '@/widgets/viewer3d/agentActions';
+import { confirmAgentAction, prepareAgentAction, prepareAgentMoveAction, runAgentAction, type AgentHost, type AgentMovePreparation } from '@/widgets/viewer3d/agentActions';
+import type { AgentMoveProposal, AgentPreviewItem, EditorEngine } from '@/widgets/viewer3d/engine';
+import { useSession } from '@/entities/session/store';
 import { SparklesIcon, XIcon } from '@/shared/ui/icons';
 import { cn } from '@/shared/lib/utils';
 
@@ -22,12 +26,41 @@ interface AgentChatProps {
 /** Elemento del hilo del chat. */
 type ChatItem =
   | { kind: 'msg'; rol: 'usuario' | 'agente'; texto: string }
-  | { kind: 'action'; id: number; texto: string; ok: boolean; undone?: boolean }
+  | { kind: 'action'; id: number; texto: string; ok: boolean; transactionId?: number; undone?: boolean }
   | { kind: 'confirm'; id: number; texto: string; status: 'pending' | 'yes' | 'no' };
 
 interface Stored {
   items: ChatItem[];
   historial: GeminiContent[];
+}
+
+type ActionStep = Extract<AgentStep, { estado: 'acciones' }>;
+type PendingTurn =
+  | {
+      stage: 'request';
+      turnId: string;
+      text: string;
+      round: number;
+      request: AgentStepRequest;
+      applied: Record<string, AgentActionResult>;
+    }
+  | { stage: 'applying'; turnId: string; text: string; round: number };
+
+interface PreviewState {
+  labels: string[];
+  location: string;
+  warnings: string[];
+  revision: number;
+  blockingReason?: string;
+}
+
+interface PreviewWaiter {
+  engine: EditorEngine;
+  items: AgentPreviewItem[];
+  moveProposal?: AgentMoveProposal;
+  resolve: (apply: boolean) => void;
+  revision: number;
+  modelRevision: number;
 }
 
 const MAX_ITEMS = 80;
@@ -46,13 +79,17 @@ const WELCOME: ChatItem = {
     'Hola, soy el Agente IA de Plasma3D. Puedo calcular costos con tus precios, dibujar muros, ambientes, puertas, ventanas, pisos y techos, cambiar materiales y proponerte mejoras. ¿Qué necesitas?',
 };
 
-function storageKey(modelId: number | string) {
-  return `plasma3d.agent.v2.${modelId}`;
+function storageKey(userId: number | string, modelId: number | string) {
+  return `plasma3d.agent.v3.${userId}.${modelId}`;
 }
 
-function load(modelId: number | string): Stored {
+function pendingKey(userId: number | string, modelId: number | string) {
+  return `plasma3d.agent.pending.v1.${userId}.${modelId}`;
+}
+
+function load(userId: number | string, modelId: number | string): Stored {
   try {
-    const raw = JSON.parse(localStorage.getItem(storageKey(modelId)) || 'null') as Stored | null;
+    const raw = JSON.parse(localStorage.getItem(storageKey(userId, modelId)) || 'null') as Stored | null;
     if (raw && Array.isArray(raw.items) && raw.items.length > 0) {
       // Las confirmaciones pendientes no sobreviven a una recarga.
       const items = raw.items.map((it) =>
@@ -66,6 +103,25 @@ function load(modelId: number | string): Stored {
   return { items: [WELCOME], historial: [] };
 }
 
+function loadPending(userId: number | string, modelId: number | string): PendingTurn | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(pendingKey(userId, modelId)) || 'null') as PendingTurn | null;
+    if (raw?.stage === 'applying' && typeof raw.text === 'string') return raw;
+    if (raw?.stage === 'request' && raw.request && typeof raw.text === 'string') {
+      return { ...raw, applied: raw.applied && typeof raw.applied === 'object' ? raw.applied : {} };
+    }
+  } catch {
+    /* estado pendiente ilegible */
+  }
+  return null;
+}
+
+function actionKey(action: AgentAction): string {
+  return action.id == null
+    ? `${action.nombre}:${JSON.stringify(action.args ?? {})}`
+    : `${action.nombre}:${action.id}`;
+}
+
 function errorText(error: unknown): string {
   if (axios.isAxiosError(error)) {
     if (error.response?.status === 401 || error.response?.status === 403) {
@@ -77,22 +133,35 @@ function errorText(error: unknown): string {
   return 'No se pudo contactar al agente. Revisa tu conexión.';
 }
 
-let itemSeq = 0;
-
 /**
  * Chat flotante estilo Messenger con el Agente IA. El agente responde, calcula
  * costos (en el backend) y ejecuta acciones en el editor (aquí), con tarjetas
  * "Deshacer" y confirmación antes de borrar.
  */
 export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
-  const [{ items, historial }, setStored] = useState<Stored>(() => load(modelId));
+  const userId = useSession((s) => s.user?.id ?? 'anon');
+  const [{ items, historial }, setStored] = useState<Stored>(() => load(userId, modelId));
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState<false | 'pensando' | 'actuando'>(false);
-  const [error, setError] = useState<{ text: string; retry?: string } | null>(null);
+  const [error, setError] = useState<{ text: string; retry?: boolean } | null>(() => {
+    const pending = loadPending(userId, modelId);
+    if (!pending) return null;
+    return pending.stage === 'request'
+      ? { text: 'La respuesta quedó pendiente. Puedes continuar sin repetir los cambios del plano.', retry: true }
+      : { text: 'La aplicación se interrumpió. Revisa el plano antes de iniciar otra conversación.' };
+  });
   const [minimized, setMinimized] = useState(false);
+  const [preview, setPreview] = useState<PreviewState | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const undoRef = useRef(new Map<number, () => void>());
+  const itemSeq = useRef(Math.max(0, ...items.map((it) => ('id' in it ? it.id : 0))));
+  const pendingRef = useRef<PendingTurn | null>(loadPending(userId, modelId));
+  const previewRef = useRef<PreviewWaiter | null>(null);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const busyRef = useRef(false);
+  const generationRef = useRef(0);
+  const conversationUndoRef = useRef<number[]>([]);
   const confirmRef = useRef(new Map<number, (ok: boolean) => void>());
 
   const setItems = useCallback((fn: (prev: ChatItem[]) => ChatItem[]) => {
@@ -102,21 +171,57 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
     setStored((s) => ({ ...s, historial: h }));
   }, []);
 
+  function writePending(pending: PendingTurn | null) {
+    pendingRef.current = pending;
+    try {
+      if (pending) localStorage.setItem(pendingKey(userId, modelId), JSON.stringify(pending));
+      else localStorage.removeItem(pendingKey(userId, modelId));
+    } catch {
+      /* el estado permanece en memoria si el navegador bloquea almacenamiento */
+    }
+  }
+
   useEffect(() => {
     try {
       localStorage.setItem(
-        storageKey(modelId),
+        storageKey(userId, modelId),
         JSON.stringify({ items: items.slice(-MAX_ITEMS), historial }),
       );
     } catch {
       /* sin almacenamiento: la conversación dura solo esta sesión */
     }
-  }, [items, historial, modelId]);
+  }, [items, historial, modelId, userId]);
+
+  useEffect(() => () => {
+    generationRef.current++;
+    previewRef.current?.engine.clearAgentPreview();
+    previewRef.current?.resolve(false);
+    previewRef.current = null;
+    confirmRef.current.forEach((resolve) => resolve(false));
+    confirmRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    if (open) return;
+    const waiter = previewRef.current;
+    if (waiter) {
+      waiter.engine.clearAgentPreview();
+      previewRef.current = null;
+      setPreview(null);
+      waiter.resolve(false);
+    }
+    if (confirmRef.current.size) {
+      confirmRef.current.forEach((resolve) => resolve(false));
+      confirmRef.current.clear();
+      setItems((prev) => prev.map((entry) => entry.kind === 'confirm' && entry.status === 'pending'
+        ? { ...entry, status: 'no' } : entry));
+    }
+  }, [open, setItems]);
 
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [items, busy, minimized, open, error]);
+  }, [items, busy, minimized, open, error, preview]);
 
   useEffect(() => {
     if (open && !minimized) inputRef.current?.focus();
@@ -126,7 +231,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
   const confirm = useCallback(
     (texto: string) =>
       new Promise<boolean>((resolve) => {
-        const id = ++itemSeq;
+        const id = ++itemSeq.current;
         confirmRef.current.set(id, resolve);
         setItems((prev) => [...prev, { kind: 'confirm', id, texto, status: 'pending' }]);
         setMinimized(false);
@@ -142,92 +247,383 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
     );
   }
 
-  /** Ejecuta las acciones pedidas y devuelve sus resultados al agente. */
-  async function runActions(step: Extract<AgentStep, { estado: 'acciones' }>): Promise<AgentActionResult[]> {
-    const base = getHost();
-    const results: AgentActionResult[] = [];
-    for (const action of step.acciones) {
-      if (!base) {
-        results.push({ id: action.id, nombre: action.nombre, respuesta: { ok: false, error: 'El editor no está listo.' } });
-        continue;
-      }
-      const outcome = await runAgentAction({ ...base, confirm }, action);
-      results.push({ id: action.id, nombre: action.nombre, respuesta: outcome.respuesta });
-      if (outcome.card) {
-        const id = ++itemSeq;
-        if (outcome.card.undo) undoRef.current.set(id, outcome.card.undo);
-        const ok = outcome.respuesta.ok !== false;
-        setItems((prev) => [...prev, { kind: 'action', id, texto: outcome.card!.texto, ok }]);
+  function answerPreview(apply: boolean) {
+    const waiter = previewRef.current;
+    if (!waiter) return;
+    if (apply && waiter.moveProposal?.blockingReason) return;
+    if (waiter.engine.getModelRevision() !== waiter.modelRevision) {
+      waiter.engine.clearAgentPreview();
+      previewRef.current = null;
+      setPreview(null);
+      setError({ text: 'El plano cambió mientras revisabas la propuesta. Se canceló para evitar aplicarla en otro plano.' });
+      waiter.resolve(false);
+      return;
+    }
+    if (apply && waiter.moveProposal) {
+      const issue = waiter.engine.validateAgentMoveProposal(waiter.moveProposal);
+      if (issue) {
+        waiter.engine.clearAgentPreview();
+        previewRef.current = null;
+        setPreview(null);
+        setError({ text: `${issue} Pide el movimiento de nuevo.` });
+        waiter.resolve(false);
+        return;
       }
     }
-    return results;
+    if (apply && waiter.engine.getChangeRevision() !== waiter.revision) {
+      if (waiter.moveProposal) {
+        waiter.engine.clearAgentPreview();
+        previewRef.current = null;
+        setPreview(null);
+        setError({ text: 'El plano cambió mientras revisabas el movimiento. Pídelo de nuevo.' });
+        waiter.resolve(false);
+        return;
+      }
+      waiter.revision = waiter.engine.getChangeRevision();
+      const warnings = waiter.engine.setAgentPreview(waiter.items);
+      setPreview((current) => current && {
+        ...current,
+        revision: waiter.revision,
+        warnings: ['El plano cambió desde la vista previa. Revísala de nuevo antes de aplicar.', ...warnings],
+      });
+      return;
+    }
+    waiter.engine.clearAgentPreview();
+    previewRef.current = null;
+    setPreview(null);
+    waiter.resolve(apply);
   }
 
-  const send = useCallback(
-    async (text: string) => {
-      const texto = text.trim();
-      if (!texto || busy) return;
-      const host = getHost();
-      setItems((prev) => [...prev, { kind: 'msg', rol: 'usuario', texto }]);
-      setInput('');
-      setError(null);
-      setBusy('pensando');
-      try {
-        const contexto = host?.engine.getAgentContext() ?? {};
-        let step = await agentApi.step({ historial, contexto, mensaje: texto });
-        for (let round = 0; step.estado === 'acciones' && round < MAX_ROUNDS; round++) {
-          setHistorial(step.historial);
-          setBusy('actuando');
-          const resultados = await runActions(step);
-          setBusy('pensando');
-          step = await agentApi.step({
-            historial: step.historial,
-            contexto: getHost()?.engine.getAgentContext() ?? {},
-            resultados,
-            pendientes: step.pendientes,
-          });
-        }
-        setHistorial(step.historial);
-        const final = step.estado === 'respuesta' ? step.texto : 'Listo. (Se alcanzó el máximo de pasos por pregunta.)';
-        setItems((prev) => [...prev, { kind: 'msg', rol: 'agente', texto: final }]);
-      } catch (err) {
-        setError({ text: errorText(err), retry: texto });
-      } finally {
-        setBusy(false);
+  function requestPreview(engine: EditorEngine, items: AgentPreviewItem[], labels: string[]): Promise<boolean> {
+    const revision = engine.getChangeRevision();
+    const warnings = engine.setAgentPreview(items);
+    const xs = items.flatMap((item) => [item.x1, item.x2]);
+    const zs = items.flatMap((item) => [item.z1, item.z2]);
+    const location = `Ubicación: X ${Math.min(...xs).toFixed(2)} a ${Math.max(...xs).toFixed(2)} m; Z ${Math.min(...zs).toFixed(2)} a ${Math.max(...zs).toFixed(2)} m.`;
+    setMinimized(false);
+    return new Promise<boolean>((resolve) => {
+      previewRef.current = { engine, items, resolve, revision, modelRevision: engine.getModelRevision() };
+      setPreview({ labels, location, warnings, revision });
+    });
+  }
+
+  function requestMovePreview(engine: EditorEngine, prepared: AgentMovePreparation): Promise<boolean> {
+    const { proposal, texto } = prepared;
+    const warnings = engine.setAgentMovePreview(proposal);
+    const revision = engine.getChangeRevision();
+    const location = `De X ${proposal.from.x.toFixed(2)}, Z ${proposal.from.z.toFixed(2)} m a X ${proposal.to.x.toFixed(2)}, Z ${proposal.to.z.toFixed(2)} m.`;
+    setMinimized(false);
+    return new Promise<boolean>((resolve) => {
+      previewRef.current = { engine, items: [], moveProposal: proposal, resolve, revision, modelRevision: engine.getModelRevision() };
+      setPreview({ labels: [texto], location, warnings, revision, blockingReason: proposal.blockingReason });
+    });
+  }
+
+  /** Ejecuta un lote una sola vez; si una acción falla, revierte el lote. */
+  async function runActions(step: ActionStep, applied: Record<string, AgentActionResult>, expectedContext: AgentStepRequest['contexto']) {
+    const base = getHost();
+    const results: AgentActionResult[] = new Array(step.acciones.length);
+    const remaining: Array<{ action: AgentAction; index: number }> = [];
+    step.acciones.forEach((action, index) => {
+      const key = actionKey(action);
+      if (applied[key]) results[index] = applied[key];
+      else remaining.push({ action, index });
+    });
+    if (!remaining.length) return { results, applied };
+    if (!openRef.current) {
+      remaining.forEach(({ action, index }) => {
+        results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, cancelado_por_usuario: true } };
+      });
+      return { results, applied };
+    }
+    if (!base) {
+      remaining.forEach(({ action, index }) => {
+        results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, error: 'El editor no está listo.' } };
+      });
+      return { results, applied };
+    }
+
+    const moveActions = remaining.filter(({ action }) => action.nombre === 'mover_seleccion');
+    let movePrepared: AgentMovePreparation | null = null;
+    if (moveActions.length) {
+      if (remaining.length !== 1) {
+        remaining.forEach(({ action, index }) => {
+          results[index] = { id: action.id, nombre: action.nombre,
+            respuesta: { ok: false, error: 'Pide mover la pieza en un mensaje separado de las demás acciones.' } };
+        });
+        return { results, applied };
       }
-    },
-    // runActions/confirm usan refs y setters estables
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [busy, getHost, historial, setItems, setHistorial],
-  );
+      const { action, index } = moveActions[0];
+      try {
+        movePrepared = prepareAgentMoveAction({ ...base, confirm }, action);
+        const previous = expectedContext.seleccion as { id?: unknown; nombre?: unknown; piezas_seleccionadas?: unknown;
+          posicion_mundo_m?: { x?: unknown; z?: unknown } } | null | undefined;
+        const selected = movePrepared.proposal.selected;
+        if ((typeof expectedContext.revision_plano === 'number' &&
+          expectedContext.revision_plano !== base.engine.getChangeRevision()) ||
+          !previous || previous.piezas_seleccionadas !== 1 || previous.nombre !== selected.name ||
+          (previous.id != null && previous.id !== selected.userData.elementId) ||
+          (typeof previous.posicion_mundo_m?.x === 'number' &&
+            Math.abs(previous.posicion_mundo_m.x - movePrepared.proposal.from.x) > 0.011) ||
+          (typeof previous.posicion_mundo_m?.z === 'number' &&
+            Math.abs(previous.posicion_mundo_m.z - movePrepared.proposal.from.z) > 0.011)) {
+          throw new Error('La selección cambió desde que enviaste el mensaje. Selecciona la pieza y pide el movimiento de nuevo.');
+        }
+        const accepted = await requestMovePreview(base.engine, movePrepared);
+        if (!accepted) {
+          results[index] = { id: action.id, nombre: action.nombre,
+            respuesta: { ok: false, cancelado_por_usuario: true } };
+          return { results, applied };
+        }
+      } catch (err) {
+        base.engine.clearAgentPreview();
+        results[index] = { id: action.id, nombre: action.nombre,
+          respuesta: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+        return { results, applied };
+      }
+    }
+
+    const proposals: Array<NonNullable<ReturnType<typeof prepareAgentAction>>> = [];
+    const preparationErrors = new Map<number, string>();
+    remaining.forEach(({ action, index }) => {
+      try {
+        const proposal = prepareAgentAction(action);
+        if (proposal) proposals.push(proposal);
+      } catch (err) {
+        preparationErrors.set(index, err instanceof Error ? err.message : String(err));
+      }
+    });
+    if (preparationErrors.size) {
+      remaining.forEach(({ action, index }) => {
+        results[index] = {
+          id: action.id,
+          nombre: action.nombre,
+          respuesta: { ok: false, error: preparationErrors.get(index) ?? 'No aplicada: otra pieza del lote tiene medidas inválidas.' },
+        };
+      });
+      return { results, applied };
+    }
+
+    if (proposals.length) {
+      const items = proposals.flatMap((proposal) => proposal.items);
+      const accepted = await requestPreview(base.engine, items, proposals.map((proposal) => proposal.texto));
+      if (!accepted) {
+        remaining.forEach(({ action, index }) => {
+          results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, cancelado_por_usuario: true } };
+        });
+        return { results, applied };
+      }
+    }
+
+    const undoOnly = remaining.length === 1 && remaining[0].action.nombre === 'deshacer_ultima_accion';
+    if (!undoOnly && remaining.some(({ action }) => action.nombre === 'deshacer_ultima_accion')) {
+      remaining.forEach(({ action, index }) => {
+        results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, error: 'Pide deshacer en un mensaje separado.' } };
+      });
+      return { results, applied };
+    }
+    if (undoOnly && !base.engine.canUndoAgentTransaction(conversationUndoRef.current.at(-1) ?? -1)) {
+      const { action, index } = remaining[0];
+      results[index] = { id: action.id, nombre: action.nombre,
+        respuesta: { ok: false, error: 'No hay una edición reciente de esta conversación para deshacer.' } };
+      return { results, applied };
+    }
+
+    const revisionBeforeConfirm = base.engine.getChangeRevision();
+    let selectionMayChange = false;
+    try {
+      for (const { action } of remaining) {
+        if (!await confirmAgentAction({ ...base, confirm }, action, selectionMayChange)) {
+          remaining.forEach(({ action: pendingAction, index }) => {
+            results[index] = { id: pendingAction.id, nombre: pendingAction.nombre,
+              respuesta: { ok: false, cancelado_por_usuario: true } };
+          });
+          return { results, applied };
+        }
+        if (action.nombre === 'seleccionar') selectionMayChange = true;
+        if (base.engine.getChangeRevision() !== revisionBeforeConfirm) {
+          remaining.forEach(({ action: pendingAction, index }) => {
+            results[index] = { id: pendingAction.id, nombre: pendingAction.nombre,
+              respuesta: { ok: false, error: 'El plano cambió durante la confirmación. Pide la acción de nuevo.' } };
+          });
+          return { results, applied };
+        }
+      }
+    } catch (err) {
+      remaining.forEach(({ action, index }) => {
+        results[index] = { id: action.id, nombre: action.nombre,
+          respuesta: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      });
+      return { results, applied };
+    }
+
+    const cards: string[] = [];
+    let transactionId: number | null = null;
+    try {
+      if (!undoOnly) base.engine.beginAgentTransaction();
+      let failed = false;
+      for (const { action, index } of remaining) {
+        if (failed) {
+          results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, error: 'No aplicada: falló otra acción del lote.' } };
+          continue;
+        }
+        const outcome = await runAgentAction({ ...base, confirm, preapproved: true,
+          ...(movePrepared ? { moveProposal: movePrepared.proposal } : {}) }, action);
+        results[index] = { id: action.id, nombre: action.nombre, respuesta: outcome.respuesta };
+        if (outcome.respuesta.ok === false) failed = true;
+        else if (outcome.card) cards.push(outcome.card.texto);
+      }
+      if (failed) {
+        if (!undoOnly) base.engine.rollbackAgentTransaction();
+        remaining.forEach(({ index }) => {
+          if (results[index].respuesta.ok !== false) {
+            results[index] = { ...results[index], respuesta: { ok: false, error: 'Cambio revertido porque falló otra acción del lote.' } };
+          }
+        });
+      } else if (!undoOnly) {
+        transactionId = base.engine.commitAgentTransaction();
+      }
+    } catch (err) {
+      if (!undoOnly) base.engine.rollbackAgentTransaction();
+      remaining.forEach(({ action, index }) => {
+        results[index] = { id: action.id, nombre: action.nombre, respuesta: { ok: false, error: err instanceof Error ? err.message : String(err) } };
+      });
+    }
+
+    if (remaining.every(({ index }) => results[index].respuesta.ok !== false)) {
+      if (undoOnly) conversationUndoRef.current.pop();
+      else if (transactionId !== null) conversationUndoRef.current.push(transactionId);
+    }
+
+    if (cards.length && remaining.every(({ index }) => results[index].respuesta.ok !== false)) {
+      setItems((prev) => [...prev, {
+        kind: 'action', id: ++itemSeq.current, texto: cards.join(' · '), ok: true,
+        ...(transactionId !== null ? { transactionId } : {}),
+      }]);
+    }
+    const updated = { ...applied };
+    remaining.forEach(({ action, index }) => {
+      const key = actionKey(action);
+      if (results[index].respuesta.ok === true) updated[key] = results[index];
+    });
+    return { results, applied: updated };
+  }
+
+  async function runTurn(initial: Extract<PendingTurn, { stage: 'request' }>) {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    const generation = generationRef.current;
+    let current = initial;
+    setError(null);
+    setBusy('pensando');
+    try {
+      let step = await agentApi.step(current.request);
+      if (generation !== generationRef.current) return;
+      let round = current.round;
+      while (step.estado === 'acciones' && round < MAX_ROUNDS) {
+        setHistorial(step.historial);
+        setBusy('actuando');
+        writePending({ stage: 'applying', turnId: current.turnId, text: current.text, round });
+        const { results, applied } = await runActions(step, current.applied, current.request.contexto);
+        if (generation !== generationRef.current) return;
+        round++;
+        current = {
+          stage: 'request', turnId: current.turnId, text: current.text, round, applied,
+          request: {
+            historial: step.historial,
+            contexto: {},
+            resultados: results,
+            pendientes: step.pendientes,
+          },
+        };
+        // Guardar primero los resultados: una excepción al resumir el plano no debe repetir el dibujo.
+        writePending(current);
+        try {
+          current.request.contexto = getHost()?.engine.getAgentContext() ?? {};
+          writePending(current);
+        } catch {
+          /* el agente puede continuar con el historial y los resultados */
+        }
+        setBusy('pensando');
+        step = await agentApi.step(current.request);
+        if (generation !== generationRef.current) return;
+      }
+      setHistorial(step.historial);
+      setItems((prev) => [...prev, {
+        kind: 'msg', rol: 'agente',
+        texto: step.estado === 'respuesta' ? step.texto : 'Se alcanzó el máximo de pasos; las acciones restantes no se aplicaron.',
+      }]);
+      writePending(null);
+    } catch (err) {
+      const pending = pendingRef.current;
+      setError(pending?.stage === 'request'
+        ? { text: errorText(err), retry: true }
+        : { text: 'Se interrumpió la aplicación. Revisa el plano antes de iniciar otra conversación.' });
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  function send(text: string) {
+    const texto = text.trim();
+    if (!texto || busyRef.current) return;
+    if (pendingRef.current) {
+      setError({ text: 'Hay una respuesta pendiente. Continúala o inicia una conversación nueva.', retry: pendingRef.current.stage === 'request' });
+      return;
+    }
+    const request: AgentStepRequest = {
+      historial,
+      contexto: getHost()?.engine.getAgentContext() ?? {},
+      mensaje: texto,
+    };
+    const pending: PendingTurn = {
+      stage: 'request', turnId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      text: texto, round: 0, request, applied: {},
+    };
+    writePending(pending);
+    setItems((prev) => [...prev, { kind: 'msg', rol: 'usuario', texto }]);
+    setInput('');
+    void runTurn(pending);
+  }
 
   function retry() {
-    if (!error?.retry) return;
-    const text = error.retry;
-    // Quitar la pregunta fallida para no duplicarla
-    setItems((prev) => {
-      const idx = prev.map((p) => (p.kind === 'msg' && p.rol === 'usuario' ? p.texto : null)).lastIndexOf(text);
-      return idx >= 0 ? prev.filter((_, i) => i !== idx) : prev;
-    });
-    void send(text);
+    const pending = pendingRef.current;
+    if (pending?.stage === 'request') void runTurn(pending);
   }
 
   function undoItem(id: number) {
-    undoRef.current.get(id)?.();
-    undoRef.current.delete(id);
-    setItems((prev) => prev.map((it) => (it.kind === 'action' && it.id === id ? { ...it, undone: true } : it)));
+    const item = items.find((entry) => entry.kind === 'action' && entry.id === id);
+    if (item?.kind !== 'action' || item.transactionId == null || item.undone) return;
+    if (!getHost()?.engine.undoAgentTransaction(item.transactionId)) {
+      setError({ text: 'Solo se puede deshacer la última edición del plano. Usa el historial general si hubo cambios posteriores.' });
+      return;
+    }
+    if (conversationUndoRef.current.at(-1) === item.transactionId) conversationUndoRef.current.pop();
+    setItems((prev) => prev.map((entry) => entry.kind === 'action' && entry.id === id ? { ...entry, undone: true } : entry));
   }
 
   function newConversation() {
-    confirmRef.current.forEach((resolve) => resolve(false));
-    confirmRef.current.clear();
+    if (busyRef.current) return;
+    writePending(null);
+    conversationUndoRef.current = [];
     setStored({ items: [WELCOME], historial: [] });
     setError(null);
   }
 
+  function closeChat() {
+    openRef.current = false;
+    if (previewRef.current) answerPreview(false);
+    confirmRef.current.forEach((resolve) => resolve(false));
+    confirmRef.current.clear();
+    setItems((prev) => prev.map((entry) => entry.kind === 'confirm' && entry.status === 'pending'
+      ? { ...entry, status: 'no' } : entry));
+    onClose();
+  }
+
   if (!open) return null;
 
-  const busyText = busy === 'actuando' ? 'trabajando en el plano…' : 'escribiendo…';
+  const busyText = preview ? 'esperando tu aprobación…' : busy === 'actuando' ? 'trabajando en el plano…' : 'escribiendo…';
 
   if (minimized) {
     return (
@@ -243,7 +639,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
     );
   }
 
-  const showSuggestions = items.length <= 1 && !busy;
+  const showSuggestions = items.length <= 1 && !busy && !pendingRef.current;
 
   return (
     <section
@@ -269,7 +665,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
         <HeaderButton title="Minimizar" onClick={() => setMinimized(true)}>
           <span className="mb-1 block h-0.5 w-3 rounded bg-current" />
         </HeaderButton>
-        <HeaderButton title="Cerrar" onClick={onClose}>
+        <HeaderButton title="Cerrar" onClick={closeChat}>
           <XIcon width={16} height={16} />
         </HeaderButton>
       </header>
@@ -291,7 +687,8 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
             );
           }
           if (it.kind === 'action') {
-            const canUndo = !it.undone && undoRef.current.has(it.id);
+            const canUndo = !it.undone && it.transactionId != null &&
+              Boolean(getHost()?.engine.canUndoAgentTransaction(it.transactionId));
             return (
               <div
                 key={i}
@@ -345,6 +742,37 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
           );
         })}
 
+        {preview && (
+          <div className="self-stretch rounded-xl border border-cyan-400/60 bg-cyan-400/10 p-3 text-xs text-foreground">
+            <p className="mb-2 font-semibold text-cyan-200">Vista previa en el plano</p>
+            <ul className="mb-2 list-inside list-disc space-y-0.5">
+              {preview.labels.map((label, index) => <li key={index}>{label}</li>)}
+            </ul>
+            <p className="mb-2 text-muted">{preview.location}</p>
+            {preview.warnings.length > 0 && (
+              <div className="mb-2 rounded-md border border-warning/40 bg-warning/10 px-2 py-1.5 text-warning">
+                <p className="font-semibold">Posible solapamiento o cambio del plano:</p>
+                <ul className="mt-1 list-inside list-disc space-y-0.5">
+                  {preview.warnings.map((warning, index) => <li key={index}>{warning}</li>)}
+                </ul>
+              </div>
+            )}
+            {preview.blockingReason && <p className="mb-2 font-medium text-danger">{preview.blockingReason}</p>}
+            <p className="mb-2 text-muted">La figura celeste todavía no modifica el plano.</p>
+            <div className="flex gap-2">
+              <button type="button" onClick={() => answerPreview(true)}
+                disabled={Boolean(preview.blockingReason)}
+                className="cursor-pointer rounded-md bg-cyan-500 px-3 py-1.5 font-semibold text-white hover:bg-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-40">
+                Aplicar
+              </button>
+              <button type="button" onClick={() => answerPreview(false)}
+                className="cursor-pointer rounded-md border border-border px-3 py-1.5 hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
         {busy && (
           <div className="flex items-center gap-2" aria-label={`El agente está ${busyText}`}>
             <span className="flex items-center gap-1 rounded-2xl rounded-bl-md bg-surface-2 px-3 py-3">
@@ -362,6 +790,11 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
             {error.retry && (
               <button type="button" onClick={retry} className="cursor-pointer font-medium underline underline-offset-2">
                 Reintentar
+              </button>
+            )}
+            {pendingRef.current?.stage === 'applying' && !busy && (
+              <button type="button" onClick={newConversation} className="ml-1 cursor-pointer font-medium underline underline-offset-2">
+                Nueva conversación
               </button>
             )}
           </div>
@@ -394,6 +827,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
+          disabled={Boolean(busy) || Boolean(pendingRef.current)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -408,7 +842,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
         />
         <button
           type="submit"
-          disabled={!input.trim() || Boolean(busy)}
+          disabled={!input.trim() || Boolean(busy) || Boolean(pendingRef.current)}
           className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-cyan-500 text-white transition-colors hover:bg-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Enviar mensaje"
         >

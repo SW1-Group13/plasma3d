@@ -4,6 +4,7 @@ import { loadStripe, type Stripe, type StripeCardElementOptions } from '@stripe/
 import { CardElement, Elements, useElements, useStripe } from '@stripe/react-stripe-js';
 import { paymentApi } from '@/features/payment/api';
 import { useSession } from '@/entities/session/store';
+import { useThemeStore } from '@/entities/theme/store';
 import type { PaymentConfig, PlanId } from '@/entities/payment/types';
 import { Button } from '@/shared/ui/button';
 import { Card, CardContent } from '@/shared/ui/card';
@@ -54,6 +55,20 @@ const CARD_OPTIONS: StripeCardElementOptions = {
       '::placeholder': { color: '#94a0b899' },
     },
     invalid: { color: '#f87171', iconColor: '#f87171' },
+  },
+};
+
+const LIGHT_CARD_OPTIONS: StripeCardElementOptions = {
+  hidePostalCode: true,
+  style: {
+    base: {
+      color: '#1c2840',
+      iconColor: '#526178',
+      fontSize: '14px',
+      fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+      '::placeholder': { color: '#52617899' },
+    },
+    invalid: { color: '#b83245', iconColor: '#b83245' },
   },
 };
 
@@ -127,6 +142,7 @@ interface CheckoutFormProps {
 function CheckoutForm({ enabled, loading, premiumPrice, warning, onChanged }: CheckoutFormProps) {
   const stripe = useStripe();
   const elements = useElements();
+  const theme = useThemeStore((s) => s.theme);
   const user = useSession((s) => s.user);
   const setUser = useSession((s) => s.setUser);
 
@@ -141,6 +157,10 @@ function CheckoutForm({ enabled, loading, premiumPrice, warning, onChanged }: Ch
   const [cardComplete, setCardComplete] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const cardOptions = useMemo(
+    () => ({ ...(theme === 'light' ? LIGHT_CARD_OPTIONS : CARD_OPTIONS), disabled: !enabled || isProcessing }),
+    [theme, enabled, isProcessing],
+  );
 
   const selectedPlan = plans.find((p) => p.id === selectedId) ?? plans[0];
   const premiumActive = isPremiumActive(user?.rol, user?.fecha_expiracion_plan);
@@ -315,7 +335,7 @@ function CheckoutForm({ enabled, loading, premiumPrice, warning, onChanged }: Ch
                 >
                   <div className="w-full">
                     <CardElement
-                      options={{ ...CARD_OPTIONS, disabled: !enabled || isProcessing }}
+                      options={cardOptions}
                       onChange={(e) => {
                         setCardComplete(e.complete);
                         setCardError(e.error?.message ?? null);

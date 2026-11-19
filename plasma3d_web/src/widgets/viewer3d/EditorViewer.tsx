@@ -31,6 +31,7 @@ import { useMaterialStore } from '@/entities/materials/store';
 import type { ModelSummary } from '@/entities/model3D/three/Modelo3D';
 import { useModelStore } from '@/entities/model3D/store';
 import { useSession } from '@/entities/session/store';
+import { useThemeStore } from '@/entities/theme/store';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { Button } from '@/shared/ui/button';
 import { Input } from '@/shared/ui/input';
@@ -221,6 +222,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
   const updateGlb = useModelStore((s) => s.updateGlb);
   const user = useSession((s) => s.user);
+  const theme = useThemeStore((s) => s.theme);
   const layers = useLayerStore((s) => s.layers);
   const currentLayerId = useLayerStore((s) => s.currentLayerId);
   const materials = useMaterialStore((s) => s.materials);
@@ -401,6 +403,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => void engineRef.current?.setTranslationSnap(snap || null), [snap]);
   useEffect(() => void engineRef.current?.setRotationSnap(rotSnap || null), [rotSnap]);
   useEffect(() => void engineRef.current?.setGridVisible(gridVisible), [gridVisible]);
+  useEffect(() => void engineRef.current?.setTheme(theme), [theme]);
   useEffect(() => void engineRef.current?.setOrthoMode(ortho), [ortho]);
   useEffect(() => void engineRef.current?.setToolMode(tool), [tool]);
   useEffect(() => void engineRef.current?.setMultiSelect(multiSelect), [multiSelect]);

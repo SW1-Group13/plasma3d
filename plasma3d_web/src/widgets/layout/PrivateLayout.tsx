@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
 import { userApi } from '@/entities/user/api';
@@ -15,6 +15,7 @@ import {
 } from '@/shared/ui/icons';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
+import { ThemeToggle } from '@/features/theme/ui/ThemeToggle';
 
 const links: {
   to: string;
@@ -96,19 +97,21 @@ export function PrivateLayout() {
 
             <div className="hidden items-center gap-1 text-sm sm:flex">
               {visibleLinks.map(({ to, label, icon: Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                      isActive && 'bg-surface-2 font-medium text-foreground',
-                    )
-                  }
-                >
-                  <Icon width={16} height={16} />
-                  {label}
-                </NavLink>
+                <Fragment key={to}>
+                  <NavLink
+                    to={to}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                        isActive && 'bg-surface-2 font-medium text-foreground',
+                      )
+                    }
+                  >
+                    <Icon width={16} height={16} />
+                    {label}
+                  </NavLink>
+                  {to === '/private/pago' && <ThemeToggle />}
+                </Fragment>
               ))}
             </div>
           </div>
@@ -195,19 +198,21 @@ export function PrivateLayout() {
             )}
 
             {visibleLinks.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  cn(
-                    'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                    isActive && 'bg-surface-2 font-medium text-foreground',
-                  )
-                }
-              >
-                <Icon width={18} height={18} />
-                {label}
-              </NavLink>
+              <Fragment key={to}>
+                <NavLink
+                  to={to}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                      isActive && 'bg-surface-2 font-medium text-foreground',
+                    )
+                  }
+                >
+                  <Icon width={18} height={18} />
+                  {label}
+                </NavLink>
+                {to === '/private/pago' && <ThemeToggle showLabel />}
+              </Fragment>
             ))}
 
             <button

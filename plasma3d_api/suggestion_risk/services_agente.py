@@ -43,6 +43,13 @@ Dibujar y editar:
   ("a la derecha" = x mayor que limites.max_x, "arriba/norte" = z menor que limites.min_z).
 - Si el usuario no da medidas, usa valores típicos (muro 3 m, ambiente 3×4 m, \
   puerta 0.9 m, ventana 1.2 m) y di cuáles usaste.
+- Para mover una pieza existente, usa mover_seleccion SOLO si "seleccion" indica \
+  exactamente una pieza y el usuario indicó una distancia. Si falta la selección, \
+  pídele que seleccione la pieza; si falta la distancia, pregúntala. Nunca elijas \
+  otra pieza por nombre ni inventes una distancia para mover.
+- Al mover, convierte cm a metros. Direcciones fijas de la vista Planta: derecha \
+  = +x, izquierda = -x, arriba/norte = -z y abajo/sur = +z; no dependen de la \
+  cámara y "arriba" no significa elevar verticalmente la pieza.
 - Para un cuarto/ambiente usa dibujar_ambiente. Para nuevas construcciones fuera \
   del plano deja ~0.5 m o pégalas al muro existente si piden "anexo".
 - Puertas y ventanas: colócalas SOBRE un muro (usa sus coordenadas en "muros").

@@ -29,6 +29,8 @@ interface RiskDialogProps {
   analysis: StructuralAnalysis | null;
   loading: boolean;
   planId?: number | null;
+  error?: string | null;
+  onRetry?: () => void;
 }
 
 export function RiskDialog({
@@ -37,6 +39,8 @@ export function RiskDialog({
   analysis,
   loading,
   planId,
+  error,
+  onRetry,
 }: RiskDialogProps) {
   const analisis = analysis?.analisis;
   const nivel = analisis?.resumen_general?.nivel_riesgo_global;
@@ -51,15 +55,18 @@ export function RiskDialog({
             Riesgo estructural
           </DialogTitle>
           <DialogDescription>
-            {planId
-              ? `Modelo #${planId}`
-              : analysis?.nombre_archivo ?? 'Analizando modelo...'}
+            {analysis?.nombre_archivo || (planId ? `Modelo #${planId}` : 'Analizando modelo...')}
           </DialogDescription>
         </DialogHeader>
 
         {loading ? (
           <div className="flex items-center gap-3 py-8 text-sm text-muted">
             <Spinner className="h-5 w-5 text-primary" /> Analizando con IA...
+          </div>
+        ) : error ? (
+          <div className="flex flex-col items-start gap-3 py-6" role="alert">
+            <p className="text-sm text-danger">{error}</p>
+            {onRetry && <Button variant="outline" onClick={onRetry}>Reintentar</Button>}
           </div>
         ) : !analisis ? (
           <p className="py-6 text-sm text-muted">

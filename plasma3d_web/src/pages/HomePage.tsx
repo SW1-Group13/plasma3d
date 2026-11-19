@@ -59,7 +59,7 @@ export function HomePage() {
           </dl>
         </div>
 
-        <div className="relative h-[360px] overflow-hidden rounded-2xl border border-primary/30 bg-[radial-gradient(ellipse_at_50%_40%,rgba(79,124,255,0.22),rgba(34,211,238,0.06)_45%,var(--color-canvas)_80%)] shadow-2xl shadow-primary/20 ring-1 ring-inset ring-white/5 sm:h-[440px]">
+        <div className="p3d-home-preview relative h-[360px] overflow-hidden rounded-2xl border border-primary/30 bg-[radial-gradient(ellipse_at_50%_40%,rgba(79,124,255,0.22),rgba(34,211,238,0.06)_45%,var(--color-canvas)_80%)] shadow-2xl shadow-primary/20 ring-1 ring-inset ring-white/5 sm:h-[440px]">
           <HomeViewer />
           <span className="pointer-events-none absolute left-3 top-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-canvas/70 px-3 py-1 text-xs font-medium text-muted backdrop-blur">
             <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-[0_0_8px_var(--color-accent)]" />
