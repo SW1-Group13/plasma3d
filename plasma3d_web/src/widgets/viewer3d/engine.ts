@@ -164,6 +164,25 @@ export interface AgentMoveProposal {
   blockingReason?: string;
 }
 
+/** Pieza de la planta 2D (metros; x = mundo X, y = mundo Z). */
+export interface FloorPlanItem {
+  id: string;
+  kind: 'wall' | 'door' | 'window';
+  /** Huella en planta: 4 esquinas en orden. */
+  poly: [number, number][];
+  /** Muros: huella real (caras superiores) como path SVG; si falta se usa `poly`. */
+  footprint?: string;
+  length: number;
+  thickness: number;
+  /** 'plano': vino del plano original; 'manual'/'ia': agregada después. */
+  source: 'plano' | 'manual' | 'ia';
+}
+
+export interface FloorPlan2D {
+  items: FloorPlanItem[];
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
 /** Material del catálogo que recibe cada tipo de pieza al crearse. */
 const DEFAULT_MATERIAL_BY_KIND: Record<MeasureKind, string> = {
   wall: 'Ladrillo rojo',
@@ -2957,6 +2976,7 @@ export class EditorEngine {
       const copy = mesh.clone(false) as THREE.Mesh;
       copy.geometry = (mesh.geometry as THREE.BufferGeometry).clone();
       copy.userData = JSON.parse(JSON.stringify(mesh.userData));
+      copy.userData.source ??= 'manual'; // una copia es una pieza nueva
       copy.name = `${mesh.name.replace(/_(cut|dup)\d+$/, '')}_dup${Date.now()}${i}`;
       copy.position.add(new THREE.Vector3(0.5, 0, 0.5));
       copy.updateMatrix();
@@ -3468,6 +3488,7 @@ export class EditorEngine {
       dims.sill,
     );
     if (!mesh) return null;
+    mesh.userData.source = 'ia'; // el plano trabajado lo marca como nuevo (IA)
     mesh.name = `${mesh.name}_ia${++this.agentCounter}`; // nombres únicos en lote
     this.initMesh(mesh);
     return mesh;
@@ -3566,6 +3587,91 @@ export class EditorEngine {
   /** ¿La malla sigue en el modelo? (para deshacer con seguridad) */
   agentHas(mesh: THREE.Mesh): boolean {
     return this.allMeshes().includes(mesh);
+  }
+
+  /**
+   * Planta 2D del modelo actual (vista desde arriba, en metros): huella de
+   * cada muro, puerta y ventana visible. x = mundo X, y = mundo Z.
+   */
+  getFloorPlan(): FloorPlan2D {
+    const items: FloorPlanItem[] = [];
+    const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    if (!this.model) return { items, bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 } };
+    this.model.getObject3D().updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    for (const mesh of this.allMeshes()) {
+      const kind = this.measureKindOf(mesh);
+      if (kind !== 'wall' && kind !== 'door' && kind !== 'window') continue;
+      if (!mesh.visible) continue;
+      const b = this.localBox(mesh);
+      if (b.isEmpty()) continue;
+      const poly = (
+        [
+          [b.min.x, b.min.z],
+          [b.max.x, b.min.z],
+          [b.max.x, b.max.z],
+          [b.min.x, b.max.z],
+        ] as const
+      ).map(([x, z]) => {
+        v.set(x, b.min.y, z).applyMatrix4(mesh.matrixWorld);
+        bounds.minX = Math.min(bounds.minX, v.x);
+        bounds.maxX = Math.max(bounds.maxX, v.x);
+        bounds.minY = Math.min(bounds.minY, v.z);
+        bounds.maxY = Math.max(bounds.maxY, v.z);
+        return [v.x, v.z] as [number, number];
+      });
+      const e1 = Math.hypot(poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]);
+      const e2 = Math.hypot(poly[3][0] - poly[0][0], poly[3][1] - poly[0][1]);
+      const source = mesh.userData.source as FloorPlanItem['source'];
+      items.push({
+        id: mesh.uuid,
+        kind,
+        poly,
+        footprint: kind === 'wall' ? this.topFootprintPath(mesh) : undefined,
+        length: Math.max(e1, e2),
+        thickness: Math.min(e1, e2),
+        source: source === 'manual' || source === 'ia' ? source : 'plano',
+      });
+    }
+    if (!items.length) return { items, bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 } };
+    return { items, bounds };
+  }
+
+  /**
+   * Huella real de una pieza vista desde arriba: los triángulos de sus caras
+   * superiores proyectados en X/Z, como un path SVG. A diferencia de la caja
+   * envolvente, respeta muros en L, tramos unidos en una sola malla y vanos.
+   */
+  private topFootprintPath(mesh: THREE.Mesh): string | undefined {
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return undefined;
+    const index = geo.getIndex();
+    const count = index ? index.count : pos.count;
+    if (count > 60000) return undefined; // malla demasiado pesada: usar la caja
+    const m = mesh.matrixWorld;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const ab = new THREE.Vector3();
+    const ac = new THREE.Vector3();
+    const r = (n: number) => Math.round(n * 1000) / 1000;
+    const parts: string[] = [];
+    for (let i = 0; i + 2 < count; i += 3) {
+      const ia = index ? index.getX(i) : i;
+      const ib = index ? index.getX(i + 1) : i + 1;
+      const ic = index ? index.getX(i + 2) : i + 2;
+      a.fromBufferAttribute(pos, ia).applyMatrix4(m);
+      b.fromBufferAttribute(pos, ib).applyMatrix4(m);
+      c.fromBufferAttribute(pos, ic).applyMatrix4(m);
+      ab.subVectors(b, a);
+      ac.subVectors(c, a);
+      const n = ab.cross(ac);
+      const area = n.length();
+      if (area < 1e-9 || n.y / area < 0.7) continue; // solo caras que miran hacia arriba
+      parts.push(`M${r(a.x)} ${r(a.z)}L${r(b.x)} ${r(b.z)}L${r(c.x)} ${r(c.z)}Z`);
+    }
+    return parts.length ? parts.join('') : undefined;
   }
 
   getSummary(): ModelSummary | null {

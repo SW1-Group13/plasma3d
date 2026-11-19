@@ -722,6 +722,7 @@ export class Modelo3D {
     mesh.position.copy(pos);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.source = 'manual';
 
     this.objeto.add(mesh);
     if (type === 'wall') this.walls.push(mesh);
@@ -795,6 +796,8 @@ export class Modelo3D {
     mesh.castShadow = true;
     mesh.receiveShadow = true;
     mesh.userData.baseDims = { thickness, height, length };
+    // Pieza agregada después del plano (el agente IA la re-marca como 'ia').
+    mesh.userData.source = 'manual';
     this.objeto.add(mesh);
     return mesh;
   }

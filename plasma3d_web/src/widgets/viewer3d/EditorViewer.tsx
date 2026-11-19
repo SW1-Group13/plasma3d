@@ -12,6 +12,8 @@ import {
 } from '@/widgets/viewer3d/engine';
 import { ViewCube } from '@/widgets/viewer3d/ViewCube';
 import { AgentChat } from '@/widgets/viewer3d/AgentChat';
+import { OriginalPlanPanel } from '@/widgets/viewer3d/OriginalPlanPanel';
+import { WorkedPlanPanel } from '@/widgets/viewer3d/WorkedPlanPanel';
 import {
   MEASURE_COLORS,
   MEASURE_KINDS,
@@ -164,6 +166,8 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
       { action: 'Menú de medidas (cotas)', keys: 'M' },
       { action: 'Abrir / cerrar Agente IA', keys: 'I' },
       { action: 'Modo Animado (presentación)', keys: 'P' },
+      { action: 'Ver / ocultar plano original', keys: 'O' },
+      { action: 'Ver / ocultar plano trabajado', keys: 'Shift+O' },
       { action: 'Zoom', keys: 'Rueda' },
       { action: 'Desplazar (pan)', keys: 'Botón derecho' },
     ],
@@ -261,6 +265,22 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const [lockVertical, setLockVertical] = useState(false);
   const [agentOpen, setAgentOpen] = useState(false);
   const [animated, setAnimated] = useState(false);
+  // Pantalla dividida: plano original a la izquierda, 3D a la derecha.
+  // Un solo panel a la vez: el plano original (imagen) o el trabajado (planta del 3D).
+  const [planPanel, setPlanPanel] = useState<'none' | 'original' | 'trabajado'>('none');
+  const togglePlanPanel = useCallback(
+    (panel: 'original' | 'trabajado') => setPlanPanel((cur) => (cur === panel ? 'none' : panel)),
+    [],
+  );
+  const getFloorPlan = useCallback(() => engineRef.current?.getFloorPlan() ?? null, []);
+  const [planUrl] = useState<string>(() => {
+    try {
+      return assetUrl(JSON.parse(localStorage.getItem('modelo') || '{}').plan_image);
+    } catch {
+      return '';
+    }
+  });
+  const planUrlRef = useRef(planUrl);
   const [fillGap, setFillGap] = useState(true);
   const [view, setViewState] = useState<ViewName>('planta');
   const [ortho, setOrtho] = useState(false);
@@ -493,6 +513,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         const engine = engineRef.current;
         engine?.setPresentationMode(!engine.isPresentationMode());
       }
+      else if ((e.key === 'o' || e.key === 'O') && e.shiftKey) togglePlanPanel('trabajado');
+      else if ((e.key === 'o' || e.key === 'O') && planUrlRef.current) togglePlanPanel('original');
       else if (e.key === '1') applyView('planta');
       else if (e.key === '2') applyView('alzado');
       else if (e.key === '3') applyView('perfil');
@@ -522,7 +544,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [applyView, runSnap]);
+  }, [applyView, runSnap, togglePlanPanel]);
 
   const startCreate = useCallback((type: DrawType) => {
     engineRef.current?.startCreate(type);
@@ -701,7 +723,6 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor (se guarda solo a los 3 s de cada cambio)">
             <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
           </RibbonAction>
-           Updated upstream
           <div className="relative">
             <RibbonAction
               onClick={() => setExportOpen((v) => !v)}
@@ -797,6 +818,48 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             <PlayCircleIcon width={15} height={15} />{' '}
             <Lbl>{animated ? `Animado · ${showTextures ? 'Texturas' : 'Colores'}` : 'Animado'}</Lbl>
+          </button>
+          {/* Plano original: pantalla dividida (brilla en celeste mientras está abierto) */}
+          <button
+            type="button"
+            onClick={() => togglePlanPanel('original')}
+            disabled={!planUrl}
+            aria-pressed={planPanel === 'original'}
+            title={
+              !planUrl
+                ? 'Este modelo no tiene plano original'
+                : planPanel === 'original'
+                  ? 'Ocultar plano original (O)'
+                  : 'Ver el plano original junto al 3D (O)'
+            }
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
+              planPanel === 'original'
+                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
+                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
+            )}
+          >
+            <ImageIcon width={15} height={15} /> <Lbl>Ver plano original</Lbl>
+          </button>
+          {/* Plano trabajado: planta 2D generada desde el 3D actual (con lo nuevo marcado) */}
+          <button
+            type="button"
+            onClick={() => togglePlanPanel('trabajado')}
+            disabled={modelLoading}
+            aria-pressed={planPanel === 'trabajado'}
+            title={
+              planPanel === 'trabajado'
+                ? 'Ocultar plano trabajado (Shift+O)'
+                : 'Ver el plano 2D actualizado con lo que agregaste a mano o con la IA (Shift+O)'
+            }
+            className={cn(
+              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
+              planPanel === 'trabajado'
+                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
+                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
+            )}
+          >
+            <LayersIcon width={15} height={15} /> <Lbl>Ver plano trabajado</Lbl>
           </button>
 
           <div className="flex shrink-0 items-center gap-1 sm:ml-auto">
@@ -950,8 +1013,23 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         </div>
       </div>
 
-      {/* Area de trabajo */}
-      <div className="relative flex-1 overflow-hidden">
+      {/* Area de trabajo (dividida con el plano original si está activo) */}
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+      {planPanel === 'original' && planUrl && (
+        <OriginalPlanPanel
+          src={planUrl}
+          onClose={() => setPlanPanel('none')}
+          className="h-1/2 shrink-0 border-b border-border md:h-auto md:w-1/2 md:border-b-0 md:border-r"
+        />
+      )}
+      {planPanel === 'trabajado' && (
+        <WorkedPlanPanel
+          getPlan={getFloorPlan}
+          onClose={() => setPlanPanel('none')}
+          className="h-1/2 shrink-0 border-b border-border md:h-auto md:w-1/2 md:border-b-0 md:border-r"
+        />
+      )}
+      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <canvas ref={canvasRef} className={cn('absolute inset-0 h-full w-full', tool === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default')} />
         <LoadingOverlay show={modelLoading} label="Cargando modelo 3D..." />
 
@@ -1323,6 +1401,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             )}
           </aside>
         )}
+      </div>
       </div>
 
       {/* Barra de estado fija (oculta en celular: no hay espacio y es info de teclado) */}

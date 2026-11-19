@@ -6,6 +6,9 @@ import { CLASS_COLOR, DOUBT_SCORE, toDetections, toItems, wallThickness } from '
 import { useReviewStore, type ReviewTool } from '@/features/planReview/store';
 import { PlanReviewCanvas } from '@/features/planReview/ui/PlanReviewCanvas';
 import { assetUrl } from '@/shared/lib/assetUrl';
+import { cn } from '@/shared/lib/utils';
+import { ImageIcon } from '@/shared/ui/icons';
+import { OriginalPlanPanel } from '@/widgets/viewer3d/OriginalPlanPanel';
 import { Button } from '@/shared/ui/button';
 import { BackgroundTask } from '@/shared/ui/loader';
 import { toast } from '@/shared/ui/toast';
@@ -46,6 +49,9 @@ export function PlanReviewPage() {
   const [hidden, setHidden] = useState<Record<DetectionClass, boolean>>({ wall: false, door: false, window: false });
   const [roofType, setRoofType] = useState<RoofType>('plano');
   const [gapMode, setGapMode] = useState<GapMode>('rellenar');
+  // Pantalla dividida: plano original (izquierda) junto al lienzo de revisión.
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [originalUrl, setOriginalUrl] = useState('');
 
   useEffect(() => {
     if (!Number.isFinite(planId)) return;
@@ -54,6 +60,9 @@ export function PlanReviewPage() {
       .then((data) => {
         setBase(data.detections);
         setImageUrl(assetUrl(data.plan_image));
+        // El archivo subido si el navegador lo muestra como imagen; si no (PDF/DXF/DWG), la versión rasterizada.
+        const isImage = /\.(jpe?g|png|webp|bmp|gif)(\?|$)/i.test(data.plan_file ?? '');
+        setOriginalUrl(assetUrl(isImage ? data.plan_file : data.plan_image));
         load(toItems(data.detections));
       })
       .catch((error) => toast.error('Error', serverMessage(error, 'No se pudo cargar el plano.')));
@@ -77,6 +86,8 @@ export function PlanReviewPage() {
       } else if (e.key === 'Escape') {
         select([]);
         setTool('select');
+      } else if (k === 'o' && !e.ctrlKey && !e.metaKey) {
+        setShowOriginal((v) => !v);
       } else if (!e.ctrlKey && !e.metaKey) {
         const found = TOOLS.find((x) => x.key.toLowerCase() === k);
         if (found) setTool(found.id);
@@ -180,6 +191,18 @@ export function PlanReviewPage() {
           <Button variant="outline" onClick={onSave} disabled={!dirty || !!task}>
             Guardar
           </Button>
+          <Button
+            variant="outline"
+            onClick={() => setShowOriginal((v) => !v)}
+            disabled={!originalUrl}
+            aria-pressed={showOriginal}
+            title={showOriginal ? 'Ocultar plano original (O)' : 'Ver el plano original junto a la revisión (O)'}
+            className={cn(
+              showOriginal && 'p3d-agent-glow border-cyan-400/60 bg-cyan-400/10 text-cyan-200 hover:bg-cyan-400/15 hover:text-cyan-100',
+            )}
+          >
+            <ImageIcon width={16} height={16} /> Ver plano original
+          </Button>
           <Button onClick={onBuild} disabled={!base || !!task}>
             Generar 3D
           </Button>
@@ -249,7 +272,7 @@ export function PlanReviewPage() {
             ))}
             <label className="flex items-center gap-2">
               <input type="checkbox" checked={!showOverlay} onChange={(e) => setShowOverlay(!e.target.checked)} />
-              Ver plano original
+              Ocultar detecciones
             </label>
             <label className="mt-1 flex flex-col gap-1 text-xs text-muted">
               Opacidad
@@ -271,7 +294,15 @@ export function PlanReviewPage() {
           )}
         </aside>
 
-        <div className="relative min-w-0 flex-1 overflow-hidden rounded-[var(--radius-card)] border border-border">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 md:flex-row">
+        {showOriginal && originalUrl && (
+          <OriginalPlanPanel
+            src={originalUrl}
+            onClose={() => setShowOriginal(false)}
+            className="h-1/2 shrink-0 overflow-hidden rounded-[var(--radius-card)] border border-border md:h-auto md:w-1/2"
+          />
+        )}
+        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden rounded-[var(--radius-card)] border border-border">
           {base && imageUrl ? (
             <PlanReviewCanvas
               imageUrl={imageUrl}
@@ -285,6 +316,7 @@ export function PlanReviewPage() {
           ) : (
             <div className="flex h-full items-center justify-center text-sm text-muted">Cargando plano...</div>
           )}
+        </div>
         </div>
       </div>
 
