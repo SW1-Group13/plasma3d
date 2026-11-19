@@ -216,11 +216,14 @@ def chat_completion(messages, provider, timeout=60):
                 for part in content
                 if isinstance(part, dict)
             )
-        return {
+        result = {
             'role': 'assistant',
             'content': content or '',
-            'tool_calls': message.get('tool_calls') or [],
         }
+        tool_calls = message.get('tool_calls') or []
+        if tool_calls:
+            result['tool_calls'] = tool_calls
+        return result
 
     raise AIProviderError(
         'El agente no pudo responder con {}. {}'.format(

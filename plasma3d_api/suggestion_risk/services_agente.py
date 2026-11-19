@@ -120,6 +120,10 @@ def _sanitize_history(messages):
     """Evita reenviar/guardar la imagen (data URL) en cada turno."""
     sanitized = []
     for message in messages:
+        message = dict(message)
+        # DeepSeek rechaza "tool_calls": [] (debe tener >= 1 elemento).
+        if not message.get('tool_calls'):
+            message.pop('tool_calls', None)
         content = message.get('content')
         if isinstance(content, list):
             new_content = []
@@ -162,10 +166,15 @@ def responder_agente(
       {estado: 'respuesta', texto, historial}
       {estado: 'acciones', acciones:[{id,nombre,args}], pendientes:[...], historial}
     """
-    messages = [
-        m for m in (historial or [])
-        if isinstance(m, dict) and m.get('role')
-    ]
+    messages = []
+    for item in (historial or []):
+        if not isinstance(item, dict) or not item.get('role'):
+            continue
+        message = dict(item)
+        # Limpiar historiales antiguos que guardaron "tool_calls": [].
+        if not message.get('tool_calls'):
+            message.pop('tool_calls', None)
+        messages.append(message)
     has_image = bool(imagen)
 
     if mensaje or imagen:
