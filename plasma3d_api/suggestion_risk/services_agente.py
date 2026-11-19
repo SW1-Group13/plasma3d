@@ -1,21 +1,18 @@
 """
-Agente IA del editor: chat con Gemini + herramientas (function calling).
+Agente IA del editor: chat multimodal con Gemini/DeepSeek (OpenAI-compatible).
 
 Bucle sin estado:
-- El cliente manda `historial` (contenidos crudos de Gemini, incluidas las
-  thoughtSignature que Gemini 3 exige devolver), un `mensaje` nuevo o los
-  `resultados` de acciones del editor, y el `contexto` actual del modelo.
+- El cliente manda `historial` (mensajes del agente), un `mensaje`/`imagen` o
+  los `resultados` de acciones del editor, y el `contexto` actual del modelo.
 - Las herramientas de SERVIDOR (precios/costos) se resuelven aquí mismo.
 - Si el modelo pide herramientas del EDITOR, se devuelven como `acciones`
   para que el frontend las ejecute y vuelva con sus resultados.
+- El audio se transcribe antes (Groq) y llega como texto normal.
 """
 import json
 
-import requests
-from django.conf import settings
-
-from .agent_tools import DECLARACIONES, EDITOR, SERVIDOR, ejecutar_servidor
-from .services_gemini import GEMINI_API_URL
+from .agent_tools import EDITOR, SERVIDOR, ejecutar_servidor
+from .services_ai import AIProviderError, chat_completion, choose_providers
 
 MAX_CHARS_MENSAJE = 2000
 MAX_PASOS_SERVIDOR = 6
@@ -30,6 +27,8 @@ Reglas generales:
 - Responde SIEMPRE en español, claro y breve. Sin tablas; como mucho listas cortas con guiones.
 - Medidas y datos del plano: usa SOLO el "CONTEXTO DEL MODELO". Da las medidas \
   en la unidad del contexto ("unidad": cm, m o in).
+- Si el usuario adjunta una imagen, analízala y responde sobre ella; si no es un \
+  plano, dilo amablemente. El audio llega ya transcrito como texto.
 
 Costos:
 - Para CUALQUIER costo, precio o total usa herramientas (costo_material, \
@@ -66,59 +65,100 @@ Mejoras ("¿qué le puedo aumentar?"):
 
 
 class AgenteError(Exception):
-    """Error al consultar a Gemini (se responde 502 al cliente)."""
+    """Error al consultar al agente (se responde 502 al cliente)."""
 
 
 def _texto_usuario(texto, contexto):
     resumen = {k: v for k, v in (contexto or {}).items() if k != "objetos"}
-    bloque = "CONTEXTO DEL MODELO (JSON):\n" + json.dumps(resumen, ensure_ascii=False)
-    return f"{bloque}\n\nMENSAJE DEL USUARIO:\n{texto}"
+    bloque = "CONTEXTO DEL MODELO (JSON):\n" + json.dumps(
+        resumen, ensure_ascii=False
+    )
+    return "{}\n\nMENSAJE DEL USUARIO:\n{}".format(bloque, texto)
 
 
-def _recortar(contents):
-    """Limita el historial sin partir pares llamada/respuesta de herramientas."""
-    if len(contents) <= MAX_CONTENIDOS:
-        return contents
-    recorte = contents[-MAX_CONTENIDOS:]
-    # Empezar en un turno de usuario con texto (no en una functionResponse)
-    while recorte and not (
-        recorte[0].get("role") == "user"
-        and any("text" in p for p in recorte[0].get("parts", []))
-    ):
-        recorte.pop(0)
-    return recorte
+def _recortar(messages):
+    """Limita el historial sin romper la secuencia de tool calls."""
+    if len(messages) <= MAX_CONTENIDOS:
+        return messages
+    window = messages[-MAX_CONTENIDOS:]
+    for index, message in enumerate(window):
+        if message.get('role') == 'user':
+            return window[index:]
+    return window
 
 
-def _llamar_gemini(contents):
-    api_key = getattr(settings, "GEMINI_API_KEY", None)
-    if not api_key:
-        raise AgenteError("El agente no está configurado (falta GEMINI_API_KEY).")
-    payload = {
-        "systemInstruction": {"parts": [{"text": INSTRUCCION_SISTEMA}]},
-        "contents": contents,
-        "tools": [{"functionDeclarations": DECLARACIONES}],
-        "generationConfig": {"temperature": 0.4, "maxOutputTokens": 4096},
-    }
-    try:
-        resp = requests.post(GEMINI_API_URL, params={"key": api_key}, json=payload, timeout=120)
-    except requests.RequestException as exc:
-        raise AgenteError(f"No se pudo contactar al agente: {exc}") from exc
-    if resp.status_code != 200:
-        raise AgenteError(f"El agente no respondió ({resp.status_code}): {resp.text[:300]}")
-    try:
-        return resp.json()["candidates"][0]["content"]
-    except (KeyError, IndexError, ValueError) as exc:
-        raise AgenteError("Respuesta del agente vacía o inválida.") from exc
+def _contenido_texto(mensaje):
+    content = mensaje.get('content')
+    if isinstance(content, list):
+        return ' '.join(
+            part.get('text', '')
+            for part in content
+            if isinstance(part, dict)
+        ).strip()
+    return (content or '').strip()
 
 
-def _respuesta_fn(nombre, respuesta, call_id=None):
-    fr = {"name": nombre, "response": respuesta if isinstance(respuesta, dict) else {"resultado": respuesta}}
+def _tool_message(call_id, nombre, respuesta):
+    if isinstance(respuesta, str):
+        content = respuesta
+    else:
+        content = json.dumps(respuesta, ensure_ascii=False, default=str)
     if call_id:
-        fr["id"] = call_id
-    return {"functionResponse": fr}
+        return {
+            'role': 'tool',
+            'tool_call_id': str(call_id),
+            'content': content,
+        }
+    # Sin id no se puede asociar al tool_call: se entrega como texto.
+    return {
+        'role': 'user',
+        'content': 'Resultado de {}: {}'.format(nombre, content),
+    }
 
 
-def responder_agente(historial, contexto, mensaje=None, resultados=None, pendientes=None):
+def _sanitize_history(messages):
+    """Evita reenviar/guardar la imagen (data URL) en cada turno."""
+    sanitized = []
+    for message in messages:
+        message = dict(message)
+        # DeepSeek rechaza "tool_calls": [] (debe tener >= 1 elemento).
+        if not message.get('tool_calls'):
+            message.pop('tool_calls', None)
+        content = message.get('content')
+        if isinstance(content, list):
+            new_content = []
+            for part in content:
+                if isinstance(part, dict) and part.get('type') == 'image_url':
+                    new_content.append(
+                        {'type': 'text', 'text': '[imagen adjunta]'}
+                    )
+                else:
+                    new_content.append(part)
+            if all(
+                isinstance(part, dict) and part.get('type') == 'text'
+                for part in new_content
+            ):
+                sanitized.append({
+                    **message,
+                    'content': '\n'.join(
+                        part.get('text', '') for part in new_content
+                    ),
+                })
+            else:
+                sanitized.append({**message, 'content': new_content})
+        else:
+            sanitized.append(message)
+    return sanitized
+
+
+def responder_agente(
+    historial,
+    contexto,
+    mensaje=None,
+    resultados=None,
+    pendientes=None,
+    imagen=None,
+):
     """
     Un paso del bucle del agente.
 
@@ -126,68 +166,154 @@ def responder_agente(historial, contexto, mensaje=None, resultados=None, pendien
       {estado: 'respuesta', texto, historial}
       {estado: 'acciones', acciones:[{id,nombre,args}], pendientes:[...], historial}
     """
-    contents = [c for c in (historial or []) if isinstance(c, dict) and c.get("parts")]
+    messages = []
+    for item in (historial or []):
+        if not isinstance(item, dict) or not item.get('role'):
+            continue
+        message = dict(item)
+        # Limpiar historiales antiguos que guardaron "tool_calls": [].
+        if not message.get('tool_calls'):
+            message.pop('tool_calls', None)
+        messages.append(message)
+    has_image = bool(imagen)
 
-    if mensaje:
-        texto = str(mensaje).strip()[:MAX_CHARS_MENSAJE]
-        if not texto:
-            raise AgenteError("Escribe un mensaje para el agente.")
-        contents.append({"role": "user", "parts": [{"text": _texto_usuario(texto, contexto)}]})
+    if mensaje or imagen:
+        texto = str(mensaje or '').strip()[:MAX_CHARS_MENSAJE]
+        if not texto and not imagen:
+            raise AgenteError('Escribe un mensaje para el agente.')
+        if imagen:
+            content = [
+                {
+                    'type': 'text',
+                    'text': _texto_usuario(
+                        texto or 'Analiza la imagen adjunta.', contexto
+                    ),
+                },
+                {'type': 'image_url', 'image_url': {'url': imagen}},
+            ]
+        else:
+            content = _texto_usuario(texto, contexto)
+        messages.append({'role': 'user', 'content': content})
     elif resultados is not None:
-        # Respuestas a TODAS las llamadas del último turno: las del servidor que
-        # ya se resolvieron (pendientes) + las del editor (resultados).
-        partes = list(pendientes or []) + [
-            _respuesta_fn(r.get("nombre"), r.get("respuesta") or {}, r.get("id"))
+        tool_messages = [
+            m for m in (pendientes or [])
+            if isinstance(m, dict) and m.get('role') == 'tool'
+        ]
+        tool_messages += [
+            _tool_message(
+                r.get('id'), r.get('nombre'), r.get('respuesta') or {}
+            )
             for r in resultados
         ]
-        if not partes:
-            raise AgenteError("Faltan los resultados de las acciones.")
-        contents.append({"role": "user", "parts": partes})
+        if not tool_messages:
+            raise AgenteError('Faltan los resultados de las acciones.')
+        messages.extend(tool_messages)
     else:
-        raise AgenteError("Escribe un mensaje para el agente.")
+        raise AgenteError('Escribe un mensaje para el agente.')
+
+    providers = choose_providers(has_image=has_image)
+    if not providers:
+        raise AgenteError(
+            'No hay proveedor de IA configurado. Define GEMINI_API_KEY o '
+            'DEEPSEEK_API_KEY en el entorno.'
+        )
+
+    if has_image:
+        # Respetar estrictamente AI_PROVIDER: con imagenes no se cambia a
+        # otro proveedor (evita que aparezca Gemini si el elegido es DeepSeek).
+        providers = providers[:1]
+
+    provider = None
+    first_call = True
 
     for _ in range(MAX_PASOS_SERVIDOR):
-        contents = _recortar(contents)
-        modelo = _llamar_gemini(contents)
-        modelo.setdefault("role", "model")
-        partes = modelo.get("parts") or []
-        contents.append(modelo)
+        messages = _recortar(messages)
+        if first_call:
+            asistente = None
+            errores = []
+            for candidate in providers:
+                try:
+                    asistente = chat_completion(
+                        [{'role': 'system', 'content': INSTRUCCION_SISTEMA}]
+                        + messages,
+                        candidate,
+                        timeout=45 if has_image else 60,
+                    )
+                    provider = candidate
+                    break
+                except AIProviderError as exc:
+                    errores.append(str(exc))
+            if asistente is None or provider is None:
+                raise AgenteError(
+                    ' | '.join(errores)
+                    or 'No hay proveedor de IA disponible.'
+                )
+            first_call = False
+        else:
+            try:
+                asistente = chat_completion(
+                    [{'role': 'system', 'content': INSTRUCCION_SISTEMA}]
+                    + messages,
+                    provider,
+                )
+            except AIProviderError as exc:
+                raise AgenteError(str(exc)) from exc
 
-        llamadas = [p["functionCall"] for p in partes if "functionCall" in p]
-        if not llamadas:
-            texto = "".join(
-                p.get("text", "") for p in partes if "text" in p and not p.get("thought")
-            ).strip()
+        messages.append(asistente)
+        tool_calls = asistente.get('tool_calls') or []
+
+        if not tool_calls:
+            texto = _contenido_texto(asistente)
             return {
-                "estado": "respuesta",
-                "texto": texto or "Listo.",
-                "historial": contents,
+                'estado': 'respuesta',
+                'texto': texto or 'Listo.',
+                'historial': _sanitize_history(messages),
             }
 
-        # Ejecutar las de servidor; las del editor van al cliente.
         resp_servidor = []
         acciones = []
-        for fc in llamadas:
-            nombre = fc.get("name")
-            args = fc.get("args") or {}
+        for call in tool_calls:
+            function = call.get('function') or {}
+            nombre = function.get('name')
+            call_id = call.get('id')
+            try:
+                args = json.loads(function.get('arguments') or '{}')
+                if not isinstance(args, dict):
+                    args = {}
+            except (TypeError, ValueError):
+                args = {}
+
             if nombre in SERVIDOR:
                 resp_servidor.append(
-                    _respuesta_fn(nombre, ejecutar_servidor(nombre, args, contexto), fc.get("id"))
+                    _tool_message(
+                        call_id, nombre,
+                        ejecutar_servidor(nombre, args, contexto),
+                    )
                 )
             elif nombre in EDITOR:
-                acciones.append({"id": fc.get("id"), "nombre": nombre, "args": args})
+                acciones.append({
+                    'id': call_id,
+                    'nombre': nombre,
+                    'args': args,
+                })
             else:
                 resp_servidor.append(
-                    _respuesta_fn(nombre, {"error": f"Herramienta desconocida: {nombre}"}, fc.get("id"))
+                    _tool_message(
+                        call_id, nombre,
+                        {'error': 'Herramienta desconocida: {}'.format(nombre)},
+                    )
                 )
 
         if acciones:
             return {
-                "estado": "acciones",
-                "acciones": acciones,
-                "pendientes": resp_servidor,
-                "historial": contents,
+                'estado': 'acciones',
+                'acciones': acciones,
+                'pendientes': resp_servidor,
+                'historial': _sanitize_history(messages),
             }
-        contents.append({"role": "user", "parts": resp_servidor})
 
-    raise AgenteError("El agente dio demasiadas vueltas; intenta una pregunta más concreta.")
+        messages.extend(resp_servidor)
+
+    raise AgenteError(
+        'El agente dio demasiadas vueltas; intenta una pregunta más concreta.'
+    )
