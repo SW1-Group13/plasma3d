@@ -329,6 +329,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         setMeasureKinds(kinds);
         if (unit) setMeasureUnit(unit);
       },
+      planImageUrl: planUrlRef.current || null,
     };
   }, [applyView]);
 
@@ -1141,6 +1142,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           onClose={() => setAgentOpen(false)}
           modelId={modelId}
           getHost={getAgentHost}
+          selection={{ kind: selected?.kind ?? null, count: selected?.count ?? 0 }}
+          hasPlan={Boolean(planUrl)}
         />
 
         {/* ViewCube / dado (esquina superior derecha) */}

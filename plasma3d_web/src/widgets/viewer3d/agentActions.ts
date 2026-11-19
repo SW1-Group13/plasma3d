@@ -1,13 +1,24 @@
 import type * as THREE from 'three';
 import type { AgentAction } from '@/entities/agent/api';
-import type { AgentMoveDirection, AgentMoveProposal, AgentPreviewItem, EditorEngine, RoofDrawKind, ViewName } from '@/widgets/viewer3d/engine';
+import type {
+  AgentMoveDirection,
+  AgentMoveProposal,
+  AgentPreviewExtra,
+  AgentPreviewItem,
+  EditorEngine,
+  RoofDrawKind,
+  ViewName,
+} from '@/widgets/viewer3d/engine';
 import { MEASURE_KINDS, type MeasureKind, type MeasureUnit } from '@/widgets/viewer3d/measurements';
+import { floorPlanToSvg, imageUrlToDataUrl, svgToDataUrl } from '@/widgets/viewer3d/floorPlanImage';
 
 /** Lo que el chat necesita para ejecutar acciones fuera del motor. */
 export interface AgentHost {
   engine: EditorEngine;
   setView: (view: ViewName) => void;
   setMeasures: (kinds: MeasureKind[], unit?: MeasureUnit) => void;
+  /** URL de la imagen del plano original (si el modelo vino de un plano). */
+  planImageUrl?: string | null;
   /** Pide confirmación al usuario en el chat (borrar, cambios masivos). */
   confirm: (texto: string) => Promise<boolean>;
   /** El chat ya pidió todas las confirmaciones antes de abrir la transacción. */
@@ -124,6 +135,140 @@ export function prepareAgentAction(action: AgentAction): AgentProposal | null {
   }
 }
 
+/** Argumentos de una acción: objeto, o texto JSON (así llegan dentro de proponer_plan). */
+export function parseArgs(raw: unknown): Record<string, unknown> {
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) return raw as Record<string, unknown>;
+  if (typeof raw === 'string' && raw.trim()) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+    } catch {
+      /* se informa abajo como argumentos inválidos */
+    }
+    throw new Error('Los argumentos de la acción no son un JSON válido.');
+  }
+  return {};
+}
+
+const PLAN_ACTIONS = new Set([
+  'dibujar_ambiente', 'dibujar_muro', 'agregar_puerta', 'agregar_ventana', 'dibujar_piso', 'dibujar_techo',
+]);
+const MAX_PLAN_ACTIONS = 60;
+
+export interface AgentPlanStep {
+  descripcion: string;
+  acciones: AgentAction[];
+  /** Error de validación del paso (se muestra en rojo). */
+  error?: string;
+  texto?: string;
+}
+
+export interface AgentPlan {
+  titulo: string;
+  pasos: AgentPlanStep[];
+  costo?: number;
+  items: AgentPreviewItem[];
+  valido: boolean;
+}
+
+/** Valida un plan propuesto por el agente y arma la vista previa de todo junto. */
+export function prepareAgentPlan(action: AgentAction): AgentPlan {
+  const a = action.args ?? {};
+  const rawSteps = Array.isArray(a.pasos) ? a.pasos : [];
+  if (!rawSteps.length) throw new Error('El plan no tiene pasos.');
+  let count = 0;
+  const items: AgentPreviewItem[] = [];
+  const pasos: AgentPlanStep[] = rawSteps.map((raw, i) => {
+    const step = (raw ?? {}) as Record<string, unknown>;
+    const descripcion = String(step.descripcion ?? `Paso ${i + 1}`);
+    const acciones: AgentAction[] = [];
+    try {
+      const list = Array.isArray(step.acciones) ? step.acciones : [];
+      if (!list.length) throw new Error('Paso sin acciones.');
+      const textos: string[] = [];
+      list.forEach((rawAction, j) => {
+        const act = (rawAction ?? {}) as Record<string, unknown>;
+        const nombre = String(act.nombre ?? '');
+        if (!PLAN_ACTIONS.has(nombre)) throw new Error(`Acción no permitida en un plan: ${nombre || '(vacía)'}`);
+        const sub: AgentAction = { id: `${action.id ?? 'plan'}-${i}-${j}`, nombre, args: parseArgs(act.args) };
+        const proposal = prepareAgentAction(sub);
+        if (!proposal) throw new Error(`No se pudo preparar ${nombre}.`);
+        items.push(...proposal.items);
+        textos.push(proposal.texto);
+        acciones.push(sub);
+      });
+      count += acciones.length;
+      return { descripcion, acciones, texto: textos.join(' · ') };
+    } catch (err) {
+      return { descripcion, acciones, error: err instanceof Error ? err.message : String(err) };
+    }
+  });
+  if (count > MAX_PLAN_ACTIONS) throw new Error(`El plan es demasiado grande (máximo ${MAX_PLAN_ACTIONS} acciones).`);
+  const costo = typeof a.costo_estimado === 'number' && Number.isFinite(a.costo_estimado) ? a.costo_estimado : undefined;
+  return {
+    titulo: String(a.titulo ?? 'Plan propuesto'),
+    pasos,
+    costo,
+    items,
+    valido: pasos.every((p) => !p.error),
+  };
+}
+
+/**
+ * Vista previa de acciones sobre piezas existentes: borrar (rojo), cambiar
+ * material (teñido) y redimensionar/girar (resultado simulado).
+ */
+export function prepareAgentExtras(host: Omit<AgentHost, 'confirm'>, action: AgentAction): { texto: string; extras: AgentPreviewExtra[] } | null {
+  const { engine } = host;
+  const a = action.args ?? {};
+  switch (action.nombre) {
+    case 'eliminar': {
+      const scope = String(a.alcance ?? 'seleccion');
+      const meshes = engine.agentFind(scope);
+      if (!meshes.length) return null;
+      const what = scope === 'seleccion' ? `${meshes.length} pieza(s) seleccionada(s)` : `${meshes.length} ${KIND_ES[scope] ?? scope}`;
+      return { texto: `Eliminar ${what} (en rojo)`, extras: [{ kind: 'highlight', meshIds: meshes.map((m) => m.uuid), hex: 0xef4444 }] };
+    }
+    case 'cambiar_material': {
+      const scope = String(a.alcance ?? 'seleccion');
+      const material = engine.agentMaterialByName(String(a.material ?? ''));
+      const meshes = engine.agentFind(scope);
+      if (!material || !meshes.length) return null;
+      const hex = parseInt(String(material.color_difuso ?? '').replace('#', ''), 16);
+      return {
+        texto: `${meshes.length} pieza(s) → ${material.nombre}`,
+        extras: [{ kind: 'highlight', meshIds: meshes.map((m) => m.uuid), hex: Number.isFinite(hex) ? hex : 0x22d3ee }],
+      };
+    }
+    case 'redimensionar_seleccion': {
+      const dims = {
+        largo: optNum(a.largo, 0.1, MAX_LEN),
+        alto: optNum(a.alto, 0.1, 10),
+        grosor: optNum(a.grosor, 0.02, 1.5),
+      };
+      const crecer = ['ambos', 'derecha', 'izquierda', 'arriba', 'abajo'].includes(String(a.crecer_hacia))
+        ? (String(a.crecer_hacia) as 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo')
+        : 'ambos';
+      const parts = [
+        dims.largo !== undefined ? `largo ${f2(dims.largo)} m` : '',
+        dims.alto !== undefined ? `alto ${f2(dims.alto)} m` : '',
+        dims.grosor !== undefined ? `grosor ${f2(dims.grosor)} m` : '',
+      ].filter(Boolean);
+      return { texto: `Redimensionar: ${parts.join(', ') || 'sin medidas'}`, extras: [{ kind: 'dryRun', op: 'resize', dims, crecer }] };
+    }
+    case 'rotar_seleccion': {
+      const grados = typeof a.grados === 'string' ? parseFloat(a.grados) : (a.grados as number);
+      const pivote = a.pivote === 'extremo' ? 'extremo' : 'centro';
+      return {
+        texto: `Girar ${Number.isFinite(grados) ? Math.abs(grados) : '?'}° (${grados > 0 ? 'antihorario' : 'horario'})`,
+        extras: [{ kind: 'dryRun', op: 'rotate', grados, pivote }],
+      };
+    }
+    default:
+      return null;
+  }
+}
+
 /** Valida dirección y distancia; el motor fija la pieza seleccionada y su estado actual. */
 export function prepareAgentMoveAction(host: AgentHost, action: AgentAction): AgentMovePreparation {
   if (action.nombre !== 'mover_seleccion') throw new Error('La acción no es un movimiento.');
@@ -193,6 +338,40 @@ export async function runAgentAction(host: AgentHost, action: AgentAction): Prom
           card: { texto: prepared.texto },
         };
       }
+      case 'redimensionar_seleccion': {
+        const dims = {
+          largo: optNum(a.largo, 0.1, MAX_LEN),
+          alto: optNum(a.alto, 0.1, 10),
+          grosor: optNum(a.grosor, 0.02, 1.5),
+        };
+        const grow = ['ambos', 'derecha', 'izquierda', 'arriba', 'abajo'].includes(String(a.crecer_hacia))
+          ? (String(a.crecer_hacia) as 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo')
+          : 'ambos';
+        const r = engine.agentResize(dims, grow);
+        const parts = [
+          dims.largo !== undefined ? `largo ${f2(r.antes.largo)} → ${f2(r.despues.largo)} m` : '',
+          dims.alto !== undefined ? `alto ${f2(r.antes.alto)} → ${f2(r.despues.alto)} m` : '',
+          dims.grosor !== undefined ? `grosor ${f2(r.antes.grosor)} → ${f2(r.despues.grosor)} m` : '',
+        ].filter(Boolean);
+        const round = (d: { largo: number; alto: number; grosor: number }) =>
+          ({ largo: +f2(d.largo), alto: +f2(d.alto), grosor: +f2(d.grosor) });
+        return {
+          respuesta: { ok: true, pieza: r.pieza, antes: round(r.antes), despues: round(r.despues), crecer_hacia: grow },
+          card: { texto: `${KIND_ES[r.tipo]?.replace(/s$/, '') ?? 'Pieza'}: ${parts.join(', ')}` },
+        };
+      }
+
+      case 'rotar_seleccion': {
+        const grados = typeof a.grados === 'string' ? parseFloat(a.grados) : (a.grados as number);
+        const pivote = a.pivote === 'extremo' ? 'extremo' : 'centro';
+        const r = engine.agentRotate(grados, pivote);
+        const sentido = grados > 0 ? 'antihorario' : 'horario';
+        return {
+          respuesta: { ok: true, pieza: r.pieza, grados, pivote, piezas_giradas: r.giradas },
+          card: { texto: `Girada ${Math.abs(grados)}° (${sentido})${r.giradas > 1 ? ` con ${r.giradas - 1} abertura(s)` : ''}` },
+        };
+      }
+
       case 'dibujar_muro': {
         const proposal = prepareAgentAction(action)!;
         const s = proposal.items[0];
@@ -329,6 +508,37 @@ export async function runAgentAction(host: AgentHost, action: AgentAction): Prom
         return {
           respuesta: { ok: ok > 0, ajustadas: ok, total: meshes.length, detalles: results.map((r) => r.mensaje).slice(0, 10) },
           ...(ok > 0 ? { card: { texto } } : {}),
+        };
+      }
+
+      case 'comparar_con_plano': {
+        if (!host.planImageUrl) {
+          return { respuesta: { ok: false, error: 'Este modelo no tiene plano original (se creó vacío o se subió como GLB).' } };
+        }
+        const plan = engine.getFloorPlan();
+        if (!plan.items.length) {
+          return { respuesta: { ok: false, error: 'El modelo todavía no tiene muros, puertas ni ventanas para comparar.' } };
+        }
+        const [original, actual] = await Promise.all([
+          imageUrlToDataUrl(host.planImageUrl, 1024),
+          svgToDataUrl(floorPlanToSvg(plan), 1024),
+        ]);
+        const cuenta = { muros: 0, puertas: 0, ventanas: 0 };
+        plan.items.forEach((it) => {
+          if (it.kind === 'wall') cuenta.muros++;
+          else if (it.kind === 'door') cuenta.puertas++;
+          else cuenta.ventanas++;
+        });
+        return {
+          respuesta: {
+            ok: true,
+            modelo_actual: cuenta,
+            imagenes: [
+              { titulo: 'Plano original subido por el usuario', url: original },
+              { titulo: 'Plano actual del modelo 3D visto desde arriba', url: actual },
+            ],
+          },
+          card: { texto: 'Comparando con el plano original…' },
         };
       }
 

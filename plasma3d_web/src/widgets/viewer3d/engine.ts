@@ -147,6 +147,29 @@ export type AgentPreviewItem =
       roofKind?: RoofDrawKind;
     };
 
+/**
+ * Vistas previas que no son geometría nueva: resaltar piezas existentes
+ * (borrar en rojo, material nuevo teñido) o el resultado de redimensionar /
+ * girar la selección (se simula y se revierte).
+ */
+export type AgentPreviewExtra =
+  | { kind: 'highlight'; meshIds: string[]; hex: number; label?: string }
+  | {
+      kind: 'dryRun';
+      op: 'resize';
+      dims: { largo?: number; alto?: number; grosor?: number };
+      crecer?: 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+    }
+  | { kind: 'dryRun'; op: 'rotate'; grados: number; pivote?: 'centro' | 'extremo' };
+
+/** Problema detectado al revisar lo que dibujó el agente. */
+export interface PlanIssue {
+  tipo: 'abertura_fuera_de_muro' | 'muros_cruzados' | 'muro_suelto' | 'aberturas_superpuestas';
+  pieza: string;
+  detalle: string;
+  sugerencia: string;
+}
+
 export type AgentMoveDirection = 'derecha' | 'izquierda' | 'arriba' | 'abajo';
 
 /** Referencias vivas; la propuesta solo existe mientras está abierto este editor. */
@@ -2340,7 +2363,11 @@ export class EditorEngine {
   setSelectedDimension(field: 'height' | 'thickness' | 'length' | 'width', value: number) {
     if (!this.selected) return;
     this.pushUndo('dim-' + field);
-    const mesh = this.selected;
+    this.applyDimension(this.selected, field, value);
+  }
+
+  /** Cambia una medida real de la pieza (sin historial: lo maneja quien llama). */
+  private applyDimension(mesh: THREE.Mesh, field: 'height' | 'thickness' | 'length' | 'width', value: number) {
     if (this.isBoxPiece(mesh) && value > 0.01) {
       // Paredes/pisos: geometría nueva con la medida real (no se estira).
       this.bakeScale(mesh);
@@ -3452,6 +3479,184 @@ export class EditorEngine {
     return warnings.slice(0, 8);
   }
 
+  /** Copia translúcida de una pieza (en su posición mundial actual). */
+  private agentGhostOf(mesh: THREE.Mesh, hex: number, opacity = 0.45, grow = 1.0): THREE.Mesh {
+    mesh.updateWorldMatrix(true, false);
+    const ghost = new THREE.Mesh(mesh.geometry.clone(), new THREE.MeshBasicMaterial({
+      color: hex, transparent: true, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    mesh.matrixWorld.decompose(ghost.position, ghost.quaternion, ghost.scale);
+    if (grow !== 1) ghost.scale.multiplyScalar(grow);
+    ghost.renderOrder = 100;
+    return ghost;
+  }
+
+  /**
+   * Vista previa de acciones sobre piezas existentes (se suma a la de
+   * setAgentPreview, no la borra). Devuelve avisos para el chat.
+   */
+  addAgentPreviewExtras(extras: AgentPreviewExtra[]): string[] {
+    if (!this.model) return ['No hay un plano cargado.'];
+    const warnings: string[] = [];
+    const byId = new Map(this.allMeshes().map((m) => [m.uuid, m]));
+    extras.forEach((extra) => {
+      if (extra.kind === 'highlight') {
+        extra.meshIds.forEach((id) => {
+          const mesh = byId.get(id);
+          if (mesh) this.agentPreview.add(this.agentGhostOf(mesh, extra.hex, 0.55, 1.01));
+        });
+        return;
+      }
+      // Simulación: aplicar dentro de una transacción de prueba, copiar el
+      // resultado como fantasma y revertir sin tocar el historial.
+      const selection = [...this.selection];
+      const revision = this.changeRevision;
+      const before = this.selection[0];
+      try {
+        this.beginAgentTransaction();
+        if (extra.op === 'resize') this.agentResize(extra.dims, extra.crecer ?? 'ambos');
+        else this.agentRotate(extra.grados, extra.pivote ?? 'centro');
+        const affected = before && this.measureKindOf(before) === 'wall' && extra.op === 'rotate'
+          ? [before, ...this.agentHostedOpenings(before)]
+          : before ? [before] : [];
+        affected.forEach((m) => this.agentPreview.add(this.agentGhostOf(m, 0x22d3ee, 0.45)));
+      } catch (err) {
+        warnings.push(err instanceof Error ? err.message : String(err));
+      } finally {
+        const transaction = this.agentTransaction;
+        this.agentTransaction = null;
+        if (transaction && this.sceneChanged(transaction.before)) this.restore(transaction.before);
+        this.changeRevision = revision;
+        if (selection.length) this.setSelection(selection.filter((m) => this.agentHas(m)));
+      }
+      // La pieza actual en rojo tenue para comparar con el resultado.
+      if (before) this.agentPreview.add(this.agentGhostOf(before, 0xf59e0b, 0.25, 1.005));
+    });
+    return warnings.slice(0, 8);
+  }
+
+  /**
+   * Revisa lo dibujado (o todo el plano si no se pasan ids) y devuelve
+   * problemas concretos para que el agente se corrija.
+   */
+  inspectPlan(meshIds?: string[]): PlanIssue[] {
+    if (!this.model) return [];
+    const plan = this.getFloorPlan();
+    const walls = plan.items.filter((it) => it.kind === 'wall');
+    const openings = plan.items.filter((it) => it.kind !== 'wall');
+    const focus = meshIds ? new Set(meshIds) : null;
+    const names = new Map(this.allMeshes().map((m) => [m.uuid, m.name]));
+    const nameOf = (id: string) => names.get(id) ?? id;
+    const issues: PlanIssue[] = [];
+
+    type P = [number, number];
+    const axisOf = (poly: [number, number][]) => {
+      const e1 = Math.hypot(poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]);
+      const e3 = Math.hypot(poly[3][0] - poly[0][0], poly[3][1] - poly[0][1]);
+      const mid = (p: P, q: P): P => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      return e1 >= e3
+        ? { a: mid(poly[0], poly[3]), b: mid(poly[1], poly[2]), t: e3 }
+        : { a: mid(poly[0], poly[1]), b: mid(poly[3], poly[2]), t: e1 };
+    };
+    const segDist = (p: P, a: P, b: P) => {
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l2));
+      return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dz));
+    };
+    const center = (poly: [number, number][]): P => [
+      poly.reduce((s, p) => s + p[0], 0) / poly.length,
+      poly.reduce((s, p) => s + p[1], 0) / poly.length,
+    ];
+    const wallAxes = walls.map((w) => ({ w, ...axisOf(w.poly) }));
+
+    // 1) Puertas/ventanas fuera de muro.
+    openings.forEach((o) => {
+      if (focus && !focus.has(o.id)) return;
+      const c = center(o.poly);
+      let best = Infinity;
+      let bestT = 0.15;
+      wallAxes.forEach(({ a, b, t }) => {
+        const d = segDist(c, a, b);
+        if (d < best) {
+          best = d;
+          bestT = t;
+        }
+      });
+      if (!wallAxes.length || best > Math.max(0.05, bestT / 2 + 0.03)) {
+        const cm = Number.isFinite(best) ? Math.round(best * 100) : null;
+        issues.push({
+          tipo: 'abertura_fuera_de_muro',
+          pieza: nameOf(o.id),
+          detalle: cm === null ? 'No hay muros en el plano.' : `Su centro está a ${cm} cm del muro más cercano.`,
+          sugerencia: 'Usa ajustar_al_muro con alcance "seleccion" después de seleccionarla.',
+        });
+      }
+    });
+
+    // 2) Aberturas superpuestas.
+    for (let i = 0; i < openings.length; i++) {
+      for (let j = i + 1; j < openings.length; j++) {
+        const a = openings[i];
+        const b = openings[j];
+        if (focus && !focus.has(a.id) && !focus.has(b.id)) continue;
+        const ca = center(a.poly);
+        const cb = center(b.poly);
+        if (Math.hypot(ca[0] - cb[0], ca[1] - cb[1]) < Math.min(a.length, b.length) / 2) {
+          issues.push({
+            tipo: 'aberturas_superpuestas',
+            pieza: `${nameOf(a.id)} / ${nameOf(b.id)}`,
+            detalle: 'Dos aberturas ocupan casi el mismo lugar.',
+            sugerencia: 'Elimina una o muévela a otro tramo del muro.',
+          });
+        }
+      }
+    }
+
+    // 3) Muros nuevos: sueltos (extremo lejos de otros muros) o cruzados.
+    const onFocus = wallAxes.filter(({ w }) => !focus || focus.has(w.id));
+    onFocus.forEach(({ w, a, b, t }) => {
+      const others = wallAxes.filter((o) => o.w.id !== w.id);
+      if (!others.length) return;
+      const tol = Math.max(0.1, t);
+      const loose = [a, b].filter((p) => others.every((o) => segDist(p, o.a, o.b) > tol));
+      if (loose.length === 2) {
+        issues.push({
+          tipo: 'muro_suelto',
+          pieza: nameOf(w.id),
+          detalle: 'Ninguno de sus extremos toca otro muro.',
+          sugerencia: 'Muévelo o alárgalo hasta tocar el muro vecino (si fue intencional, ignóralo).',
+        });
+      }
+      // Cruce: los ejes se cortan lejos de los extremos de ambos.
+      others.forEach((o) => {
+        if (focus && focus.has(o.w.id) && o.w.id < w.id) return; // evitar duplicados
+        const d1x = b[0] - a[0];
+        const d1z = b[1] - a[1];
+        const d2x = o.b[0] - o.a[0];
+        const d2z = o.b[1] - o.a[1];
+        const den = d1x * d2z - d1z * d2x;
+        if (Math.abs(den) < 1e-9) return;
+        const s = ((o.a[0] - a[0]) * d2z - (o.a[1] - a[1]) * d2x) / den;
+        const u = ((o.a[0] - a[0]) * d1z - (o.a[1] - a[1]) * d1x) / den;
+        const l1 = Math.hypot(d1x, d1z) || 1;
+        const l2 = Math.hypot(d2x, d2z) || 1;
+        const m1 = (t + 0.05) / l1;
+        const m2 = (o.t + 0.05) / l2;
+        if (s > m1 && s < 1 - m1 && u > m2 && u < 1 - m2) {
+          issues.push({
+            tipo: 'muros_cruzados',
+            pieza: `${nameOf(w.id)} / ${nameOf(o.w.id)}`,
+            detalle: 'Los muros se atraviesan en medio de ambos.',
+            sugerencia: 'Acorta uno de los dos hasta el punto de cruce o elimínalo.',
+          });
+        }
+      });
+    });
+    return issues.slice(0, 12);
+  }
+
   clearAgentPreview() {
     this.agentPreview.children.slice().forEach((child) => {
       this.agentPreview.remove(child);
@@ -3580,8 +3785,158 @@ export class EditorEngine {
     this.emitSelection();
   }
 
+  /** Medidas reales (m) de una pieza: largo, alto y grosor. */
+  private agentPieceDims(mesh: THREE.Mesh): { largo: number; alto: number; grosor: number } {
+    if (this.isOpening(mesh)) {
+      const d = this.openingDims(mesh);
+      return { largo: d.ancho, alto: d.alto, grosor: d.espesor };
+    }
+    const size = this.localSize(mesh);
+    const s = mesh.scale;
+    const len = this.lengthAxis(mesh);
+    const other = len === 'x' ? 'z' : 'x';
+    return {
+      largo: Math.abs(size[len] * s[len]),
+      alto: Math.abs(size.y * s.y),
+      grosor: Math.abs(size[other] * s[other]),
+    };
+  }
+
+  /** La única pieza seleccionada que el agente puede transformar. */
+  private agentSingleSelected(action: string): { mesh: THREE.Mesh; kind: MeasureKind } {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
+    if (this.selection.length !== 1) {
+      throw new Error(this.selection.length === 0
+        ? `Selecciona primero la pieza que quieres ${action}.`
+        : `Selecciona una sola pieza para ${action}la con la IA.`);
+    }
+    const mesh = this.selection[0];
+    const kind = this.measureKindOf(mesh);
+    if (!kind || !['wall', 'door', 'window', 'floor'].includes(kind) || !this.agentHas(mesh)) {
+      throw new Error(`La pieza seleccionada no se puede ${action} con el agente.`);
+    }
+    return { mesh, kind };
+  }
+
+  /** Puertas y ventanas alojadas en un muro (se mueven/giran con él). */
+  private agentHostedOpenings(wall: THREE.Mesh): THREE.Mesh[] {
+    if (!this.model || !wall.userData.elementId) return [];
+    return [...this.model.getDoors(), ...this.model.getWindows()].filter(
+      (opening) => opening.userData.hostWallId === wall.userData.elementId,
+    );
+  }
+
+  private agentTranslateWorld(meshes: THREE.Mesh[], delta: THREE.Vector3) {
+    meshes.forEach((mesh) => {
+      const parent = mesh.parent;
+      if (!parent) return;
+      parent.updateWorldMatrix(true, false);
+      const world = mesh.getWorldPosition(new THREE.Vector3()).add(delta);
+      mesh.position.copy(parent.worldToLocal(world));
+      mesh.updateMatrix();
+      mesh.updateWorldMatrix(true, false);
+    });
+  }
+
+  private agentAfterTransform(mesh: THREE.Mesh) {
+    if (this.isOpening(mesh)) this.refreshHostedWallForOpening(mesh, false);
+    else if (this.measureKindOf(mesh) === 'wall') this.refreshWallOpeningGeometry(mesh, false);
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  /**
+   * Redimensiona la pieza seleccionada (metros). `crecer` indica hacia dónde
+   * crece/encoge el largo en la vista Planta; el extremo opuesto queda fijo.
+   */
+  agentResize(
+    dims: { largo?: number; alto?: number; grosor?: number },
+    crecer: 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo' = 'ambos',
+  ) {
+    const { mesh, kind } = this.agentSingleSelected('redimensionar');
+    const before = this.agentPieceDims(mesh);
+    const check = (v: number | undefined, min: number, max: number, name: string) => {
+      if (v === undefined) return;
+      if (!Number.isFinite(v) || v < min || v > max) throw new Error(`El ${name} debe estar entre ${min} y ${max} m.`);
+    };
+    check(dims.largo, 0.1, 50, 'largo');
+    check(dims.alto, 0.1, 10, 'alto');
+    check(dims.grosor, 0.02, 1.5, 'grosor');
+    if (dims.largo === undefined && dims.alto === undefined && dims.grosor === undefined) {
+      throw new Error('Indica al menos una medida: largo, alto o grosor.');
+    }
+    if ((kind === 'door' || kind === 'window') && dims.largo !== undefined && mesh.userData.hostWallId) {
+      const host = this.model?.getWalls().find((w) => w.userData.elementId === mesh.userData.hostWallId);
+      if (host && dims.largo > this.agentPieceDims(host).largo) {
+        throw new Error('La abertura no puede ser más larga que su muro.');
+      }
+    }
+
+    // Punto que debe quedar fijo (centro o el extremo opuesto al crecimiento).
+    const fixedPoint = (m: THREE.Mesh) => {
+      const { a, b } = pieceAxis(m);
+      if (crecer === 'ambos') return a.clone().add(b).multiplyScalar(0.5);
+      const pick = crecer === 'derecha' ? (a.x <= b.x ? a : b)
+        : crecer === 'izquierda' ? (a.x >= b.x ? a : b)
+          : crecer === 'abajo' ? (a.z <= b.z ? a : b)
+            : (a.z >= b.z ? a : b);
+      return pick.clone();
+    };
+    const fixedBefore = fixedPoint(mesh);
+
+    if (dims.largo !== undefined) this.applyDimension(mesh, 'length', dims.largo);
+    if (dims.alto !== undefined) this.applyDimension(mesh, 'height', dims.alto);
+    if (dims.grosor !== undefined) this.applyDimension(mesh, kind === 'floor' ? 'width' : 'thickness', dims.grosor);
+
+    mesh.updateWorldMatrix(true, false);
+    const delta = fixedBefore.sub(fixedPoint(mesh)).setY(0);
+    if (delta.lengthSq() > 1e-8) this.agentTranslateWorld([mesh], delta);
+    this.agentAfterTransform(mesh);
+    return { pieza: mesh.name, tipo: kind, antes: before, despues: this.agentPieceDims(mesh) };
+  }
+
+  /**
+   * Gira la pieza seleccionada en la vista Planta. Grados positivos = sentido
+   * antihorario visto desde arriba. Un muro gira junto con sus puertas/ventanas.
+   */
+  agentRotate(grados: number, pivote: 'centro' | 'extremo' = 'centro') {
+    const { mesh, kind } = this.agentSingleSelected('girar');
+    if (!Number.isFinite(grados) || Math.abs(grados) < 0.1 || Math.abs(grados) > 360) {
+      throw new Error('Indica un ángulo entre 0.1 y 360 grados.');
+    }
+    const { a, b } = pieceAxis(mesh);
+    const pivot = pivote === 'extremo'
+      ? (a.x < b.x - 1e-6 || (Math.abs(a.x - b.x) <= 1e-6 && a.z <= b.z) ? a : b).clone()
+      : a.clone().add(b).multiplyScalar(0.5);
+    pivot.y = 0;
+    const rad = THREE.MathUtils.degToRad(grados);
+    const up = new THREE.Vector3(0, 1, 0);
+    const targets = kind === 'wall' ? [mesh, ...this.agentHostedOpenings(mesh)] : [mesh];
+    targets.forEach((m) => {
+      const parent = m.parent;
+      if (!parent) return;
+      parent.updateWorldMatrix(true, false);
+      const world = m.getWorldPosition(new THREE.Vector3());
+      const offset = world.clone().sub(pivot);
+      offset.applyAxisAngle(up, rad);
+      m.position.copy(parent.worldToLocal(pivot.clone().add(offset).setY(world.y)));
+      m.rotateOnWorldAxis(up, rad);
+      m.updateMatrix();
+      m.updateWorldMatrix(true, false);
+    });
+    this.agentAfterTransform(mesh);
+    return { pieza: mesh.name, tipo: kind, grados, pivote, giradas: targets.length };
+  }
+
   agentSelect(meshes: THREE.Mesh[]) {
     this.setSelection(meshes.filter((m) => this.selectableMeshes().includes(m)));
+  }
+
+  /** uuid de las piezas seleccionadas (los mismos ids que getFloorPlan). */
+  getSelectionIds(): string[] {
+    return this.selection.map((m) => m.uuid);
   }
 
   /** ¿La malla sigue en el modelo? (para deshacer con seguridad) */

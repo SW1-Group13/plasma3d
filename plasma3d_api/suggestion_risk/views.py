@@ -1,8 +1,9 @@
+import json
 import logging
-import time
 
 from django.conf import settings
 from django.db import DatabaseError
+from django.http import StreamingHttpResponse
 from rest_framework import status
 from rest_framework.decorators import (
     api_view,
@@ -14,7 +15,13 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import AnalisisRiesgo
-from .services_agente import MAX_CHARS_MENSAJE, AgenteError, responder_agente
+from .services_agente import (
+    MAX_CHARS_MENSAJE,
+    AgenteError,
+    responder_agente,
+    responder_agente_stream,
+)
+from .services_ai import available_providers
 from .services_groq import GroqError, transcribir_audio
 from .services_riesgo import analizar_archivo, analizar_plan
 
@@ -35,10 +42,21 @@ def agente_chat(request):
        resultados?: [{id, nombre, respuesta}],          # acciones del editor ejecutadas
        pendientes?: [...]}                              # devueltos por el paso anterior
     Respuesta:
-      {estado: 'respuesta', texto, historial}
-      {estado: 'acciones', acciones:[{id,nombre,args}], pendientes, historial}
+      {estado: 'respuesta', texto, historial, proveedor}
+      {estado: 'acciones', acciones:[{id,nombre,args}], pendientes, historial, proveedor}
     """
-    data = request.data
+    args, error = _agente_args(request.data)
+    if error is not None:
+        return error
+    try:
+        paso = responder_agente(**args)
+    except AgenteError as exc:
+        return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+    return Response(paso)
+
+
+def _agente_args(data):
+    """Valida el cuerpo del agente. Devuelve (kwargs, None) o (None, Response)."""
     mensaje = data.get('mensaje')
     imagen = data.get('imagen')
     resultados = data.get('resultados')
@@ -46,61 +64,87 @@ def agente_chat(request):
     contexto = data.get('contexto') or {}
 
     if not isinstance(historial, list) or not isinstance(contexto, dict):
-        return Response({'detail': 'Formato inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+        return None, Response({'detail': 'Formato inválido.'}, status=status.HTTP_400_BAD_REQUEST)
     if mensaje is not None and len(str(mensaje)) > MAX_CHARS_MENSAJE:
-        return Response(
+        return None, Response(
             {'detail': f'El mensaje supera {MAX_CHARS_MENSAJE} caracteres.'},
             status=status.HTTP_400_BAD_REQUEST
         )
     if imagen is not None:
         if not isinstance(imagen, str) or not imagen.startswith('data:image/'):
-            return Response(
+            return None, Response(
                 {'detail': 'La imagen debe ser un data URL (data:image/...).'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
         if len(imagen) > 8 * 1024 * 1024:
-            return Response(
+            return None, Response(
                 {'detail': 'La imagen es demasiado grande (máx. 8 MB).'},
                 status=status.HTTP_400_BAD_REQUEST,
             )
     if mensaje is None and not isinstance(resultados, list) and not imagen:
-        return Response(
+        return None, Response(
             {'detail': 'Envía un mensaje, una imagen o los resultados de las acciones.'},
             status=status.HTTP_400_BAD_REQUEST
         )
+    # Proveedor elegido en el chat ('gemini' | 'deepseek'); 'modelo' por compatibilidad.
+    proveedor = str(data.get('proveedor') or data.get('modelo') or '').strip().lower() or None
+    return {
+        'historial': historial,
+        'contexto': contexto,
+        'mensaje': mensaje,
+        'resultados': resultados,
+        'pendientes': data.get('pendientes'),
+        'imagen': imagen,
+        'proveedor': proveedor,
+    }, None
 
-    # Simulacion de modelo local: el backend sigue usando DeepSeek, pero
-    # retrasa la respuesta 20 s cuando el cliente elige un modelo "local-*".
-    modelo = str(data.get('modelo') or '').strip().lower()
-    if modelo.startswith('local-'):
-        time.sleep(20)
 
-    try:
-        paso = responder_agente(
-            historial, contexto,
-            mensaje=mensaje,
-            resultados=resultados,
-            pendientes=data.get('pendientes'),
-            imagen=imagen,
-        )
-    except AgenteError as exc:
-        return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
-    return Response(paso)
+def _sse(evento, datos):
+    return 'event: {}\ndata: {}\n\n'.format(
+        evento, json.dumps(datos, ensure_ascii=False, default=str)
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def agente_chat_stream(request):
+    """
+    Igual que agente_chat pero en streaming (text/event-stream):
+      event: token     data: {t}                 texto parcial
+      event: acciones  data: {estado:'acciones', ...}
+      event: fin       data: {estado:'respuesta', ...}
+      event: error     data: {detail}
+    """
+    args, error = _agente_args(request.data)
+    if error is not None:
+        return error
+
+    def eventos():
+        # Comentario inicial: abre la conexión de inmediato en proxies.
+        yield ': ok\n\n'
+        for evento, datos in responder_agente_stream(**args):
+            yield _sse(evento, datos)
+
+    response = StreamingHttpResponse(eventos(), content_type='text/event-stream; charset=utf-8')
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'  # nginx: no acumular el stream
+    return response
 
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def ai_config(request):
-    """Configuracion real de IA (para habilitar/deshabilitar imagenes/audio)."""
+    """Configuracion real de IA: proveedores disponibles, imágenes y audio."""
     proveedor = (getattr(settings, 'AI_PROVIDER', 'gemini') or 'gemini').strip().lower()
-    claves = {
-        'gemini': getattr(settings, 'GEMINI_API_KEY', ''),
-        'deepseek': getattr(settings, 'DEEPSEEK_API_KEY', ''),
-    }
+    providers = available_providers()
+    ids = [p['id'] for p in providers]
+    if proveedor not in ids and ids:
+        proveedor = ids[0]
     return Response(
         {
             'provider': proveedor,
-            'vision': bool(claves.get(proveedor)),
+            'providers': providers,
+            'vision': any(p['vision'] for p in providers),
             'audio': bool(getattr(settings, 'GROQ_API_KEY', '')),
         }
     )
