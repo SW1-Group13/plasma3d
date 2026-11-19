@@ -3934,6 +3934,116 @@ export class EditorEngine {
     this.setSelection(meshes.filter((m) => this.selectableMeshes().includes(m)));
   }
 
+  /**
+   * "Créame una pared/puerta/ventana/cuarto" sin coordenadas: el editor elige
+   * dónde. Puerta/ventana con un muro seleccionado → centrada en ese muro.
+   * Si no, afuera del modelo, a 1 m del lado pedido, sin chocar con nada.
+   */
+  agentQuickSpot(opts: {
+    tipo: 'muro' | 'puerta' | 'ventana' | 'ambiente';
+    cantidad?: number;
+    largo?: number;
+    fondo?: number;
+    lado?: 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+  }): { items: AgentPreviewItem[]; descripcion: string } {
+    const tipo = opts.tipo;
+    const cantidad = Math.max(1, Math.min(10, Math.round(opts.cantidad ?? 1)));
+    const defLargo = tipo === 'muro' ? 3 : tipo === 'puerta' ? 0.9 : tipo === 'ventana' ? 1.2 : 3;
+    const largo = THREE.MathUtils.clamp(opts.largo ?? defLargo, 0.3, 50);
+    const fondo = THREE.MathUtils.clamp(opts.fondo ?? 4, 0.5, 50);
+    const lado = opts.lado ?? 'derecha';
+    const segType: 'wall' | 'door' | 'window' = tipo === 'puerta' ? 'door' : tipo === 'ventana' ? 'window' : 'wall';
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    // 1) Puerta/ventana en el muro seleccionado (repartidas a lo largo del muro).
+    const sel = this.selection.length === 1 ? this.selection[0] : null;
+    if ((tipo === 'puerta' || tipo === 'ventana') && sel && this.measureKindOf(sel) === 'wall') {
+      const { a, b } = pieceAxis(sel);
+      const dir = b.clone().sub(a).setY(0);
+      const wallLen = dir.length();
+      dir.normalize();
+      const ancho = Math.min(largo, Math.max(0.3, wallLen / cantidad - 0.2));
+      const items: AgentPreviewItem[] = [];
+      for (let i = 0; i < cantidad; i++) {
+        const c = a.clone().add(dir.clone().multiplyScalar((wallLen * (i + 1)) / (cantidad + 1)));
+        const p1 = c.clone().add(dir.clone().multiplyScalar(-ancho / 2));
+        const p2 = c.clone().add(dir.clone().multiplyScalar(ancho / 2));
+        items.push({ kind: 'segment', type: segType, x1: r2(p1.x), z1: r2(p1.z), x2: r2(p2.x), z2: r2(p2.z) });
+      }
+      return { items, descripcion: `sobre el muro seleccionado (${sel.name})` };
+    }
+
+    // 2) Afuera del modelo.
+    const bounds = new THREE.Box3();
+    const boxes: THREE.Box3[] = [];
+    this.allMeshes().forEach((m) => {
+      if (!m.visible) return;
+      const box = new THREE.Box3().setFromObject(m);
+      if (box.isEmpty()) return;
+      boxes.push(box);
+      bounds.union(box);
+    });
+    const empty = bounds.isEmpty();
+    const minX = empty ? 0 : bounds.min.x;
+    const maxX = empty ? 0 : bounds.max.x;
+    const minZ = empty ? 0 : bounds.min.z;
+    const maxZ = empty ? 0 : bounds.max.z;
+    const gap = empty ? 0 : 1;
+    // Eje "a lo largo" del lado y dirección "hacia afuera".
+    const vertical = lado === 'derecha' || lado === 'izquierda'; // pieza a lo largo de z
+    const out = lado === 'derecha' || lado === 'abajo' ? 1 : -1;
+    const startAlong = empty ? -((cantidad * (largo + 0.5)) / 2) : vertical ? minZ : minX;
+    let offset = empty ? 0 : (vertical ? (out > 0 ? maxX : minX) : (out > 0 ? maxZ : minZ)) + out * gap;
+
+    const build = (off: number): AgentPreviewItem[] => {
+      const items: AgentPreviewItem[] = [];
+      for (let i = 0; i < cantidad; i++) {
+        const s = startAlong + i * (largo + 0.5);
+        const e = s + largo;
+        if (tipo === 'ambiente') {
+          // Rectángulo: `largo` a lo largo del lado y `fondo` hacia afuera.
+          const o1 = off;
+          const o2 = off + out * fondo;
+          const [x1, x2, z1, z2] = vertical
+            ? [Math.min(o1, o2), Math.max(o1, o2), s, e]
+            : [s, e, Math.min(o1, o2), Math.max(o1, o2)];
+          items.push(
+            { kind: 'segment', type: 'wall', x1, z1, x2, z2: z1, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1: x2, z1, x2, z2, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1: x2, z1: z2, x2: x1, z2, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1, z1: z2, x2: x1, z2: z1, thickness: 0.15 },
+          );
+        } else {
+          items.push(vertical
+            ? { kind: 'segment', type: segType, x1: off, z1: s, x2: off, z2: e }
+            : { kind: 'segment', type: segType, x1: s, z1: off, x2: e, z2: off });
+        }
+      }
+      return items.map((it) => (it.kind === 'segment'
+        ? { ...it, x1: r2(it.x1), z1: r2(it.z1), x2: r2(it.x2), z2: r2(it.z2) } : it));
+    };
+
+    // Correr hacia afuera de a 0.5 m hasta que no choque con nada.
+    const collides = (items: AgentPreviewItem[]) => items.some((it) => {
+      const pad = 0.12;
+      const box = new THREE.Box3(
+        new THREE.Vector3(Math.min(it.x1, it.x2) - pad, 0.05, Math.min(it.z1, it.z2) - pad),
+        new THREE.Vector3(Math.max(it.x1, it.x2) + pad, 2.5, Math.max(it.z1, it.z2) + pad),
+      );
+      return boxes.some((b) => b.intersectsBox(box));
+    });
+    let items = build(offset);
+    for (let step = 0; step < 60 && collides(items); step++) {
+      offset += out * 0.5;
+      items = build(offset);
+    }
+    const ladoTxt = { derecha: 'a la derecha', izquierda: 'a la izquierda', arriba: 'arriba (norte)', abajo: 'abajo (sur)' }[lado];
+    const descripcion = empty
+      ? 'en el centro del plano (estaba vacío)'
+      : `afuera del modelo, ${ladoTxt}, en ${vertical ? 'x' : 'z'} = ${r2(offset)} m`;
+    return { items, descripcion };
+  }
+
   /** uuid de las piezas seleccionadas (los mismos ids que getFloorPlan). */
   getSelectionIds(): string[] {
     return this.selection.map((m) => m.uuid);

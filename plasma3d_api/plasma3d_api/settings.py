@@ -211,6 +211,14 @@ DEEPSEEK_BASE_URL = os.getenv(
     'https://api.deepseek.com',
 )
 
+# --- IA local con Ollama (opcional) ---
+# OLLAMA_URL: dirección de Ollama sin /v1, p. ej. http://localhost:11434 o el
+# túnel https://xxxx.trycloudflare.com. Vacía = Ollama desactivado.
+OLLAMA_URL = os.getenv('OLLAMA_URL', '').strip()
+OLLAMA_MODELS = os.getenv('OLLAMA_MODELS', 'qwen2.5:3b')
+# Un modelo local en CPU tarda más que Gemini: más tiempo de espera.
+OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '240') or 240)
+
 # --- Groq (transcripcion de audio / Whisper) ---
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 GROQ_MODEL = os.getenv('GROQ_MODEL', 'whisper-large-v3')

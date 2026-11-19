@@ -63,7 +63,9 @@ def _schema_openai(value):
     return value
 
 
-def _tools_openai():
+def _tools_openai(exclude=None):
+    """Herramientas en formato OpenAI (sin las de `exclude`, para modelos chicos)."""
+    exclude = set(exclude or ())
     return [
         {
             'type': 'function',
@@ -76,6 +78,7 @@ def _tools_openai():
             },
         }
         for tool in DECLARACIONES
+        if tool['name'] not in exclude
     ]
 
 
@@ -108,10 +111,27 @@ def _configs():
                 ['deepseek-chat'],
             ),
         },
+        # IA local: Ollama expone la misma API de OpenAI en /v1 (mismas
+        # herramientas y mismo agente que Gemini). No pide API key real.
+        'ollama': {
+            'name': 'ollama',
+            'api_key': 'ollama' if _ollama_base() else '',
+            'base': _ollama_base(),
+            'models': _split_models(getattr(settings, 'OLLAMA_MODELS', '') or 'qwen2.5:3b'),
+            'timeout': int(getattr(settings, 'OLLAMA_TIMEOUT', 240) or 240),
+        },
     }
 
 
-PROVIDER_LABELS = {'gemini': 'Gemini', 'deepseek': 'DeepSeek'}
+def _ollama_base():
+    """OLLAMA_URL + /v1 (acepta la URL con o sin /v1)."""
+    url = (getattr(settings, 'OLLAMA_URL', '') or '').strip().rstrip('/')
+    if not url:
+        return ''
+    return url if url.endswith('/v1') else url + '/v1'
+
+
+PROVIDER_LABELS = {'gemini': 'Gemini', 'deepseek': 'DeepSeek', 'ollama': 'Ollama (local)'}
 # Proveedores que aceptan imágenes en /chat/completions.
 VISION_PROVIDERS = {'gemini'}
 
@@ -145,7 +165,7 @@ def choose_providers(has_image=False, preferido=None):
         order.append(preferido)
     if selected in configs and selected not in order:
         order.append(selected)
-    for name in ('gemini', 'deepseek'):
+    for name in ('gemini', 'deepseek', 'ollama'):
         if name not in order:
             order.append(name)
 
@@ -171,21 +191,21 @@ def choose_provider(has_image=False):
     return providers[0]
 
 
-def chat_completion(messages, provider, timeout=60):
+def chat_completion(messages, provider, timeout=60, temperature=0.4, exclude_tools=None):
     """Llama a /chat/completions del proveedor, rotando entre sus modelos."""
     url = provider['base'] + '/chat/completions'
     headers = {
         'Authorization': 'Bearer {}'.format(provider['api_key']),
         'Content-Type': 'application/json',
     }
-    tools = _tools_openai()
+    tools = _tools_openai(exclude_tools)
     errors = []
 
     for model in provider['models']:
         payload = {
             'model': model,
             'messages': messages,
-            'temperature': 0.4,
+            'temperature': temperature,
             'max_tokens': 4096,
         }
         if tools:
@@ -226,6 +246,7 @@ def chat_completion(messages, provider, timeout=60):
             continue
 
         try:
+            response.encoding = 'utf-8'  # algunos proveedores no envían charset
             data = response.json()
             message = data['choices'][0]['message']
         except (KeyError, IndexError, ValueError) as exc:
@@ -317,7 +338,7 @@ def _leer_stream(response, on_token):
     return result
 
 
-def chat_completion_stream(messages, provider, on_token, timeout=60):
+def chat_completion_stream(messages, provider, on_token, timeout=60, temperature=0.4, exclude_tools=None):
     """
     Igual que chat_completion pero con stream=True: el texto se entrega con
     on_token(fragmento) a medida que llega. Si el proveedor no soporta
@@ -329,14 +350,14 @@ def chat_completion_stream(messages, provider, on_token, timeout=60):
         'Content-Type': 'application/json',
         'Accept': 'text/event-stream',
     }
-    tools = _tools_openai()
+    tools = _tools_openai(exclude_tools)
     errors = []
 
     for model in provider['models']:
         payload = {
             'model': model,
             'messages': messages,
-            'temperature': 0.4,
+            'temperature': temperature,
             'max_tokens': 4096,
             'stream': True,
         }
@@ -351,6 +372,9 @@ def chat_completion_stream(messages, provider, on_token, timeout=60):
             errors.append('{}/{}: {}'.format(provider['name'], model, exc))
             continue
         try:
+            # Ollama manda text/event-stream sin charset: requests asumiría
+            # ISO-8859-1 y "á" llegaría como "Ã¡".
+            response.encoding = 'utf-8'
             if response.status_code != 200:
                 errors.append('{}/{}: {} {}'.format(
                     provider['name'], model, response.status_code,

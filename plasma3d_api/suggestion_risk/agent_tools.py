@@ -76,6 +76,24 @@ DECLARACIONES = [
     },
     # ---------------- Editor: acciones en el modelo 3D ----------------
     {
+        "name": "crear_rapido",
+        "description": "Crea al INSTANTE un muro/pared, puerta, ventana o ambiente (cuarto) "
+                       "SIN pedir ubicación, medidas ni material: el editor la coloca "
+                       "afuera del modelo (o, si hay un muro seleccionado y es puerta/"
+                       "ventana, centrada en ese muro) con material por defecto. Úsala "
+                       "siempre que el usuario pida crear/poner/agregar algo sin dar "
+                       "coordenadas. Ej.: 'créame una pared' → {tipo:'muro'}; "
+                       "'2 ventanas a la izquierda' → {tipo:'ventana', cantidad:2, lado:'izquierda'}.",
+        "parameters": _obj({
+            "tipo": {"type": "STRING", "enum": ["muro", "puerta", "ventana", "ambiente"]},
+            "cantidad": {"type": "NUMBER", "description": "1 a 10, default 1"},
+            "largo": {"type": "NUMBER", "description": "m. Default: muro 3, puerta 0.9, ventana 1.2, ambiente 3 (ancho)"},
+            "fondo": {"type": "NUMBER", "description": "m, solo ambiente (default 4)"},
+            "lado": {"type": "STRING", "enum": ["derecha", "izquierda", "arriba", "abajo"],
+                     "description": "Lado del modelo donde se crea (default derecha)"},
+        }, ["tipo"]),
+    },
+    {
         "name": "dibujar_muro",
         "description": "Dibuja un muro recto de (x1,z1) a (x2,z2) en metros.",
         "parameters": _obj({

@@ -93,7 +93,7 @@ interface PreviewWaiter {
 const MAX_ITEMS = 80;
 const MAX_ROUNDS = 8; // idas y vueltas acciones → resultados por pregunta (incluye autorrevisión)
 const MAX_REVIEW_ROUNDS = 2;
-const PROVIDER_LABEL: Record<string, string> = { gemini: 'Gemini', deepseek: 'DeepSeek' };
+const PROVIDER_LABEL: Record<string, string> = { gemini: 'Gemini', deepseek: 'DeepSeek', ollama: 'Ollama (local)' };
 
 type PlanDecision = 'ejecutar' | 'cambiar' | 'cancelar';
 
@@ -199,6 +199,10 @@ function errorText(error: unknown): string {
     }
     const detail = (error.response?.data as { detail?: string } | undefined)?.detail;
     if (detail) return detail;
+  }
+  // Errores del streaming (fetch) traen el detalle del servidor en el mensaje.
+  if (error instanceof Error && error.message && !/failed to fetch|networkerror|load failed/i.test(error.message)) {
+    return error.message;
   }
   return 'No se pudo contactar al agente. Revisa tu conexión.';
 }
@@ -636,7 +640,9 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     const preparationErrors = new Map<number, string>();
     remaining.forEach(({ action, index }) => {
       try {
-        const proposal = prepareAgentAction(action);
+        // crear_rapido no pasa por la autorrevisión (DRAW_ACTIONS): una puerta o
+        // ventana creada afuera a propósito no es un error "fuera de muro".
+        const proposal = prepareAgentAction(action, base.engine);
         if (proposal) proposals.push(proposal);
       } catch (err) {
         preparationErrors.set(index, err instanceof Error ? err.message : String(err));

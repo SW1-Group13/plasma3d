@@ -9,9 +9,11 @@ from rest_framework.decorators import (
     api_view,
     parser_classes,
     permission_classes,
+    renderer_classes,
 )
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
 
 from .models import AnalisisRiesgo
@@ -99,6 +101,23 @@ def _agente_args(data):
     }, None
 
 
+class EventStreamRenderer(BaseRenderer):
+    """
+    Permite que DRF acepte 'Accept: text/event-stream' (si no, responde 406).
+    Las respuestas de error (dict) se envían como JSON.
+    """
+    media_type = 'text/event-stream'
+    format = 'event-stream'
+    charset = 'utf-8'
+
+    def render(self, data, accepted_media_type=None, renderer_context=None):
+        if data is None:
+            return b''
+        if isinstance(data, (bytes, str)):
+            return data if isinstance(data, bytes) else data.encode('utf-8')
+        return json.dumps(data, ensure_ascii=False, default=str).encode('utf-8')
+
+
 def _sse(evento, datos):
     return 'event: {}\ndata: {}\n\n'.format(
         evento, json.dumps(datos, ensure_ascii=False, default=str)
@@ -107,6 +126,7 @@ def _sse(evento, datos):
 
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
+@renderer_classes([JSONRenderer, EventStreamRenderer])
 def agente_chat_stream(request):
     """
     Igual que agente_chat pero en streaming (text/event-stream):

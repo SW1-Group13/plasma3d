@@ -13,7 +13,10 @@ import json
 import queue
 import threading
 
-from .agent_tools import EDITOR, SERVIDOR, ejecutar_servidor
+import re
+import uuid
+
+from .agent_tools import DECLARACIONES, EDITOR, SERVIDOR, ejecutar_servidor
 from .services_ai import (
     AIProviderError,
     chat_completion,
@@ -34,6 +37,9 @@ Reglas generales:
 - Responde SIEMPRE en español, claro y breve. Sin tablas; como mucho listas cortas con guiones.
 - Medidas y datos del plano: usa SOLO el "CONTEXTO DEL MODELO". Da las medidas \
   en la unidad del contexto ("unidad": cm, m o in).
+- Para cantidades y totales (cuántos muros, puertas, m²...) usa los números del \
+  "RESUMEN DEL PLANO". No listes nombres internos de piezas (wall_external_..., \
+  door_...) salvo que el usuario lo pida.
 - Si el usuario adjunta una imagen, analízala y responde sobre ella; si no es un \
   plano, dilo amablemente. El audio llega ya transcrito como texto.
 
@@ -62,7 +68,15 @@ Dibujar y editar:
   "Hazlo de 4 m" = largo 4 desde el centro; "alárgalo hacia la derecha" = \
   crecer_hacia "derecha". "Gíralo 90°" sin sentido = 90 (antihorario); \
   "en sentido horario" = negativo.
-- Para un cuarto/ambiente usa dibujar_ambiente. Para nuevas construcciones fuera \
+- CREAR SIN PREGUNTAR: si el usuario pide crear/poner/agregar una pared, muro, \
+  puerta, ventana o cuarto SIN dar coordenadas ("créame una pared", "ponle una \
+  ventana", "agrega 2 puertas a la izquierda"), NO preguntes ubicación, medidas \
+  ni material: llama a crear_rapido (pared = muro, cuarto/habitación = ambiente; \
+  "de 5 m" = largo 5; "a la izquierda/arriba..." = lado) y luego di en 1 frase \
+  dónde quedó y que puede moverla o cambiarle el material. Usa dibujar_muro, \
+  agregar_puerta, agregar_ventana o dibujar_ambiente solo si el usuario dio una \
+  ubicación concreta o pidió algo relativo a muros específicos del plano.
+- Para un cuarto/ambiente con ubicación concreta usa dibujar_ambiente. Para nuevas construcciones fuera \
   del plano deja ~0.5 m o pégalas al muro existente si piden "anexo".
 - Puertas y ventanas: colócalas SOBRE un muro (usa sus coordenadas en "muros").
 - Para materiales usa nombres del catálogo; si no existe el pedido, ofrece el más \
@@ -104,23 +118,391 @@ Mejoras ("¿qué le puedo aumentar?"):
 """
 
 
+# Prompt corto para modelos locales chicos (Ollama): mismas reglas clave,
+# menos texto y ejemplos concretos (a los modelos chicos les ayuda mucho).
+INSTRUCCION_LOCAL = """\
+Eres el Agente IA de Plasma3D, asistente de un editor 3D de planos de casas. \
+Respondes SIEMPRE en español, en 1 a 4 frases cortas y claras.
+
+Reglas:
+1. Cantidades y medidas: copia los números del "RESUMEN DEL PLANO". No cuentes \
+tú mismo y NO listes nombres internos (wall_external_..., door_...).
+2. Precios y costos: si el mensaje trae "COSTOS ACTUALES", copia esos números \
+(total y por categoría). Para otro material o comparar, usa costo_material o \
+comparar_materiales. Nunca inventes cifras ni escribas marcadores como <...>. \
+Total en dólares con 2 decimales.
+3. Mover (mover_seleccion), cambiar medidas (redimensionar_seleccion) o girar \
+(rotar_seleccion): solo si "Seleccionado" NO es "nada" y el usuario dio la \
+medida/ángulo. Si falta, pídelo. cm → m (50 cm = 0.5).
+   - "hazlo de N m", "que mida N m", "más largo/corto": SOLO largo=N. No envíes \
+alto ni grosor si el usuario no los nombró.
+   - "de N m de alto" / "más alto": SOLO alto=N. "más grueso" / "de N cm de grosor": SOLO grosor.
+4. Crear: "créame una pared / puerta / ventana / cuarto" → llama a crear_rapido \
+(tipo muro, puerta, ventana o ambiente). NO preguntes ubicación, medidas ni \
+material: el editor lo coloca solo. Solo con coordenadas exactas del usuario usa \
+dibujar_muro, agregar_puerta o agregar_ventana.
+5. "¿Qué le puedo aumentar/mejorar?": mira el RESUMEN y propone 2 o 3 ideas \
+concretas (ej.: si "Techo dibujado: no" → agregar techo; pocas ventanas para los \
+m² → más ventanas; un ambiente extra de 3×4 m) y pregunta "¿Lo dibujo?".
+6. SOLO para diseñar una casa ENTERA, comparar con el plano original o analizar \
+imágenes, di: "Eso lo hace mejor el modelo Gemini; cámbialo en el selector \
+Modelo de arriba."
+7. Tras actuar, di en 1 frase qué hiciste. Responde como en una conversación \
+normal: nunca escribas flechas, corchetes ni la palabra "luego".
+
+Ejemplos de estilo (los números reales salen del RESUMEN o de COSTOS ACTUALES):
+- Pregunta: ¿cuántos muros tiene mi plano? Respuesta: Tu plano tiene 9 muros, con 41.20 m de largo en total.
+- Pregunta: ¿cuánto cuesta todo? Respuesta: El modelo cuesta $1,234.50 en total: muros $800.00, puertas $134.50 y piso $300.00.
+- Pregunta: ¿cuánto costaría piedra natural en los muros? Respuesta: Con piedra natural los muros costarían $2,100.00 (75 m² × $28.00).
+- Pregunta: hazlo de 4 m (con un muro seleccionado). Acción: redimensionar_seleccion con largo 4. Respuesta: Listo, el muro ahora mide 4.00 m de largo.
+- Pregunta: créame una pared. Acción: crear_rapido con tipo muro. Respuesta: Listo, creé una pared de 3 m afuera del modelo, a la derecha. Puedes moverla o cambiarle el material.
+"""
+
+# Herramientas que NO se envían a modelos locales (pesadas o requieren visión).
+HERRAMIENTAS_SOLO_NUBE = ('proponer_plan', 'comparar_con_plano', 'mostrar_medidas', 'cambiar_vista')
+
+
+def _perfil(provider):
+    """Cómo se le habla a cada proveedor. Gemini/DeepSeek: completo; Ollama: liviano."""
+    if (provider or {}).get('name') == 'ollama':
+        return {
+            'local': True,
+            'instruccion': INSTRUCCION_LOCAL,
+            'temperatura': 0.2,
+            'sin_herramientas': HERRAMIENTAS_SOLO_NUBE,
+            'max_contenidos': 14,
+        }
+    return {
+        'local': False,
+        'instruccion': INSTRUCCION_SISTEMA,
+        'temperatura': 0.4,
+        'sin_herramientas': (),
+        'max_contenidos': MAX_CONTENIDOS,
+    }
+
+
+_PARAMS = {
+    d['name']: (
+        set((d.get('parameters') or {}).get('properties') or {}),
+        list((d.get('parameters') or {}).get('required') or []),
+        (d.get('parameters') or {}).get('properties') or {},
+    )
+    for d in DECLARACIONES
+}
+# Herramientas que un modelo local puede "escribir" en vez de llamar.
+_RESCATABLES = (EDITOR | SERVIDOR) - set(HERRAMIENTAS_SOLO_NUBE) - {'proponer_plan'}
+
+
+def _rescatar_tool_call(texto):
+    """
+    Los modelos chicos a veces ESCRIBEN la herramienta ("rotar_seleccion con
+    grados 90" o un JSON) en vez de llamarla. Si el texto nombra una
+    herramienta y trae todos sus datos obligatorios, se convierte en la
+    llamada real. Si falta algo, no se inventa nada.
+    """
+    if not texto:
+        return None
+    t = texto.strip()
+    # 1) JSON tipo {"name": "...", "arguments": {...}}
+    m = re.search(r'\{.*\}', t, re.S)
+    if m:
+        try:
+            data = json.loads(m.group(0))
+            nombre = data.get('name') or data.get('nombre')
+            args = data.get('arguments') or data.get('args') or data.get('parameters') or {}
+            if isinstance(args, str):
+                args = json.loads(args)
+            if nombre in _RESCATABLES and isinstance(args, dict):
+                return _tool_call(nombre, args)
+        except (ValueError, AttributeError):
+            pass
+    # 2) Nombre de herramienta en el texto + "parametro valor"
+    bajo = t.lower()
+    nombre = next((n for n in sorted(_RESCATABLES, key=len, reverse=True) if n in bajo), None)
+    if not nombre:
+        return None
+    permitidos, requeridos, props = _PARAMS.get(nombre, (set(), [], {}))
+    args = {}
+    for param in permitidos:
+        tipo = str((props.get(param) or {}).get('type', '')).upper()
+        enum = (props.get(param) or {}).get('enum')
+        patron = r'\b{}\b["\']?\s*(?:=|:|(?:de|con|en)\b)?\s*["\']?'.format(re.escape(param))
+        if tipo == 'NUMBER':
+            v = re.search(patron + r'(-?\d+(?:[.,]\d+)?)', bajo)
+            if v:
+                args[param] = float(v.group(1).replace(',', '.'))
+        elif enum:
+            v = re.search(patron + r'([a-z_]+)', bajo)
+            if v and v.group(1) in enum:
+                args[param] = v.group(1)
+    if any(r not in args for r in requeridos):
+        return None
+    return _tool_call(nombre, args)
+
+
+_VERBOS_CREAR = (
+    r'(?:cr[eé]a(?:me|le|r)?|pon(?:me|le|er)?|agr[eé]ga(?:me|le|r)?|a[ñn]ade(?:me|le)?|a[ñn]adir|'
+    r'dib[uú]ja(?:me|le)?|dibujar|haz(?:me|le)?|hacer|genera(?:me|r)?|coloca(?:me|le|r)?|mete(?:le)?|'
+    r'quiero|necesito)'
+)
+_OBJETOS = {
+    'muro': r'(?:pared(?:es)?|muros?)',
+    'puerta': r'(?:puertas?)',
+    'ventana': r'(?:ventanas?|ventanales?)',
+    'ambiente': r'(?:cuartos?|habitaci[oó]n(?:es)?|ambientes?|dormitorios?|piezas? nuevas?)',
+}
+_NUMEROS = {'un': 1, 'una': 1, 'uno': 1, 'dos': 2, 'tres': 3, 'cuatro': 4, 'cinco': 5,
+            'seis': 6, 'siete': 7, 'ocho': 8, 'nueve': 9, 'diez': 10}
+# Si aparece algo de esto, el pedido no es "simple": decide la IA.
+_NO_ATAJO = (
+    'cuest', 'costo', 'precio', 'presupuesto', 'material', 'piedra', 'madera', 'vidrio', 'ladrillo',
+    'concreto', 'cemento', 'color', 'x=', 'z=', 'coordenada', 'entre', 'junto a', 'al lado del',
+    'cocina', 'baño', 'bano', 'sala', 'comedor', 'casa', '?', ' y ', 'después', 'luego', 'borra',
+    'elimina', 'mueve', 'gira',
+)
+
+
+def _atajo_crear(texto):
+    """
+    "créame una pared", "pon 2 ventanas a la izquierda", "agrega una puerta de 1 m"...
+    Pedidos simples de crear se resuelven sin llamar a la IA (instantáneo y
+    sin errores, sobre todo con modelos locales). Devuelve los args de
+    crear_rapido o None si el pedido no es claramente simple.
+    """
+    t = ' {} '.format((texto or '').lower().strip().rstrip('.!'))
+    if len(t) > 90 or any(p in t for p in _NO_ATAJO):
+        return None
+    if not re.search(r'\b' + _VERBOS_CREAR + r'\b', t):
+        return None
+    encontrados = [tipo for tipo, patron in _OBJETOS.items() if re.search(r'\b' + patron + r'\b', t)]
+    if len(encontrados) != 1:
+        return None
+    tipo = encontrados[0]
+    args = {'tipo': tipo}
+    # Cantidad: "2 ventanas", "dos puertas"; plural sin número → 2.
+    m = re.search(r'\b(\d{1,2}|' + '|'.join(_NUMEROS) + r')\s+(?:\w+\s+)?' + _OBJETOS[tipo] + r'\b', t)
+    if m:
+        valor = m.group(1)
+        args['cantidad'] = int(valor) if valor.isdigit() else _NUMEROS[valor]
+    else:
+        palabra = re.search(r'\b' + _OBJETOS[tipo] + r'\b', t)
+        if palabra and palabra.group(0).split()[0].endswith('s'):
+            args['cantidad'] = 2  # plural sin número: "créame ventanas"
+    if args.get('cantidad', 1) > 10 or args.get('cantidad', 1) < 1:
+        return None
+    # Medida: "de 5 m", "de 120 cm", "de 3 metros"; ambiente "de 3x4".
+    m = re.search(r'\bde\s+(\d+(?:[.,]\d+)?)\s*(?:x|×|por)\s*(\d+(?:[.,]\d+)?)', t)
+    if m and tipo == 'ambiente':
+        args['largo'] = float(m.group(1).replace(',', '.'))
+        args['fondo'] = float(m.group(2).replace(',', '.'))
+    else:
+        m = re.search(r'\bde\s+(\d+(?:[.,]\d+)?)\s*(m|mts?|metros?|cm|cent[ií]metros?)\b', t)
+        if m:
+            valor = float(m.group(1).replace(',', '.'))
+            args['largo'] = valor / 100 if m.group(2).startswith(('cm', 'cent')) else valor
+    # Lado.
+    for palabras, lado in ((('derecha', 'este'), 'derecha'), (('izquierda', 'oeste'), 'izquierda'),
+                           (('arriba', 'norte'), 'arriba'), (('abajo', 'sur'), 'abajo')):
+        if any(re.search(r'\b{}\b'.format(p), t) for p in palabras):
+            args['lado'] = lado
+            break
+    return args
+
+
+def _tool_call(nombre, args):
+    return {
+        'id': 'call_rescate_{}'.format(uuid.uuid4().hex[:8]),
+        'type': 'function',
+        'function': {'name': nombre, 'arguments': json.dumps(args, ensure_ascii=False)},
+    }
+
+
 class AgenteError(Exception):
     """Error al consultar al agente (se responde 502 al cliente)."""
 
 
-def _texto_usuario(texto, contexto):
-    resumen = {k: v for k, v in (contexto or {}).items() if k != "objetos"}
+_NOMBRE_TIPO = {
+    'wall': ('Muros', 'muro'), 'door': ('Puertas', 'puerta'), 'window': ('Ventanas', 'ventana'),
+    'floor': ('Pisos', 'piso'), 'roof': ('Techos', 'techo'),
+}
+
+
+def _num(valor):
+    try:
+        return float(valor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resumen_texto(contexto):
+    """
+    Hechos ya calculados del plano, en texto simple. Los modelos (sobre todo
+    los chicos) los leen mucho mejor que el JSON completo.
+    """
+    contexto = contexto or {}
+    piezas = contexto.get('piezas') or {}
+    lineas = ['RESUMEN DEL PLANO (datos exactos, úsalos tal cual):']
+    for tipo in ('wall', 'door', 'window', 'floor', 'roof'):
+        p = piezas.get(tipo) or {}
+        cantidad = int(p.get('cantidad') or 0)
+        plural = _NOMBRE_TIPO[tipo][0]
+        extra = []
+        largo = _num(p.get('largo_total_m'))
+        area = _num(p.get('area_m2'))
+        if tipo == 'wall' and largo:
+            extra.append('largo total {:.2f} m'.format(largo))
+        if area:
+            extra.append('{:.2f} m²'.format(area))
+        lineas.append('- {}: {}{}'.format(plural, cantidad, ' ({})'.format(', '.join(extra)) if extra else ''))
+    if contexto.get('techo'):
+        lineas.append('- Techo dibujado: {}'.format(contexto['techo']))
+    lim = contexto.get('limites') or {}
+    if lim and not lim.get('vacio'):
+        ancho = (_num(lim.get('max_x')) or 0) - (_num(lim.get('min_x')) or 0)
+        fondo = (_num(lim.get('max_z')) or 0) - (_num(lim.get('min_z')) or 0)
+        lineas.append('- Tamaño total del plano: {:.2f} m × {:.2f} m (x de {} a {}, z de {} a {})'.format(
+            ancho, fondo, lim.get('min_x'), lim.get('max_x'), lim.get('min_z'), lim.get('max_z')))
+    sel = contexto.get('seleccion')
+    if isinstance(sel, dict) and sel:
+        tipo = _NOMBRE_TIPO.get(sel.get('tipo'), (None, sel.get('tipo') or 'pieza'))[1]
+        medidas = []
+        for clave, nombre in (('largo_m', 'largo'), ('alto_m', 'alto'), ('espesor_m', 'grosor')):
+            valor = _num(sel.get(clave))
+            if valor:
+                medidas.append('{} {:.2f} m'.format(nombre, valor))
+        cuantas = int(sel.get('piezas_seleccionadas') or 1)
+        lineas.append('- Seleccionado: {} ({}{}){}{}'.format(
+            sel.get('nombre'), tipo,
+            ', ' + ', '.join(medidas) if medidas else '',
+            ', material ' + str(sel['material']) if sel.get('material') else '',
+            ' — y {} pieza(s) más'.format(cuantas - 1) if cuantas > 1 else '',
+        ))
+    else:
+        lineas.append('- Seleccionado: nada')
+    if contexto.get('unidad'):
+        lineas.append('- Unidad preferida del usuario: {}'.format(contexto['unidad']))
+    return '\n'.join(lineas)
+
+
+# Palabras que indican que hace falta ubicar piezas (coordenadas completas).
+_PALABRAS_UBICACION = (
+    'dibuj', 'agreg', 'añad', 'anad', 'coloc', 'pon', 'mueve', 'mover', 'muev', 'derech',
+    'izquier', 'norte', 'sur', 'este', 'oeste', 'arriba', 'abajo', 'cuarto', 'ambiente',
+    'habitac', 'anexo', 'ventana', 'puerta', 'muro', 'pared', 'piso', 'techo', 'donde', 'dónde',
+)
+
+
+def _contexto_compacto(contexto, texto):
+    """
+    Contexto liviano para modelos locales: sin catálogo (está listar_precios)
+    y, si el mensaje no habla de ubicar piezas, solo las 15 piezas más
+    cercanas a la selección (o al centro) de cada tipo.
+    """
+    contexto = dict(contexto or {})
+    contexto.pop('materiales_catalogo', None)
+    contexto.pop('tipos', None)
+    contexto.pop('seleccion_nombres', None)
+    t = (texto or '').lower()
+    if any(p in t for p in _PALABRAS_UBICACION):
+        return contexto
+    sel = contexto.get('seleccion') if isinstance(contexto.get('seleccion'), dict) else None
+    pos = (sel or {}).get('posicion_mundo_m') or {}
+    cx, cz = _num(pos.get('x')) or 0.0, _num(pos.get('z')) or 0.0
+
+    def cerca(item):
+        x = ((_num(item.get('x1')) or 0) + (_num(item.get('x2')) or 0)) / 2
+        z = ((_num(item.get('z1')) or 0) + (_num(item.get('z2')) or 0)) / 2
+        return (x - cx) ** 2 + (z - cz) ** 2
+
+    for clave in ('muros', 'puertas', 'ventanas'):
+        lista = contexto.get(clave)
+        if isinstance(lista, list) and len(lista) > 15:
+            contexto[clave] = sorted(
+                (i for i in lista if isinstance(i, dict)), key=cerca
+            )[:15]
+            contexto[clave + '_nota'] = 'solo las 15 más cercanas de {}'.format(len(lista))
+    return contexto
+
+
+_PALABRAS_COSTO = ('cuest', 'costo', 'coste', 'precio', 'presupuesto', 'cuánto', 'cuanto', 'dinero', 'gast', '$')
+
+
+def _costos_texto(contexto, texto):
+    """
+    Para modelos locales: si la pregunta es de costos, se calcula aquí el
+    presupuesto real (misma lógica que el botón Presupuesto) y va en texto.
+    Los modelos chicos no siempre llaman bien a la herramienta.
+    """
+    t = (texto or '').lower()
+    if not any(p in t for p in _PALABRAS_COSTO) or not (contexto or {}).get('objetos'):
+        return ''
+    try:
+        r = ejecutar_servidor('presupuesto_actual', {}, contexto)
+    except Exception:
+        return ''
+    if not isinstance(r, dict) or r.get('total') is None:
+        return ''
+    lineas = ['COSTOS ACTUALES (calculados con los precios cargados, úsalos tal cual):',
+              '- Total del modelo: ${:,.2f}'.format(float(r['total']))]
+    for categoria, valor in (r.get('por_categoria') or {}).items():
+        lineas.append('- {}: ${:,.2f}'.format(categoria.capitalize(), float(valor)))
+    for fila in (r.get('detalle') or [])[:8]:
+        lineas.append('  · {} ({}): {} {} × ${} = ${:,.2f}{}'.format(
+            fila.get('material'), fila.get('categoria'), fila.get('cantidad'), fila.get('unidad'),
+            fila.get('precio_unitario'), float(fila.get('subtotal') or 0),
+            ' (precio estimado)' if fila.get('estimado') else ''))
+    if r.get('avisos'):
+        lineas.append('- Sin precio cargado: {}'.format(', '.join(map(str, r['avisos']))))
+
+    # "¿cuánto costaría piedra natural en los muros?": material del catálogo
+    # nombrado en el mensaje → costo con ese material en la categoría pedida.
+    categorias = [cat for palabras, cat in (
+        (('muro', 'pared'), 'wall'), (('piso', 'suelo'), 'floor'), (('techo', 'teja'), 'roof'),
+        (('puerta',), 'door'), (('ventana',), 'window'),
+    ) if any(p in t for p in palabras)] or ['wall']
+    nombrados = [m for m in (contexto.get('materiales_catalogo') or [])
+                 if isinstance(m, str) and m.lower() in t]
+    for material in nombrados[:3]:
+        for categoria in categorias[:2]:
+            try:
+                c = ejecutar_servidor('costo_material', {'categoria': categoria, 'material': material}, contexto)
+            except Exception:
+                continue
+            if isinstance(c, dict) and c.get('total') is not None:
+                lineas.append('- Con {} en {}: {} {} × ${} = ${:,.2f}{}'.format(
+                    c.get('material', material), c.get('categoria', categoria), c.get('cantidad'),
+                    c.get('unidad'), c.get('precio_unitario'), float(c['total']),
+                    ' (precio estimado)' if c.get('estimado') else ''))
+    lineas.append('(Para comparar varios materiales usa comparar_materiales.)')
+    return '\n'.join(lineas)
+
+
+def _texto_usuario(texto, contexto, compacto=False):
+    datos = {k: v for k, v in (contexto or {}).items() if k != "objetos"}
+    resumen = _resumen_texto(contexto)
+    if compacto:
+        datos = _contexto_compacto(datos, texto)
+        costos = _costos_texto(contexto, texto)
+        if costos:
+            resumen += '\n\n' + costos
     bloque = "CONTEXTO DEL MODELO (JSON):\n" + json.dumps(
-        resumen, ensure_ascii=False
+        datos, ensure_ascii=False
     )
-    return "{}\n\nMENSAJE DEL USUARIO:\n{}".format(bloque, texto)
+    return "{}\n\n{}\n\nMENSAJE DEL USUARIO:\n{}".format(resumen, bloque, texto)
 
 
-def _recortar(messages):
+def _solo_mensaje(content):
+    """Del texto de un turno viejo deja solo la pregunta (sin el contexto viejo)."""
+    if isinstance(content, str) and 'MENSAJE DEL USUARIO:\n' in content:
+        return content.split('MENSAJE DEL USUARIO:\n', 1)[1]
+    return content
+
+
+def _recortar(messages, maximo=MAX_CONTENIDOS):
     """Limita el historial sin romper la secuencia de tool calls."""
-    if len(messages) <= MAX_CONTENIDOS:
+    if len(messages) <= maximo:
         return messages
-    window = messages[-MAX_CONTENIDOS:]
+    window = messages[-maximo:]
     for index, message in enumerate(window):
         if message.get('role') == 'user':
             return window[index:]
@@ -212,8 +594,12 @@ def _imagenes_de_resultados(resultados):
     return limpios, imagenes[:4]
 
 
-def _armar_mensajes(historial, contexto, mensaje, resultados, pendientes, imagen):
-    """Historial + el nuevo turno (pregunta o resultados). Devuelve (messages, has_image)."""
+def _armar_mensajes(historial, contexto, mensaje, resultados, pendientes, imagen, compacto=False):
+    """
+    Historial + el nuevo turno (pregunta o resultados). Devuelve (messages, has_image).
+    Con `compacto` (modelo local) el contexto va reducido y los turnos viejos
+    pierden su contexto (ya no sirve y ocupa mucho).
+    """
     messages = []
     for item in (historial or []):
         if not isinstance(item, dict) or not item.get('role'):
@@ -222,6 +608,8 @@ def _armar_mensajes(historial, contexto, mensaje, resultados, pendientes, imagen
         # Limpiar historiales antiguos que guardaron "tool_calls": [].
         if not message.get('tool_calls'):
             message.pop('tool_calls', None)
+        if compacto and message.get('role') == 'user':
+            message['content'] = _solo_mensaje(message.get('content'))
         messages.append(message)
     has_image = bool(imagen)
 
@@ -234,13 +622,13 @@ def _armar_mensajes(historial, contexto, mensaje, resultados, pendientes, imagen
                 {
                     'type': 'text',
                     'text': _texto_usuario(
-                        texto or 'Analiza la imagen adjunta.', contexto
+                        texto or 'Analiza la imagen adjunta.', contexto, compacto
                     ),
                 },
                 {'type': 'image_url', 'image_url': {'url': imagen}},
             ]
         else:
-            content = _texto_usuario(texto, contexto)
+            content = _texto_usuario(texto, contexto, compacto)
         messages.append({'role': 'user', 'content': content})
     elif resultados is not None:
         resultados, imagenes = _imagenes_de_resultados(resultados)
@@ -295,22 +683,70 @@ def _nucleo_agente(
       {estado: 'respuesta', texto, historial, proveedor}
       {estado: 'acciones', acciones:[{id,nombre,args}], pendientes:[...], historial, proveedor}
     """
-    messages, has_image = _armar_mensajes(
-        historial, contexto, mensaje, resultados, pendientes, imagen
+    # ¿Habrá imágenes en este turno? (decide el proveedor antes de armar el mensaje)
+    trae_imagen = bool(imagen) or any(
+        isinstance(r, dict) and (r.get('respuesta') or {}).get('imagenes')
+        for r in (resultados or [])
     )
-
-    providers = choose_providers(has_image=has_image, preferido=proveedor)
+    providers = choose_providers(has_image=trae_imagen, preferido=proveedor)
     if not providers:
         raise AgenteError(
             'No hay proveedor de IA configurado. Define GEMINI_API_KEY o '
             'DEEPSEEK_API_KEY en el entorno.'
         )
+    compacto = _perfil(providers[0])['local']
+    messages, has_image = _armar_mensajes(
+        historial, contexto, mensaje, resultados, pendientes, imagen, compacto=compacto
+    )
+
+    # Resultado de crear_rapido que salió bien: la frase final también es fija
+    # (sin esperar a la IA; con un modelo local ahorra ~1 minuto).
+    solo_rapido = (
+        resultados and not pendientes
+        and all(isinstance(r, dict) and r.get('nombre') == 'crear_rapido' for r in resultados)
+        and all((r.get('respuesta') or {}).get('ok') is True for r in resultados)
+    )
+    if solo_rapido:
+        creados = [str((r.get('respuesta') or {}).get('creado') or 'la pieza') for r in resultados]
+        texto = 'Listo, creé: {}. Puedes moverla, girarla o cambiarle el material cuando quieras.'.format(
+            '; '.join(c[0].lower() + c[1:] if c else c for c in creados))
+        messages.append({'role': 'assistant', 'content': texto})
+        return {
+            'estado': 'respuesta',
+            'texto': texto,
+            'historial': _sanitize_history(messages),
+            'proveedor': providers[0]['name'],
+        }
+
+    # Atajo: "créame una pared/puerta/ventana/cuarto" → crear_rapido sin
+    # llamar a la IA (instantáneo).
+    if mensaje and not imagen:
+        atajo = _atajo_crear(mensaje)
+        if atajo:
+            call = _tool_call('crear_rapido', atajo)
+            messages.append({'role': 'assistant', 'content': '', 'tool_calls': [call]})
+            return {
+                'estado': 'acciones',
+                'acciones': [{'id': call['id'], 'nombre': 'crear_rapido', 'args': atajo}],
+                'pendientes': [],
+                'historial': _sanitize_history(messages),
+                'proveedor': providers[0]['name'],
+            }
 
     def llamar(msgs, candidate, timeout):
-        system = [{'role': 'system', 'content': INSTRUCCION_SISTEMA}]
+        perfil = _perfil(candidate)
+        # Un modelo local (Ollama) necesita más tiempo que la nube.
+        timeout = max(timeout, int(candidate.get('timeout') or 0))
+        msgs = _recortar(msgs, perfil['max_contenidos'])
+        system = [{'role': 'system', 'content': perfil['instruccion']}]
+        kwargs = {
+            'timeout': timeout,
+            'temperature': perfil['temperatura'],
+            'exclude_tools': perfil['sin_herramientas'],
+        }
         if on_token is not None:
-            return chat_completion_stream(system + msgs, candidate, on_token, timeout=timeout)
-        return chat_completion(system + msgs, candidate, timeout=timeout)
+            return chat_completion_stream(system + msgs, candidate, on_token, **kwargs)
+        return chat_completion(system + msgs, candidate, **kwargs)
 
     provider = None
     first_call = True
@@ -339,6 +775,10 @@ def _nucleo_agente(
             except AIProviderError as exc:
                 raise AgenteError(str(exc)) from exc
 
+        if _perfil(provider)['local'] and not asistente.get('tool_calls'):
+            rescatada = _rescatar_tool_call(_contenido_texto(asistente))
+            if rescatada:
+                asistente = {'role': 'assistant', 'content': '', 'tool_calls': [rescatada]}
         messages.append(asistente)
         tool_calls = asistente.get('tool_calls') or []
 

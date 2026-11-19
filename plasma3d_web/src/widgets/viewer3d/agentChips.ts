@@ -48,7 +48,8 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
   if (count === 1 && kind === 'wall') {
     return [
       { label: 'Cambiar material', text: '¿Qué materiales puedo usar en este muro y cuánto cuesta cada uno?' },
-      { label: 'Agregar ventana aquí', text: 'Agrega una ventana de 1.2 m centrada en el muro seleccionado.' },
+      { label: 'Agregar ventana aquí', text: 'Ponle una ventana' },
+      { label: 'Agregar puerta aquí', text: 'Ponle una puerta' },
       { label: 'Hazlo de __ m', text: 'Haz el muro seleccionado de  m de largo.', edit: true },
       { label: '¿Cuánto cuesta este muro?', text: '¿Cuánto cuesta el muro seleccionado?' },
     ];
@@ -72,9 +73,11 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
   }
 
   const chips: AgentChip[] = [
+    { label: 'Crear una pared', text: 'Créame una pared' },
+    { label: 'Crear una ventana', text: 'Créame una ventana' },
+    { label: 'Crear un cuarto', text: 'Créame un cuarto' },
     { label: '¿Qué le puedo aumentar?', text: '¿Qué le puedo aumentar a mi plano?' },
     { label: '¿Cuánto cuesta todo?', text: '¿Cuánto cuesta todo el modelo?' },
-    { label: 'Dibuja un cuarto 3×4 m', text: 'Dibuja un cuarto de 3 × 4 m con piso, pegado al plano.' },
   ];
   if (hasPlan) chips.push({ label: '¿Falta algo vs. mi plano?', text: '¿Falta algo comparado con mi plano original?' });
   return chips;

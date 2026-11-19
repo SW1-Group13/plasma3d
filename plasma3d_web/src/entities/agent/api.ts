@@ -109,7 +109,8 @@ export const agentApi = {
       if (signal?.aborted) throw err;
       throw new StreamUnavailableError('No se pudo abrir el stream.');
     }
-    if (response.status === 404 || response.status === 405) {
+    // Sin endpoint de streaming (o el servidor no acepta event-stream): usar step().
+    if (response.status === 404 || response.status === 405 || response.status === 406) {
       throw new StreamUnavailableError('El servidor no tiene streaming.');
     }
     if (!response.ok || !response.body) {

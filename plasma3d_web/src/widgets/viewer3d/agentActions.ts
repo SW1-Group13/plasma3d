@@ -81,10 +81,48 @@ function f2(n: number) {
   return n.toFixed(2);
 }
 
+const QUICK_TIPOS = ['muro', 'puerta', 'ventana', 'ambiente'] as const;
+const QUICK_LADOS = ['derecha', 'izquierda', 'arriba', 'abajo'] as const;
+const QUICK_NOMBRE: Record<(typeof QUICK_TIPOS)[number], [string, string]> = {
+  muro: ['Muro', 'Muros'], puerta: ['Puerta', 'Puertas'], ventana: ['Ventana', 'Ventanas'], ambiente: ['Ambiente', 'Ambientes'],
+};
+
+/** crear_rapido: el editor decide dónde (sin coordenadas del modelo de IA). */
+function prepareQuickCreate(action: AgentAction, engine: EditorEngine) {
+  const a = action.args ?? {};
+  const rawTipo = String(a.tipo ?? '').toLowerCase();
+  const tipo = (rawTipo === 'pared' ? 'muro' : ['cuarto', 'habitacion', 'habitación'].includes(rawTipo) ? 'ambiente' : rawTipo) as (typeof QUICK_TIPOS)[number];
+  if (!QUICK_TIPOS.includes(tipo)) throw new Error('tipo debe ser muro, puerta, ventana o ambiente.');
+  const lado = QUICK_LADOS.includes(String(a.lado) as (typeof QUICK_LADOS)[number])
+    ? (String(a.lado) as (typeof QUICK_LADOS)[number]) : undefined;
+  const cantidad = optNum(a.cantidad, 1, 10);
+  const largo = optNum(a.largo, 0.3, MAX_LEN);
+  const fondo = optNum(a.fondo, 0.5, MAX_LEN);
+  const spot = engine.agentQuickSpot({ tipo, cantidad, largo, fondo, lado });
+  const n = Math.max(1, Math.round(cantidad ?? 1));
+  const first = spot.items[0];
+  const medida = tipo === 'ambiente'
+    ? `${f2(largo ?? 3)} × ${f2(fondo ?? 4)} m`
+    : first ? `${f2(Math.hypot(first.x2 - first.x1, first.z2 - first.z1))} m` : '';
+  const nombre = QUICK_NOMBRE[tipo][n > 1 ? 1 : 0];
+  return {
+    tipo,
+    cantidad: n,
+    descripcion: spot.descripcion,
+    texto: `${n > 1 ? `${n} ` : ''}${nombre.toLowerCase()} de ${medida} ${spot.descripcion}`.replace(/^./, (c) => c.toUpperCase()),
+    items: spot.items,
+  };
+}
+
 /** Valida una acción de dibujo y devuelve una propuesta sin modificar el modelo. */
-export function prepareAgentAction(action: AgentAction): AgentProposal | null {
+export function prepareAgentAction(action: AgentAction, engine?: EditorEngine): AgentProposal | null {
   const a = action.args ?? {};
   switch (action.nombre) {
+    case 'crear_rapido': {
+      if (!engine) throw new Error('El editor no está listo.');
+      const quick = prepareQuickCreate(action, engine);
+      return { texto: quick.texto, items: quick.items };
+    }
     case 'dibujar_muro':
     case 'agregar_puerta':
     case 'agregar_ventana': {
@@ -369,6 +407,36 @@ export async function runAgentAction(host: AgentHost, action: AgentAction): Prom
         return {
           respuesta: { ok: true, pieza: r.pieza, grados, pivote, piezas_giradas: r.giradas },
           card: { texto: `Girada ${Math.abs(grados)}° (${sentido})${r.giradas > 1 ? ` con ${r.giradas - 1} abertura(s)` : ''}` },
+        };
+      }
+
+      case 'crear_rapido': {
+        const quick = prepareQuickCreate(action, engine);
+        const created: THREE.Mesh[] = [];
+        try {
+          for (const item of quick.items) {
+            if (item.kind !== 'segment') continue;
+            const type = item.type ?? 'wall';
+            const mesh = engine.agentCreateSegment(type, item.x1, item.z1, item.x2, item.z2,
+              type === 'wall' ? { thickness: item.thickness, height: item.height } : {});
+            if (!mesh) throw new Error('No se pudo crear la pieza.');
+            created.push(mesh);
+          }
+        } catch (error) {
+          if (created.length) engine.agentRemove(created);
+          throw error;
+        }
+        return {
+          respuesta: {
+            ok: true,
+            creado: quick.texto,
+            tipo: quick.tipo,
+            cantidad: quick.cantidad,
+            piezas: created.length,
+            ubicacion: quick.descripcion,
+            material: 'por defecto (se puede cambiar con cambiar_material)',
+          },
+          card: { texto: quick.texto },
         };
       }
 
