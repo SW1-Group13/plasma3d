@@ -223,6 +223,26 @@ def create_plan3d_job(request):
     if _plan_limit_reached(usuario_instance):
         return _plan_limit_response()
 
+    job, det, failed = _detect_upload(request, plan_file, usuario_instance)
+    if failed is not None:
+        return failed
+
+    # Generar el GLB
+    failed = _build_or_discard(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    if failed is not None:
+        return failed
+
+    return Response(
+        Plan3DJobSerializer(job).data,
+        status=status.HTTP_201_CREATED
+    )
+
+
+def _detect_upload(request, plan_file, usuario_instance):
+    """
+    Convierte el archivo subido, ejecuta la detección y guarda imagen + JSON.
+    Devuelve (job, det, None) o (None, None, Response de error).
+    """
     data = plan_file.read()
 
     # Convertir a imagen (imagen/PDF/DXF/DWG) usando un archivo temporal
@@ -241,7 +261,7 @@ def create_plan3d_job(request):
 
     if img is None:
         detail_msg = f"No se pudo preparar la imagen para inferencia: {err}"
-        return Response(
+        return None, None, Response(
             {"detail": detail_msg},
             status=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE
         )
@@ -282,16 +302,207 @@ def create_plan3d_job(request):
     job.width = det.get("Width", 0)
     job.height = det.get("Height", 0)
     job.save()
+    return job, det, None
 
-    # Generar el GLB
-    failed = _build_or_discard(job, det, _roof_type_from(request), _fill_gaps_from(request))
+
+# ---------------------------------------------------------------------------
+# Revisión 2D: detectar -> corregir -> construir
+# ---------------------------------------------------------------------------
+
+REVIEW_CLASSES = ('wall', 'door', 'window')
+MAX_REVIEW_ITEMS = 5000
+
+
+def _own_job(request, pk):
+    """Devuelve (job, None) si el job existe y es del usuario; si no (None, Response)."""
+    try:
+        job = Plan3DJob.objects.get(pk=pk)
+    except Plan3DJob.DoesNotExist:
+        return None, Response({'detail': 'Modelo no encontrado.'}, status=status.HTTP_404_NOT_FOUND)
+    if job.usuario_id != getattr(request.user, 'pk', None):
+        return None, Response({'detail': 'No puedes modificar este modelo.'},
+                              status=status.HTTP_403_FORBIDDEN)
+    return job, None
+
+
+def _read_det(job):
+    with job.detections_json.open('rb') as fh:
+        return json.loads(fh.read().decode('utf-8'))
+
+
+def _write_det(job, det):
+    """Sobrescribe el JSON de detecciones del job (sin acumular copias)."""
+    old = job.detections_json.name if job.detections_json else None
+    if old:
+        try:
+            job.detections_json.storage.delete(old)
+        except Exception:
+            pass
+    job.detections_json.save(
+        'job_{}_detections.json'.format(job.id),
+        ContentFile(json.dumps(det, ensure_ascii=False).encode('utf-8')),
+        save=False,
+    )
+
+
+def _num(v):
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise ValueError('coordenada no numérica')
+    return float(v)
+
+
+def _clean_reviewed(det_in, base):
+    """
+    Valida las detecciones corregidas por el usuario. Solo acepta muros,
+    puertas y ventanas con cajas dentro de la imagen. Conserva el resto de
+    metadatos (escala, calidad...) del JSON original.
+    """
+    pts = det_in.get('points')
+    cls = det_in.get('classes')
+    if not isinstance(pts, list) or not isinstance(cls, list) or len(pts) != len(cls):
+        raise ValueError('"points" y "classes" deben ser listas del mismo largo')
+    if len(pts) > MAX_REVIEW_ITEMS:
+        raise ValueError('demasiados elementos')
+    scores_in = det_in.get('scores')
+    if not isinstance(scores_in, list) or len(scores_in) != len(pts):
+        scores_in = [1.0] * len(pts)
+    W = float(base.get('Width') or 0) or float('inf')
+    H = float(base.get('Height') or 0) or float('inf')
+    tol = 2.0
+    out_p, out_c, out_s = [], [], []
+    for p, c, sc in zip(pts, cls, scores_in):
+        name = (c or {}).get('name') if isinstance(c, dict) else None
+        if name not in REVIEW_CLASSES:
+            raise ValueError('clase no permitida: {}'.format(name))
+        if not isinstance(p, dict):
+            raise ValueError('caja inválida')
+        x1, y1, x2, y2 = (_num(p.get(k)) for k in ('x1', 'y1', 'x2', 'y2'))
+        x1, x2 = sorted((x1, x2))
+        y1, y2 = sorted((y1, y2))
+        if x1 < -tol or y1 < -tol or x2 > W + tol or y2 > H + tol:
+            raise ValueError('caja fuera del plano')
+        if x2 - x1 < 1 or y2 - y1 < 1:
+            continue  # caja degenerada: se ignora
+        box = {'x1': x1, 'y1': y1, 'x2': x2, 'y2': y2}
+        line = p.get('line')
+        if name == 'wall' and isinstance(line, list) and len(line) == 4:
+            box['line'] = [_num(v) for v in line]
+            box['thickness'] = _num(p.get('thickness') or 10)
+        out_p.append(box)
+        out_c.append({'name': name})
+        out_s.append(float(sc) if isinstance(sc, (int, float)) else 1.0)
+    det = dict(base)
+    det['points'], det['classes'], det['scores'] = out_p, out_c, out_s
+    det.setdefault('quality', {})
+    if isinstance(det['quality'], dict):
+        det['quality']['revisado'] = True
+    return det
+
+
+@api_view(['POST'])
+@parser_classes([MultiPartParser, FormParser])
+@permission_classes([IsAuthenticated])
+def detect_plan(request):
+    """
+    Paso 1 de la revisión: sube el plano y detecta muros/puertas/ventanas
+    SIN construir el 3D. El job queda en estado 'review'.
+    """
+    plan_file = request.FILES.get('plan_file')
+    if not plan_file:
+        return Response({'detail': 'Se requiere el archivo "plan_file".'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    usuario_instance = request.user
+    if _plan_limit_reached(usuario_instance):
+        return _plan_limit_response()
+    job, det, failed = _detect_upload(request, plan_file, usuario_instance)
     if failed is not None:
         return failed
+    job.status = 'review'
+    job.detections_original = det
+    if det.get('quality') is not None:
+        job.calidad = det['quality']
+    job.save()
+    data = Plan3DJobSerializer(job).data
+    data['detections'] = det
+    return Response(data, status=status.HTTP_201_CREATED)
 
-    return Response(
-        Plan3DJobSerializer(job).data,
-        status=status.HTTP_201_CREATED
-    )
+
+@api_view(['GET', 'PUT'])
+@permission_classes([IsAuthenticated])
+def plan_detections(request, pk):
+    """GET: detecciones actuales del job. PUT: guarda las corregidas."""
+    job, failed = _own_job(request, pk)
+    if failed is not None:
+        return failed
+    if not job.detections_json:
+        return Response({'detail': 'Este modelo no tiene detecciones.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    try:
+        base = _read_det(job)
+    except Exception:
+        return Response({'detail': 'No se pudieron leer las detecciones.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    if request.method == 'GET':
+        data = Plan3DJobSerializer(job).data
+        data['detections'] = base
+        return Response(data)
+
+    det_in = request.data.get('detections', request.data)
+    if isinstance(det_in, str):
+        try:
+            det_in = json.loads(det_in)
+        except ValueError:
+            det_in = None
+    if not isinstance(det_in, dict):
+        return Response({'detail': 'Se requiere el objeto "detections".'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    try:
+        det = _clean_reviewed(det_in, base)
+    except (ValueError, TypeError) as exc:
+        return Response({'detail': 'Detecciones inválidas: {}'.format(exc)},
+                        status=status.HTTP_400_BAD_REQUEST)
+    if job.detections_original is None:
+        job.detections_original = base
+    _write_det(job, det)
+    job.save()
+    data = Plan3DJobSerializer(job).data
+    data['detections'] = det
+    return Response(data)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def build_plan(request, pk):
+    """Paso final de la revisión: construye el GLB con las detecciones guardadas."""
+    job, failed = _own_job(request, pk)
+    if failed is not None:
+        return failed
+    if not job.detections_json:
+        return Response({'detail': 'Este modelo no tiene detecciones.'},
+                        status=status.HTTP_400_BAD_REQUEST)
+    try:
+        det = _read_det(job)
+    except Exception:
+        return Response({'detail': 'No se pudieron leer las detecciones.'},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    old = job.glb_model.name if job.glb_model else None
+    try:
+        process_and_save_glb(job, det, _roof_type_from(request), _fill_gaps_from(request))
+    except Exception as exc:
+        import traceback
+        traceback.print_exc()
+        job.status = 'review'  # puede seguir corrigiendo y reintentar
+        job.save(update_fields=['status'])
+        return Response({'detail': 'No se pudo generar el modelo 3D: {}'.format(exc)},
+                        status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    if old and job.glb_model.name != old:
+        try:
+            job.glb_model.storage.delete(old)
+        except Exception:
+            pass
+    job.status = 'built'
+    job.save(update_fields=['status'])
+    return Response(Plan3DJobSerializer(job).data, status=status.HTTP_200_OK)
 
 
 @api_view(['POST'])
@@ -563,7 +774,10 @@ def regenerar_plan(request, pk):
         _roof_type_from(request) if request.data.get("roof_type")
         else (_roof_type_from_glb(job) if job.glb_model else "plano")
     )
-    if job.plan_image:
+    # Si el usuario corrigió las detecciones en 2D, no volver a detectar
+    # (se perderían sus correcciones): construir con lo revisado.
+    reviewed = bool((det.get('quality') or {}).get('revisado'))
+    if job.plan_image and not reviewed:
         try:
             from PIL import Image
             with job.plan_image.open('rb') as fh:

@@ -1,5 +1,10 @@
 import { http } from '@/shared/api/http';
-import type { Model3D, SaveModelResponse } from '@/entities/model3D/types';
+import type {
+  Model3D,
+  Model3DWithDetections,
+  PlanDetections,
+  SaveModelResponse,
+} from '@/entities/model3D/types';
 
 /** Techo que el backend genera junto con la losa de piso. */
 export type RoofType = 'plano' | 'dos_aguas' | 'ninguno';
@@ -27,6 +32,36 @@ export const model3DApi = {
     formData.append('fill_gaps', gapMode === 'rellenar' ? 'true' : 'false');
     if (realWidthM) formData.append('real_width_m', String(realWidthM));
     const { data } = await http.post<Model3D>('api/set_plan/plans/', formData);
+    return data;
+  },
+
+  /** Revisión 2D, paso 1: detecta sin construir el 3D (job en estado 'review'). */
+  async detectPlan(file: File, realWidthM?: number | null): Promise<Model3DWithDetections> {
+    const formData = new FormData();
+    formData.append('plan_file', file);
+    if (realWidthM) formData.append('real_width_m', String(realWidthM));
+    const { data } = await http.post<Model3DWithDetections>('api/set_plan/plans/detect/', formData);
+    return data;
+  },
+
+  async getDetections(id: number): Promise<Model3DWithDetections> {
+    const { data } = await http.get<Model3DWithDetections>(`api/set_plan/plans/${id}/detections/`);
+    return data;
+  },
+
+  async saveDetections(id: number, detections: PlanDetections): Promise<Model3DWithDetections> {
+    const { data } = await http.put<Model3DWithDetections>(`api/set_plan/plans/${id}/detections/`, {
+      detections,
+    });
+    return data;
+  },
+
+  /** Revisión 2D, paso final: construye el GLB con las detecciones guardadas. */
+  async buildPlan(id: number, roofType: RoofType = 'plano', gapMode: GapMode = 'rellenar'): Promise<Model3D> {
+    const { data } = await http.post<Model3D>(`api/set_plan/plans/${id}/build/`, {
+      roof_type: roofType,
+      fill_gaps: gapMode === 'rellenar',
+    });
     return data;
   },
 

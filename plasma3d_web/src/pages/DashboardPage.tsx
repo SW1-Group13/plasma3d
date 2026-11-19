@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useModelStore } from '@/entities/model3D/store';
-import type { GapMode, RoofType } from '@/entities/model3D/api';
+import { model3DApi, type GapMode, type RoofType } from '@/entities/model3D/api';
 import type { PlanQuality } from '@/entities/model3D/types';
 import { useSession } from '@/entities/session/store';
 import { structuralApi } from '@/entities/structural/api';
@@ -60,6 +60,8 @@ export function DashboardPage() {
   const [gapMode, setGapMode] = useState<GapMode>('rellenar');
   // Ancho total real del plano en metros (opcional): escala exacta.
   const [realWidth, setRealWidth] = useState('');
+  // Revisar y corregir las detecciones en 2D antes de construir el 3D.
+  const [reviewFirst, setReviewFirst] = useState(true);
   const realWidthM = (() => {
     const value = Number(realWidth.replace(',', '.'));
     return Number.isFinite(value) && value >= 1 && value <= 500 ? value : null;
@@ -73,6 +75,18 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    if (reviewFirst) {
+      setTask('Subiendo y detectando muros, puertas y ventanas...');
+      try {
+        const job = await model3DApi.detectPlan(file, realWidthM);
+        navigate(`/private/review/${job.id}`);
+      } catch (error) {
+        toast.error('Error', serverMessage(error, 'No se pudo procesar el plano.'));
+      } finally {
+        setTask(null);
+      }
+      return;
+    }
     setTask('Subiendo y procesando plano...');
     try {
       await uploadPlan(file, user.id, roofType, gapMode, realWidthM);
@@ -238,6 +252,13 @@ export function DashboardPage() {
               aria-label="Ancho total real del plano en metros (opcional)"
             />
           </label>
+          <label
+            className="flex items-center gap-2 text-sm text-muted"
+            title="Antes de generar el 3D verás lo detectado sobre el plano para borrar lo que sobra (muebles) y dibujar lo que falta."
+          >
+            <input type="checkbox" checked={reviewFirst} onChange={(e) => setReviewFirst(e.target.checked)} />
+            Revisar en 2D
+          </label>
           <Button variant="outline" onClick={() => planInputRef.current?.click()} disabled={isLoading}>
             <UploadIcon width={16} height={16} /> Subir plano
           </Button>
@@ -316,10 +337,26 @@ export function DashboardPage() {
                   </div>
 
                   <div className="mt-auto flex flex-wrap items-center gap-2">
-                    <Button size="sm" onClick={() => openModel(model)}>
-                      Abrir editor
-                    </Button>
-                    {model.detections_json && (
+                    {model.status === 'review' ? (
+                      <Button size="sm" onClick={() => navigate(`/private/review/${model.id}`)}>
+                        Revisar 2D
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={() => openModel(model)}>
+                        Abrir editor
+                      </Button>
+                    )}
+                    {model.status !== 'review' && model.plan_image && model.detections_json && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigate(`/private/review/${model.id}`)}
+                        title="Corregir muros, puertas y ventanas sobre el plano y volver a generar el 3D"
+                      >
+                        Corregir 2D
+                      </Button>
+                    )}
+                    {model.status !== 'review' && model.detections_json && (
                       <Button
                         size="sm"
                         variant="outline"

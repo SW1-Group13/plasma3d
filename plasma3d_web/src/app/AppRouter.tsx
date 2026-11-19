@@ -8,6 +8,7 @@ import { LoginPage } from '@/pages/LoginPage';
 import { RegisterPage } from '@/pages/RegisterPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { EditorPage } from '@/pages/EditorPage';
+import { PlanReviewPage } from '@/pages/PlanReviewPage';
 import { PerfilPage } from '@/pages/PerfilPage';
 import { PaymentPage } from '@/pages/PaymentPage';
 import { AdminPage } from '@/pages/AdminPage';
@@ -35,6 +36,7 @@ export function AppRouter() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="perfil" element={<PerfilPage />} />
         <Route path="editor" element={<EditorPage />} />
+        <Route path="review/:id" element={<PlanReviewPage />} />
         <Route path="pago" element={<PaymentPage />} />
         <Route
           path="admin"

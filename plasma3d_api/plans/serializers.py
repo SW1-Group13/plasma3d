@@ -9,8 +9,8 @@ class Plan3DJobSerializer(serializers.ModelSerializer):
             'id', 'plan_file', 'plan_image',
             'detections_json', 'glb_model',
             'width', 'height', 'created_at',
-            'usuario', 'calidad'
+            'usuario', 'calidad', 'status'
         ]
         read_only_fields = [
             'plan_image', 'detections_json', 'glb_model',
-            'width', 'height', 'created_at','usuario', 'calidad']
+            'width', 'height', 'created_at','usuario', 'calidad', 'status']
