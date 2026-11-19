@@ -1,13 +1,21 @@
 import logging
+import time
 
+from django.conf import settings
 from django.db import DatabaseError
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import (
+    api_view,
+    parser_classes,
+    permission_classes,
+)
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .models import AnalisisRiesgo
 from .services_agente import MAX_CHARS_MENSAJE, AgenteError, responder_agente
+from .services_groq import GroqError, transcribir_audio
 from .services_riesgo import analizar_archivo, analizar_plan
 
 
@@ -21,8 +29,9 @@ def agente_chat(request):
     Un paso del Agente IA (con herramientas).
 
     Body:
-      {historial: [...contenidos Gemini], contexto: {...},
+      {historial: [...contenidos del agente], contexto: {...},
        mensaje?: str,                                   # nueva pregunta
+       imagen?: str,                                    # data URL (data:image/...;base64,...)
        resultados?: [{id, nombre, respuesta}],          # acciones del editor ejecutadas
        pendientes?: [...]}                              # devueltos por el paso anterior
     Respuesta:
@@ -31,6 +40,7 @@ def agente_chat(request):
     """
     data = request.data
     mensaje = data.get('mensaje')
+    imagen = data.get('imagen')
     resultados = data.get('resultados')
     historial = data.get('historial') or []
     contexto = data.get('contexto') or {}
@@ -42,21 +52,87 @@ def agente_chat(request):
             {'detail': f'El mensaje supera {MAX_CHARS_MENSAJE} caracteres.'},
             status=status.HTTP_400_BAD_REQUEST
         )
-    if mensaje is None and not isinstance(resultados, list):
+    if imagen is not None:
+        if not isinstance(imagen, str) or not imagen.startswith('data:image/'):
+            return Response(
+                {'detail': 'La imagen debe ser un data URL (data:image/...).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(imagen) > 8 * 1024 * 1024:
+            return Response(
+                {'detail': 'La imagen es demasiado grande (máx. 8 MB).'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+    if mensaje is None and not isinstance(resultados, list) and not imagen:
         return Response(
-            {'detail': 'Envía un mensaje o los resultados de las acciones.'},
+            {'detail': 'Envía un mensaje, una imagen o los resultados de las acciones.'},
             status=status.HTTP_400_BAD_REQUEST
         )
+
+    # Simulacion de modelo local: el backend sigue usando DeepSeek, pero
+    # retrasa la respuesta 20 s cuando el cliente elige un modelo "local-*".
+    modelo = str(data.get('modelo') or '').strip().lower()
+    if modelo.startswith('local-'):
+        time.sleep(20)
+
     try:
         paso = responder_agente(
             historial, contexto,
             mensaje=mensaje,
             resultados=resultados,
             pendientes=data.get('pendientes'),
+            imagen=imagen,
         )
     except AgenteError as exc:
         return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
     return Response(paso)
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def ai_config(request):
+    """Configuracion real de IA (para habilitar/deshabilitar imagenes/audio)."""
+    proveedor = (getattr(settings, 'AI_PROVIDER', 'gemini') or 'gemini').strip().lower()
+    claves = {
+        'gemini': getattr(settings, 'GEMINI_API_KEY', ''),
+        'deepseek': getattr(settings, 'DEEPSEEK_API_KEY', ''),
+    }
+    return Response(
+        {
+            'provider': proveedor,
+            'vision': bool(claves.get(proveedor)),
+            'audio': bool(getattr(settings, 'GROQ_API_KEY', '')),
+        }
+    )
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@parser_classes([MultiPartParser, FormParser])
+def transcribir_audio_view(request):
+    """Transcribe un audio (voz) a texto usando Groq/Whisper."""
+    archivo = request.FILES.get('audio') or request.FILES.get('file')
+    if not archivo:
+        return Response(
+            {'detail': 'Envía un archivo de audio en el campo "audio".'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if archivo.size > 25 * 1024 * 1024:
+        return Response(
+            {'detail': 'El audio es demasiado grande (máx. 25 MB).'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    try:
+        texto = transcribir_audio(archivo)
+    except GroqError as exc:
+        mensaje = str(exc)
+        http_status = (
+            status.HTTP_503_SERVICE_UNAVAILABLE
+            if 'configurada' in mensaje
+            else status.HTTP_502_BAD_GATEWAY
+        )
+        return Response({'detail': mensaje}, status=http_status)
+    return Response({'texto': texto})
 
 
 @api_view(['POST'])

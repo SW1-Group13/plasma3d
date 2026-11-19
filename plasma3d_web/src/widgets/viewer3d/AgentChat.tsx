@@ -4,6 +4,7 @@ import {
   agentApi,
   type AgentAction,
   type AgentActionResult,
+  type AgentConfig,
   type AgentStep,
   type AgentStepRequest,
   type GeminiContent,
@@ -11,8 +12,9 @@ import {
 import { confirmAgentAction, prepareAgentAction, prepareAgentMoveAction, runAgentAction, type AgentHost, type AgentMovePreparation } from '@/widgets/viewer3d/agentActions';
 import type { AgentMoveProposal, AgentPreviewItem, EditorEngine } from '@/widgets/viewer3d/engine';
 import { useSession } from '@/entities/session/store';
-import { SparklesIcon, XIcon } from '@/shared/ui/icons';
+import { ImageIcon, SparklesIcon, XIcon } from '@/shared/ui/icons';
 import { cn } from '@/shared/lib/utils';
+import { toast } from '@/shared/ui/toast';
 
 interface AgentChatProps {
   open: boolean;
@@ -25,7 +27,7 @@ interface AgentChatProps {
 
 /** Elemento del hilo del chat. */
 type ChatItem =
-  | { kind: 'msg'; rol: 'usuario' | 'agente'; texto: string }
+  | { kind: 'msg'; rol: 'usuario' | 'agente'; texto: string; imagen?: string }
   | { kind: 'action'; id: number; texto: string; ok: boolean; transactionId?: number; undone?: boolean }
   | { kind: 'confirm'; id: number; texto: string; status: 'pending' | 'yes' | 'no' };
 
@@ -72,19 +74,67 @@ const SUGGESTIONS = [
   '¿Cuánto costaría piedra natural en los muros?',
 ];
 
+/**
+ * Selector de modelos. Por ahora el backend siempre usa DeepSeek; los
+ * "locales" solo simulan una espera de 20 s para la demo.
+ */
+const MODELS = [
+  { id: 'gemini', label: 'gemini', local: false, repo: '' },
+  {
+    id: 'local-qwen-1.5b',
+    label: 'Qwen 1.5B',
+    local: true,
+    repo: 'hf.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF',
+  },
+  {
+    id: 'local-qwen-0.5b',
+    label: 'Qwen 0.5B',
+    local: true,
+    repo: 'hf.co/Qwen/Qwen2.5-Coder-0.5B-Instruct-GGUF',
+  },
+] as const;
+type ModelId = (typeof MODELS)[number]['id'];
+
 const WELCOME: ChatItem = {
   kind: 'msg',
   rol: 'agente',
   texto:
-    'Hola, soy el Agente IA de Plasma3D. Puedo calcular costos con tus precios, dibujar muros, ambientes, puertas, ventanas, pisos y techos, cambiar materiales y proponerte mejoras. ¿Qué necesitas?',
+    'Hola, soy el Agente IA de Plasma3D. Puedo calcular costos con tus precios, dibujar muros, ambientes, puertas, ventanas, pisos y techos, cambiar materiales y proponerte mejoras. También puedes adjuntar una imagen o dictarme un audio. ¿Qué necesitas?',
 };
 
 function storageKey(userId: number | string, modelId: number | string) {
-  return `plasma3d.agent.v3.${userId}.${modelId}`;
+  return `plasma3d.agent.v4.${userId}.${modelId}`;
 }
 
 function pendingKey(userId: number | string, modelId: number | string) {
-  return `plasma3d.agent.pending.v1.${userId}.${modelId}`;
+  return `plasma3d.agent.pending.v2.${userId}.${modelId}`;
+}
+
+/** Reduce la imagen y la devuelve como data URL JPEG (para enviarla al agente). */
+function fileToDataUrl(file: File, maxDim = 1280): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const image = new Image();
+      image.onload = () => {
+        const scale = Math.min(1, maxDim / Math.max(image.width, image.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(image.width * scale));
+        canvas.height = Math.max(1, Math.round(image.height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) {
+          reject(new Error('No se pudo procesar la imagen'));
+          return;
+        }
+        context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      image.onerror = () => reject(new Error('Imagen inválida'));
+      image.src = String(reader.result);
+    };
+    reader.onerror = () => reject(new Error('No se pudo leer la imagen'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function load(userId: number | string, modelId: number | string): Stored {
@@ -151,9 +201,54 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
       : { text: 'La aplicación se interrumpió. Revisa el plano antes de iniciar otra conversación.' };
   });
   const [minimized, setMinimized] = useState(false);
+  const [selectedModel, setSelectedModel] = useState<ModelId>(() => {
+    try {
+      const stored = localStorage.getItem('plasma3d.agent.model');
+      if (stored && MODELS.some((model) => model.id === stored)) {
+        return stored as ModelId;
+      }
+    } catch {
+      /* sin almacenamiento */
+    }
+    return 'gemini';
+  });
   const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [image, setImage] = useState<string | null>(null);
+  const [imageName, setImageName] = useState('');
+  const [recording, setRecording] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
+  const [aiConfig, setAiConfig] = useState<AgentConfig | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const currentModel = MODELS.find((model) => model.id === selectedModel) ?? MODELS[0];
+  const visionEnabled = aiConfig?.vision ?? true;
+  const audioEnabled = aiConfig?.audio ?? true;
+
+  useEffect(() => {
+    let alive = true;
+    agentApi
+      .config()
+      .then((config) => {
+        if (alive) setAiConfig(config);
+      })
+      .catch(() => {
+        if (alive) setAiConfig(null);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (aiConfig && !aiConfig.vision) {
+      setImage(null);
+      setImageName('');
+    }
+  }, [aiConfig]);
   const itemSeq = useRef(Math.max(0, ...items.map((it) => ('id' in it ? it.id : 0))));
   const pendingRef = useRef<PendingTurn | null>(loadPending(userId, modelId));
   const previewRef = useRef<PreviewWaiter | null>(null);
@@ -183,17 +278,37 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
 
   useEffect(() => {
     try {
+      // No guardar las imagenes en localStorage: ocupan mucho y se pueden
+      // recuperar del mensaje mientras la pestana siga abierta.
+      const itemsForStorage = items.slice(-MAX_ITEMS).map((item) =>
+        item.kind === 'msg' ? { ...item, imagen: undefined } : item,
+      );
       localStorage.setItem(
         storageKey(userId, modelId),
-        JSON.stringify({ items: items.slice(-MAX_ITEMS), historial }),
+        JSON.stringify({ items: itemsForStorage, historial }),
       );
     } catch {
       /* sin almacenamiento: la conversación dura solo esta sesión */
     }
   }, [items, historial, modelId, userId]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem('plasma3d.agent.model', selectedModel);
+    } catch {
+      /* sin almacenamiento */
+    }
+  }, [selectedModel]);
+
   useEffect(() => () => {
     generationRef.current++;
+    if (recorderRef.current && recorderRef.current.state === 'recording') {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+      recorderRef.current = null;
+    }
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+    streamRef.current = null;
     previewRef.current?.engine.clearAgentPreview();
     previewRef.current?.resolve(false);
     previewRef.current = null;
@@ -534,6 +649,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
             contexto: {},
             resultados: results,
             pendientes: step.pendientes,
+            ...(current.request.modelo ? { modelo: current.request.modelo } : {}),
           },
         };
         // Guardar primero los resultados: una excepción al resumir el plano no debe repetir el dibujo.
@@ -565,25 +681,122 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
     }
   }
 
+  async function onImageSelected(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setError({ text: 'Selecciona un archivo de imagen válido.' });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setError({ text: 'La imagen es demasiado grande (máximo 10 MB).' });
+      return;
+    }
+    try {
+      const dataUrl = await fileToDataUrl(file);
+      setImage(dataUrl);
+      setImageName(file.name);
+      setError(null);
+    } catch {
+      setError({ text: 'No se pudo procesar la imagen.' });
+    }
+  }
+
+  function clearImage() {
+    setImage(null);
+    setImageName('');
+  }
+
+  async function transcribeBlob(blob: Blob) {
+    if (blob.size < 800) {
+      setError({ text: 'La grabación es muy corta; intenta de nuevo.' });
+      return;
+    }
+    setTranscribing(true);
+    try {
+      const { texto } = await agentApi.transcribe(blob);
+      setInput((prev) => (prev ? `${prev} ${texto}` : texto));
+      toast.success('Audio transcrito', 'Revisa el texto y envíalo.');
+    } catch (err) {
+      setError({ text: errorText(err) });
+    } finally {
+      setTranscribing(false);
+    }
+  }
+
+  async function toggleRecording() {
+    if (transcribing) return;
+    if (recording) {
+      recorderRef.current?.stop();
+      return;
+    }
+    if (typeof MediaRecorder === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+      setError({ text: 'Tu navegador no permite grabar audio.' });
+      return;
+    }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      streamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || 'audio/webm',
+        });
+        chunksRef.current = [];
+        stream.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        recorderRef.current = null;
+        setRecording(false);
+        void transcribeBlob(blob);
+      };
+      recorder.start();
+      setRecording(true);
+      setError(null);
+    } catch {
+      setError({ text: 'No se pudo acceder al micrófono.' });
+    }
+  }
+
   function send(text: string) {
     const texto = text.trim();
-    if (!texto || busyRef.current) return;
+    const imagen = image;
+    if ((!texto && !imagen) || busyRef.current || transcribing) return;
     if (pendingRef.current) {
-      setError({ text: 'Hay una respuesta pendiente. Continúala o inicia una conversación nueva.', retry: pendingRef.current.stage === 'request' });
-      return;
+      if (pendingRef.current.stage === 'request' && error) {
+        // Un fallo de red/IA no debe obligar a "Nueva conversación":
+        // se descarta el intento pendiente y se envía el mensaje nuevo.
+        writePending(null);
+        setError(null);
+      } else {
+        setError({ text: 'Hay una respuesta pendiente. Continúala o inicia una conversación nueva.', retry: pendingRef.current.stage === 'request' });
+        return;
+      }
     }
     const request: AgentStepRequest = {
       historial,
       contexto: getHost()?.engine.getAgentContext() ?? {},
-      mensaje: texto,
+      modelo: selectedModel,
+      ...(texto ? { mensaje: texto } : {}),
+      ...(imagen ? { imagen } : {}),
     };
+    const displayText = texto || 'Analiza esta imagen.';
     const pending: PendingTurn = {
       stage: 'request', turnId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-      text: texto, round: 0, request, applied: {},
+      text: displayText, round: 0, request, applied: {},
     };
     writePending(pending);
-    setItems((prev) => [...prev, { kind: 'msg', rol: 'usuario', texto }]);
+    setItems((prev) => [...prev, {
+      kind: 'msg', rol: 'usuario', texto: displayText,
+      ...(imagen ? { imagen } : {}),
+    }]);
     setInput('');
+    clearImage();
     void runTurn(pending);
   }
 
@@ -609,6 +822,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
     conversationUndoRef.current = [];
     setStored({ items: [WELCOME], historial: [] });
     setError(null);
+    clearImage();
   }
 
   function closeChat() {
@@ -623,7 +837,22 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
 
   if (!open) return null;
 
-  const busyText = preview ? 'esperando tu aprobación…' : busy === 'actuando' ? 'trabajando en el plano…' : 'escribiendo…';
+  const busyText = preview
+    ? 'esperando tu aprobación…'
+    : busy === 'actuando'
+      ? 'trabajando en el plano…'
+      : currentModel.local
+        ? 'procesando con modelo local…'
+        : 'escribiendo…';
+
+  const imageTitle = visionEnabled
+    ? 'Adjuntar imagen'
+    : 'El proveedor configurado no admite imágenes';
+  const micTitle = !audioEnabled
+    ? 'La transcripción de audio no está configurada'
+    : recording
+      ? 'Detener grabación'
+      : 'Dictar por voz';
 
   if (minimized) {
     return (
@@ -670,19 +899,53 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
         </HeaderButton>
       </header>
 
+      <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2/40 px-3 py-1.5 text-[11px] text-muted">
+        <span className="shrink-0">Modelo</span>
+        <select
+          value={selectedModel}
+          onChange={(e) => setSelectedModel(e.target.value as ModelId)}
+          title={currentModel.repo || 'Modelo en la nube'}
+          aria-label="Modelo de IA"
+          className="min-w-0 flex-1 cursor-pointer rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+        >
+          {MODELS.map((model) => (
+            <option key={model.id} value={model.id}>
+              {model.label}
+            </option>
+          ))}
+        </select>
+        {currentModel.local && (
+          <span
+            className="shrink-0 rounded-full border border-cyan-400/40 bg-cyan-400/10 px-1.5 py-0.5 text-[10px] font-medium text-cyan-200"
+            title={currentModel.repo}
+          >
+            local
+          </span>
+        )}
+      </div>
+
       <div ref={listRef} className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 py-3" aria-live="polite">
         {items.map((it, i) => {
           if (it.kind === 'msg') {
             return (
               <div key={i} className={cn('flex', it.rol === 'usuario' ? 'justify-end' : 'justify-start')}>
-                <p
+                <div
                   className={cn(
-                    'max-w-[85%] whitespace-pre-wrap break-words rounded-2xl px-3 py-2 text-sm leading-snug',
-                    it.rol === 'usuario' ? 'rounded-br-md bg-primary text-white' : 'rounded-bl-md bg-surface-2 text-foreground',
+                    'flex max-w-[85%] flex-col gap-1.5 rounded-2xl px-3 py-2 text-sm',
+                    it.rol === 'usuario' ? 'items-end rounded-br-md bg-primary text-white' : 'rounded-bl-md bg-surface-2 text-foreground',
                   )}
                 >
-                  {it.rol === 'agente' ? <RichText text={it.texto} /> : it.texto}
-                </p>
+                  {it.imagen && (
+                    <img
+                      src={it.imagen}
+                      alt="Imagen adjunta"
+                      className="max-h-44 w-auto rounded-lg border border-white/20 object-contain"
+                    />
+                  )}
+                  <p className="whitespace-pre-wrap break-words leading-snug">
+                    {it.rol === 'agente' ? <RichText text={it.texto} /> : it.texto}
+                  </p>
+                </div>
               </div>
             );
           }
@@ -792,7 +1055,7 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
                 Reintentar
               </button>
             )}
-            {pendingRef.current?.stage === 'applying' && !busy && (
+            {!busy && (
               <button type="button" onClick={newConversation} className="ml-1 cursor-pointer font-medium underline underline-offset-2">
                 Nueva conversación
               </button>
@@ -816,6 +1079,37 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
         )}
       </div>
 
+      {(image || recording || transcribing) && (
+        <div className="flex shrink-0 items-center gap-2 border-t border-border px-2.5 py-2 text-xs">
+          {image && (
+            <>
+              <img
+                src={image}
+                alt="Imagen adjunta"
+                className="h-10 w-10 rounded-md border border-border object-cover"
+              />
+              <span className="min-w-0 flex-1 truncate text-muted">{imageName}</span>
+              <button
+                type="button"
+                onClick={clearImage}
+                className="flex h-7 w-7 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300"
+                aria-label="Quitar imagen"
+                title="Quitar imagen"
+              >
+                <XIcon width={14} height={14} />
+              </button>
+            </>
+          )}
+          {recording && (
+            <span className="flex items-center gap-1.5 text-danger">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-danger" />
+              Grabando… toca el micrófono para detener.
+            </span>
+          )}
+          {transcribing && <span className="text-muted">Transcribiendo audio…</span>}
+        </div>
+      )}
+
       <form
         className="flex shrink-0 items-end gap-2 border-t border-border p-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:pb-2.5"
         onSubmit={(e) => {
@@ -823,11 +1117,49 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
           void send(input);
         }}
       >
+        <input
+          ref={imageInputRef}
+          type="file"
+          accept="image/*"
+          hidden
+          onChange={onImageSelected}
+        />
+        <button
+          type="button"
+          onClick={() => imageInputRef.current?.click()}
+          disabled={!visionEnabled}
+          className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full border border-border bg-surface-2 text-muted transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
+          title={imageTitle}
+          aria-label={imageTitle}
+        >
+          <ImageIcon width={18} height={18} />
+        </button>
+        <button
+          type="button"
+          onClick={() => void toggleRecording()}
+          disabled={!audioEnabled}
+          className={cn(
+            'flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-40',
+            recording
+              ? 'border-danger bg-danger text-white'
+              : 'border-border bg-surface-2 text-muted hover:text-foreground',
+          )}
+          title={micTitle}
+          aria-label={micTitle}
+        >
+          {recording ? (
+            <span className="h-3 w-3 rounded-sm bg-white" />
+          ) : (
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <rect x="9" y="2" width="6" height="12" rx="3" />
+              <path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8" />
+            </svg>
+          )}
+        </button>
         <textarea
           ref={inputRef}
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          disabled={Boolean(busy) || Boolean(pendingRef.current)}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
@@ -836,13 +1168,13 @@ export function AgentChat({ open, onClose, modelId, getHost }: AgentChatProps) {
           }}
           rows={1}
           maxLength={2000}
-          placeholder="Pregunta, pide un costo o «dibuja…»"
+          placeholder="Escribe, adjunta una imagen o dicta…"
           aria-label="Mensaje para el agente"
           className="max-h-28 min-h-[2.5rem] flex-1 resize-none rounded-2xl border border-border bg-surface-2 px-3 py-2 text-sm text-foreground placeholder:text-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70"
         />
         <button
           type="submit"
-          disabled={!input.trim() || Boolean(busy) || Boolean(pendingRef.current)}
+          disabled={!input.trim() && !image}
           className="flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-full bg-cyan-500 text-white transition-colors hover:bg-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Enviar mensaje"
         >

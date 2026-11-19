@@ -193,8 +193,32 @@ CORS_ALLOW_CREDENTIALS = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # AUTH_USER_MODEL = 'view_url_3D.Usuario'
 
-# Gemini API Configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# --- Proveedores de IA (OpenAI-compatible) ---
+# deepseek | gemini
+AI_PROVIDER = os.getenv('AI_PROVIDER', 'gemini').strip().lower()
+
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODELS = os.getenv('GEMINI_MODELS', '')
+GEMINI_BASE_URL = os.getenv(
+    'GEMINI_BASE_URL',
+    'https://generativelanguage.googleapis.com/v1beta/openai',
+)
+
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+DEEPSEEK_MODELS = os.getenv('DEEPSEEK_MODELS', '')
+DEEPSEEK_BASE_URL = os.getenv(
+    'DEEPSEEK_BASE_URL',
+    'https://api.deepseek.com',
+)
+
+# --- Groq (transcripcion de audio / Whisper) ---
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
+GROQ_MODEL = os.getenv('GROQ_MODEL', 'whisper-large-v3')
+GROQ_BASE_URL = os.getenv(
+    'GROQ_BASE_URL',
+    'https://api.groq.com/openai/v1',
+)
+GROQ_LANGUAGE = os.getenv('GROQ_LANGUAGE', 'es')
 
 # Administrador por defecto (se crea/asegura despues de cada migrate).
 # Si ADMIN_PASSWORD esta vacio no se crea, pero si el email ya existe se
