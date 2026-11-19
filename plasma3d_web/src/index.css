@@ -111,6 +111,91 @@ canvas {
   border: 2px solid var(--color-canvas);
 }
 
+/* ===== Login: animación plano 2D -> paredes 3D (ciclo de 10 s) ===== */
+@keyframes p3d-draw { 0% { stroke-dashoffset: 1200; } 30%, 100% { stroke-dashoffset: 0; } }
+@keyframes p3d-floor-fade { 0%, 88% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes p3d-rise {
+  0%, 30% { transform: scaleY(0); opacity: 0; }
+  55%, 88% { transform: scaleY(1); opacity: 1; }
+  100% { transform: scaleY(1); opacity: 0; }
+}
+@keyframes p3d-spin { to { transform: rotate(360deg); } }
+@keyframes p3d-label1 { 0%, 25% { opacity: 1; } 35%, 100% { opacity: 0; } }
+@keyframes p3d-label2 { 0%, 45% { opacity: 0; } 55%, 88% { opacity: 1; } 100% { opacity: 0; } }
+
+.p3d-login-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.p3d-login-glow {
+  background: radial-gradient(ellipse at 30% 50%, color-mix(in srgb, var(--color-primary) 16%, transparent), transparent 60%);
+}
+.p3d-plan { stroke-dasharray: 1200; animation: p3d-draw 10s ease-in-out infinite, p3d-floor-fade 10s linear infinite; }
+.p3d-walls {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: p3d-rise 10s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.p3d-ring { transform-origin: 330px 300px; animation: p3d-spin 40s linear infinite; }
+.p3d-l1 { animation: p3d-label1 10s linear infinite; }
+.p3d-l2 { animation: p3d-label2 10s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .p3d-plan, .p3d-walls, .p3d-ring, .p3d-l1, .p3d-l2 { animation: none; }
+}
+
+/* ===== Home: fondo de plano, título con brillo, botón con destello, pasos ===== */
+@keyframes p3d-drift { to { background-position: 64px 64px, 64px 64px; } }
+@keyframes p3d-sketch {
+  0% { stroke-dashoffset: 900; }
+  45%, 80% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes p3d-sweep { to { background-position: 200% 0; } }
+@keyframes p3d-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes p3d-fill { 0% { width: 0; } 70%, 100% { width: 100%; } }
+@keyframes p3d-rise-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes p3d-shine { 0% { left: -60%; } 60%, 100% { left: 130%; } }
+
+.p3d-home-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 80%);
+  mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 80%);
+  animation: p3d-drift 12s linear infinite;
+}
+.p3d-sketch { stroke-dasharray: 900; animation: p3d-sketch 9s ease-in-out infinite; }
+.p3d-grad-text {
+  background: linear-gradient(90deg, #4f7cff, #38bdf8, #a78bfa, #4f7cff);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: p3d-sweep 6s linear infinite;
+}
+.p3d-blink { animation: p3d-blink 1.6s ease-in-out infinite; }
+.p3d-shine { position: relative; overflow: hidden; }
+.p3d-shine::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  left: -60%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: skewX(-20deg);
+  animation: p3d-shine 3.5s ease-in-out infinite;
+  pointer-events: none;
+}
+.p3d-bar { height: 100%; animation: p3d-fill 6s ease-in-out infinite; }
+.p3d-rise-in { animation: p3d-rise-in 0.8s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .p3d-home-grid, .p3d-sketch, .p3d-grad-text, .p3d-blink, .p3d-bar, .p3d-rise-in, .p3d-shine::after { animation: none; }
+}
+
 /* Animaciones sutiles y respeto por reduced-motion */
 @keyframes p3d-fade-in {
   from {
