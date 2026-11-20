@@ -30,10 +30,11 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       DEBUG: "False"
-      # Produccion: el frontend se sirve desde el dominio HTTPS.
-      CORS_ALLOWED_ORIGINS: https://plasma3d.sebaces.fyi
-      CSRF_TRUSTED_ORIGINS: https://plasma3d.sebaces.fyi,http://plasma3d.sebaces.fyi
-      CSRF_COOKIE_SECURE: "True"
+      # Produccion: dominio HTTPS + acceso directo por la IP publica de AWS (HTTP).
+      CORS_ALLOWED_ORIGINS: https://plasma3d.sebaces.fyi,http://54.89.10.236
+      CSRF_TRUSTED_ORIGINS: https://plasma3d.sebaces.fyi,http://plasma3d.sebaces.fyi,http://54.89.10.236
+      # False: por la IP (HTTP) la cookie CSRF no viajaria si fuera "solo HTTPS".
+      CSRF_COOKIE_SECURE: "False"
     volumes:
       - media_data:/app/media
     depends_on:
