@@ -54,6 +54,7 @@ Si prefieres correr el backend en tu entorno local sin usar el contenedor de Dja
    En el archivo [.env](file:///c:/Users/brayan/Documents/Chamba/Software/plasma3d/.env) de la raíz del proyecto, añade la variable `POSTGRES_HOST=localhost` para que Django se conecte localmente al puerto expuesto de PostgreSQL:
    ```env
    POSTGRES_HOST=localhost
+   POSTGRES_PORT=5433
    ```
 
 5. **Configurar la variable HDF5 en Windows** (Evita errores de incompatibilidad de versión de HDF5):
