@@ -76,6 +76,24 @@ DECLARACIONES = [
     },
     # ---------------- Editor: acciones en el modelo 3D ----------------
     {
+        "name": "crear_rapido",
+        "description": "Crea al INSTANTE un muro/pared, puerta, ventana o ambiente (cuarto) "
+                       "SIN pedir ubicación, medidas ni material: el editor la coloca "
+                       "afuera del modelo (o, si hay un muro seleccionado y es puerta/"
+                       "ventana, centrada en ese muro) con material por defecto. Úsala "
+                       "siempre que el usuario pida crear/poner/agregar algo sin dar "
+                       "coordenadas. Ej.: 'créame una pared' → {tipo:'muro'}; "
+                       "'2 ventanas a la izquierda' → {tipo:'ventana', cantidad:2, lado:'izquierda'}.",
+        "parameters": _obj({
+            "tipo": {"type": "STRING", "enum": ["muro", "puerta", "ventana", "ambiente"]},
+            "cantidad": {"type": "NUMBER", "description": "1 a 10, default 1"},
+            "largo": {"type": "NUMBER", "description": "m. Default: muro 3, puerta 0.9, ventana 1.2, ambiente 3 (ancho)"},
+            "fondo": {"type": "NUMBER", "description": "m, solo ambiente (default 4)"},
+            "lado": {"type": "STRING", "enum": ["derecha", "izquierda", "arriba", "abajo"],
+                     "description": "Lado del modelo donde se crea (default derecha)"},
+        }, ["tipo"]),
+    },
+    {
         "name": "dibujar_muro",
         "description": "Dibuja un muro recto de (x1,z1) a (x2,z2) en metros.",
         "parameters": _obj({
@@ -136,6 +154,44 @@ DECLARACIONES = [
         "parameters": _obj({"categoria": _cat(), "nombre": _STR}),
     },
     {
+        "name": "mover_seleccion",
+        "description": "Mueve una única pieza que el usuario ya seleccionó en el editor. "
+                       "Las direcciones son fijas en la vista Planta, no según la cámara: "
+                       "derecha = +x, izquierda = -x, arriba/norte = -z, abajo/sur = +z. "
+                       "La distancia debe venir del usuario y expresarse en metros; "
+                       "si falta la selección o la distancia, pregunta antes de llamar esta herramienta.",
+        "parameters": _obj({
+            "direccion": {"type": "STRING", "enum": ["derecha", "izquierda", "arriba", "abajo"]},
+            "distancia_m": {"type": "NUMBER", "description": "Distancia positiva en metros, indicada por el usuario"},
+        }, ["direccion", "distancia_m"]),
+    },
+    {
+        "name": "redimensionar_seleccion",
+        "description": "Cambia las medidas reales (en metros) de la ÚNICA pieza que el "
+                       "usuario seleccionó (muro, puerta, ventana o piso). Ej.: 'hazlo de "
+                       "4 m' → largo=4. Si falta la selección o la medida, pregunta antes. "
+                       "'crecer_hacia' indica hacia dónde se alarga en la vista Planta "
+                       "(el otro extremo queda fijo); por defecto 'ambos' (desde el centro).",
+        "parameters": _obj({
+            "largo": {"type": "NUMBER", "description": "m (ancho, en puertas/ventanas)"},
+            "alto": {"type": "NUMBER", "description": "m"},
+            "grosor": {"type": "NUMBER", "description": "m (espesor del muro)"},
+            "crecer_hacia": {"type": "STRING",
+                             "enum": ["ambos", "derecha", "izquierda", "arriba", "abajo"]},
+        }),
+    },
+    {
+        "name": "rotar_seleccion",
+        "description": "Gira la ÚNICA pieza seleccionada en la vista Planta. Grados "
+                       "positivos = antihorario visto desde arriba, negativos = horario. "
+                       "'girar 90°' sin sentido → 90. Un muro gira junto con sus puertas "
+                       "y ventanas. pivote: 'centro' (default) o 'extremo' (el extremo izquierdo).",
+        "parameters": _obj({
+            "grados": {"type": "NUMBER"},
+            "pivote": {"type": "STRING", "enum": ["centro", "extremo"]},
+        }, ["grados"]),
+    },
+    {
         "name": "eliminar",
         "description": "Elimina la selección o todas las piezas de una categoría. "
                        "El usuario debe confirmarlo en el chat.",
@@ -169,6 +225,47 @@ DECLARACIONES = [
                         "description": "selección, todas las ventanas o todas las puertas"},
             "rellenar": {"type": "BOOLEAN"},
         }, ["alcance"]),
+    },
+    {
+        "name": "proponer_plan",
+        "description": "Para pedidos GRANDES (más de 5 piezas o varios ambientes, ej. "
+                       "'diseña una casa de 2 dormitorios'): propone TODO el plan de una "
+                       "vez. El usuario lo ve con vista previa y decide si se ejecuta. "
+                       "Cada paso lleva sus acciones (dibujar_ambiente, dibujar_muro, "
+                       "agregar_puerta, agregar_ventana, dibujar_piso, dibujar_techo) con "
+                       "los mismos argumentos que esas herramientas.",
+        "parameters": _obj({
+            "titulo": _STR,
+            "pasos": {
+                "type": "ARRAY",
+                "items": _obj({
+                    "descripcion": {"type": "STRING", "description": "ej. 'Sala 4×5 m'"},
+                    "acciones": {
+                        "type": "ARRAY",
+                        "items": _obj({
+                            "nombre": {"type": "STRING", "enum": [
+                                "dibujar_ambiente", "dibujar_muro", "agregar_puerta",
+                                "agregar_ventana", "dibujar_piso", "dibujar_techo",
+                            ]},
+                            "args": {"type": "STRING",
+                                     "description": "JSON con los argumentos de esa "
+                                                    "herramienta, ej. "
+                                                    "'{\"x\":0,\"z\":0,\"ancho\":4,\"largo\":5,\"con_piso\":true}'"},
+                        }, ["nombre", "args"]),
+                    },
+                }, ["descripcion", "acciones"]),
+            },
+            "costo_estimado": {"type": "NUMBER",
+                               "description": "USD, opcional (usa las herramientas de costo)"},
+        }, ["titulo", "pasos"]),
+    },
+    {
+        "name": "comparar_con_plano",
+        "description": "Envía 2 imágenes para comparar: el PLANO ORIGINAL que subió el "
+                       "usuario y el PLANO ACTUAL del modelo (vista en planta de muros, "
+                       "puertas y ventanas). Úsala para '¿falta algo?', '¿se parece a mi "
+                       "plano?' o '¿qué cambié?'.",
+        "parameters": _obj({}),
     },
     {
         "name": "deshacer_ultima_accion",

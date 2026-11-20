@@ -15,18 +15,22 @@ import {
 import {
   Modelo3D,
   buildDoorGeometry,
+  buildGableRoofGeometry,
   buildWindowFrameGeometry,
   classifyMeshName,
   type ElementType,
   type ModelSummary,
+  type WallOpeningCut,
 } from '@/entities/model3D/three/Modelo3D';
 import {
+  ensureBoxUVs,
   ensurePlanarUVs,
   horizontalRepeatFor,
   textureRepeatFor,
 } from '@/entities/model3D/three/uv';
 import {
   DOOR_HEIGHT_M,
+  ROOF_OVERHANG_M,
   ROOF_THICKNESS_M,
   SLAB_THICKNESS_M,
   WALL_HEIGHT_M,
@@ -43,6 +47,9 @@ import {
   makePresentationFog,
   type PresentationRig,
 } from '@/widgets/viewer3d/presentation';
+import { createMaterialEffect } from '@/widgets/viewer3d/materialEffects';
+import { patternFor, patternMaps } from '@/widgets/viewer3d/proceduralTextures';
+import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 
 /**
  * Texturas temporales del modo Animado para piezas sin textura propia
@@ -55,6 +62,13 @@ const PRESENTATION_LOOK: Record<string, { url?: string; tint: string }> = {
   door: { url: '/static/textures/puerta-madera.jpg', tint: '#ffffff' },
   roof: { url: '/static/textures/tablas-desgastadas.jpg', tint: '#c0583a' },
 };
+/** Mapas de una pieza con textura (la foto del usuario no trae relieve). */
+export interface TexturedMaps {
+  map: THREE.Texture;
+  normalMap: THREE.Texture | null;
+  roughnessMap: THREE.Texture | null;
+}
+
 /** Milisegundos sin tocar la cámara antes de reanudar el giro automático. */
 const PRESENTATION_RESUME_MS = 3000;
 
@@ -83,6 +97,12 @@ interface PresentationState {
   originals: Map<THREE.Mesh, THREE.Material | THREE.Material[]>;
   /** Material de presentación que se le puso a cada pieza. */
   looks: Map<THREE.Mesh, THREE.Material>;
+  /** Animación por cuadro de cada pieza (según su material). */
+  effects: Map<THREE.Mesh, (time: number) => void>;
+  environment: THREE.Scene['environment'];
+  envTexture: THREE.Texture;
+  reducedMotion: boolean;
+  startTime: number;
   resumeTimer?: number;
   onStart: () => void;
   onEnd: () => void;
@@ -111,14 +131,99 @@ export interface DraftInfo {
   depth?: number;
 }
 
+/** Geometría temporal de una propuesta del agente, en coordenadas del mundo. */
+export type AgentPreviewItem =
+  | {
+      kind: 'segment';
+      x1: number; z1: number; x2: number; z2: number;
+      type?: 'wall' | 'door' | 'window';
+      height?: number;
+      thickness?: number;
+    }
+  | {
+      kind: 'slab';
+      x1: number; z1: number; x2: number; z2: number;
+      type?: 'floor' | 'roof';
+      roofKind?: RoofDrawKind;
+    };
+
+/**
+ * Vistas previas que no son geometría nueva: resaltar piezas existentes
+ * (borrar en rojo, material nuevo teñido) o el resultado de redimensionar /
+ * girar la selección (se simula y se revierte).
+ */
+export type AgentPreviewExtra =
+  | { kind: 'highlight'; meshIds: string[]; hex: number; label?: string }
+  | {
+      kind: 'dryRun';
+      op: 'resize';
+      dims: { largo?: number; alto?: number; grosor?: number };
+      crecer?: 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+    }
+  | { kind: 'dryRun'; op: 'rotate'; grados: number; pivote?: 'centro' | 'extremo' };
+
+/** Problema detectado al revisar lo que dibujó el agente. */
+export interface PlanIssue {
+  tipo: 'abertura_fuera_de_muro' | 'muros_cruzados' | 'muro_suelto' | 'aberturas_superpuestas';
+  pieza: string;
+  detalle: string;
+  sugerencia: string;
+}
+
+export type AgentMoveDirection = 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+
+/** Referencias vivas; la propuesta solo existe mientras está abierto este editor. */
+export interface AgentMoveProposal {
+  direction: AgentMoveDirection;
+  distanceM: number;
+  dx: number;
+  dz: number;
+  from: { x: number; z: number };
+  to: { x: number; z: number };
+  selected: THREE.Mesh;
+  targets: THREE.Mesh[];
+  modelRevision: number;
+  changeRevision: number;
+  blockingReason?: string;
+}
+
+/** Pieza de la planta 2D (metros; x = mundo X, y = mundo Z). */
+export interface FloorPlanItem {
+  id: string;
+  kind: 'wall' | 'door' | 'window';
+  /** Huella en planta: 4 esquinas en orden. */
+  poly: [number, number][];
+  /** Muros: huella real (caras superiores) como path SVG; si falta se usa `poly`. */
+  footprint?: string;
+  length: number;
+  thickness: number;
+  /** 'plano': vino del plano original; 'manual'/'ia': agregada después. */
+  source: 'plano' | 'manual' | 'ia';
+}
+
+export interface FloorPlan2D {
+  items: FloorPlanItem[];
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
 /** Material del catálogo que recibe cada tipo de pieza al crearse. */
 const DEFAULT_MATERIAL_BY_KIND: Record<MeasureKind, string> = {
   wall: 'Ladrillo rojo',
   door: 'Roble',
   window: 'Vidrio transparente',
   floor: 'Ceramica piso',
-  roof: 'Cemento', // se tiñe con el color terracota de la capa Techos
+  roof: 'Teja de arcilla', // se tiñe con el color terracota de la capa Techos
 };
+
+/** Si el material por defecto no está en el catálogo, se usa este. */
+const FALLBACK_MATERIAL_BY_KIND: Partial<Record<MeasureKind, string>> = {
+  roof: 'Cemento', // catálogos viejos (sin materiales de techo)
+};
+
+/** ¿Es el material por defecto de ese tipo de pieza (actual o anterior)? */
+function isDefaultMaterial(kind: MeasureKind, nombre: string): boolean {
+  return DEFAULT_MATERIAL_BY_KIND[kind] === nombre || FALLBACK_MATERIAL_BY_KIND[kind] === nombre;
+}
 
 function isRectType(type: DrawType): type is 'floor' | 'roof' {
   return type === 'floor' || type === 'roof';
@@ -157,6 +262,33 @@ type SelectionListener = (info: SelectedInfo | null) => void;
  * Nota: en three r169+ `TransformControls` ya no es Object3D; se agrega su
  * helper con `scene.add(controls.getHelper())`.
  */
+type HandleId = 'len+' | 'len-' | 'side' | 'top';
+
+/** Encaje calculado por el botón "Colocar" (paredes y pisos). */
+type SnapPlan = {
+  mesh: THREE.Mesh;
+  kind: 'wall' | 'floor';
+  rotate: number;
+  center: THREE.Vector3;
+  along: number;
+  across: number;
+  dy: number;
+  oldMid: THREE.Vector3;
+  shift: THREE.Vector3;
+};
+
+type SceneSnapshot = {
+  mesh: THREE.Mesh;
+  geometry: THREE.BufferGeometry;
+  position: THREE.Vector3;
+  quaternion: THREE.Quaternion;
+  scale: THREE.Vector3;
+  userData: Record<string, unknown>;
+  material: THREE.Material | THREE.Material[];
+}[];
+
+type HistoryEntry = { snapshot: SceneSnapshot; agentId: number | null };
+
 export class EditorEngine {
   private renderer: THREE.WebGLRenderer;
   private scene: THREE.Scene;
@@ -168,6 +300,7 @@ export class EditorEngine {
   private raycaster = new THREE.Raycaster();
   private pointer = new THREE.Vector2();
   private grid!: THREE.GridHelper;
+  private theme: 'dark' | 'light' = 'dark';
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private layers: Layer[] = [];
   private materials: Material[] = [];
@@ -199,13 +332,48 @@ export class EditorEngine {
   private onMarquee: (rect: { x: number; y: number; w: number; h: number } | null) => void = () => {};
   private drafting: { type: DrawType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
   private preview: THREE.Mesh | null = null;
+  private agentPreview = new THREE.Group();
   private orthoMode = false;
   private lockVertical = false;
   private multiSelect = false;
   private translationSnap: number | null = null;
   private pivot = new THREE.Object3D();
-  private dragStart: { pivot: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrix: THREE.Matrix4 }[] } | null = null;
+  private dragStart: { pivotWorld: THREE.Matrix4; meshes: { mesh: THREE.Mesh; matrixWorld: THREE.Matrix4 }[] } | null = null;
   private marqueeStart: { x: number; y: number } | null = null;
+  private undoStack: HistoryEntry[] = [];
+  private redoStack: HistoryEntry[] = [];
+  private agentTransaction: { before: SceneSnapshot } | null = null;
+  private nextAgentTransactionId = 1;
+  private changeRevision = 0;
+  private modelRevision = 0;
+  private lastUndoKey: { key: string; at: number } | null = null;
+  private cutMode = false;
+  private mode: TransformMode = 'translate';
+  private allowVertical = false;
+  private handles = new THREE.Group();
+  private handleDrag: {
+    mesh: THREE.Mesh;
+    id: HandleId;
+    plane: THREE.Plane;
+    startBox: THREE.Box3;
+    startPos: THREE.Vector3;
+    startQuat: THREE.Quaternion;
+    startWorld: THREE.Matrix4;
+    startInv: THREE.Matrix4;
+    opening: OpeningDims | null;
+    L: 'x' | 'z';
+    T: 'x' | 'z';
+  } | null = null;
+  private moveDrag: {
+    x: number;
+    y: number;
+    active: boolean;
+    plane: THREE.Plane;
+    start: THREE.Vector3;
+    items: { mesh: THREE.Mesh; pos: THREE.Vector3 }[];
+  } | null = null;
+  private onChange: () => void = () => {};
+  private onHistory: (info: { canUndo: boolean; canRedo: boolean; cutMode: boolean }) => void = () => {};
   private marqueeActive = false;
   private toolMode: 'select' | 'hand' = 'select';
 
@@ -259,6 +427,7 @@ export class EditorEngine {
     // Luces y helpers
     this.grid = new THREE.GridHelper(30, 30, 0x334155, 0x1e293b);
     this.scene.add(this.grid);
+    this.setTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
     this.scene.add(new THREE.AmbientLight(0xffffff, 0.6));
 
     const intensity = 0.6;
@@ -294,6 +463,8 @@ export class EditorEngine {
     );
     this.preview.visible = false;
     this.scene.add(this.preview);
+    this.agentPreview.name = 'agent-preview';
+    this.scene.add(this.agentPreview);
 
     // Gizmo de transformacion (fix three r169+)
     this.transformControls = new TransformControls(this.camera, this.renderer.domElement);
@@ -303,20 +474,37 @@ export class EditorEngine {
       const dragging = Boolean((event as unknown as { value: boolean }).value);
       this.orbit.enabled = !dragging;
       if (!dragging) this.justDraggedAt = Date.now();
-      if (dragging) this.captureTransformStart();
-      else {
+      if (dragging) {
+        this.pushUndo();
+        this.captureTransformStart();
+      } else {
         this.dragStart = null;
+        this.clampSelectionToFloor();
+        this.syncPivot();
+        this.selection.forEach((mesh) => this.refreshHostedWallForOpening(mesh, true));
+        this.emitSelection();
         // Escalar un vano: convertir la escala en medidas reales y
         // reconstruirlo (si no, el marco y la cruz quedan deformados).
         if (this.transformControls.mode === 'scale') {
           this.selection
             .filter((m) => this.isOpening(m) && (Math.abs(m.scale.x - 1) > 1e-3 || Math.abs(m.scale.y - 1) > 1e-3 || Math.abs(m.scale.z - 1) > 1e-3))
             .forEach((m) => this.rebuildOpening(m, this.openingDims(m)));
+          // Paredes/pisos: la escala se convierte en medidas reales (sin estirar).
+          this.selection.filter((m) => this.isBoxPiece(m)).forEach((m) => this.bakeScale(m));
+          this.syncPivot();
+          this.emitSelection();
         }
       }
     });
 
     this.transformControls.addEventListener('objectChange', () => {
+      // Una sola pieza se transforma directamente: evita duplicar el delta
+      // entre el objeto y un pivote auxiliar, especialmente en piezas recién creadas.
+      if (this.selection.length === 1) {
+        this.refreshHostedWallForOpening(this.selection[0], false);
+        this.emitSelection();
+        return;
+      }
       this.applyTransformDelta();
     });
 
@@ -339,6 +527,7 @@ export class EditorEngine {
     this.scene.add(this.measureGroup);
 
     this.renderer.setAnimationLoop(() => {
+      this.updatePresentationEffects();
       if (this.tween) {
         this.updateTween();
       } else {
@@ -359,6 +548,30 @@ export class EditorEngine {
 
   setSelectionListener(listener: SelectionListener) {
     this.onSelection = listener;
+  }
+
+  setTheme(theme: 'dark' | 'light') {
+    if (this.theme === theme) return;
+    this.theme = theme;
+    const light = theme === 'light';
+    const canvasColor = getComputedStyle(document.documentElement)
+      .getPropertyValue('--color-canvas').trim();
+    this.renderer.setClearColor(light ? canvasColor || '#f6f8fc' : 0x0a0e1a);
+
+    const oldGrid = this.grid;
+    const grid = new THREE.GridHelper(
+      30,
+      30,
+      light ? 0x94a3b8 : 0x334155,
+      light ? 0xd6dfeb : 0x1e293b,
+    );
+    grid.visible = oldGrid.visible;
+    this.scene.remove(oldGrid);
+    this.scene.add(grid);
+    this.grid = grid;
+    oldGrid.geometry.dispose();
+    if (Array.isArray(oldGrid.material)) oldGrid.material.forEach((material) => material.dispose());
+    else oldGrid.material.dispose();
   }
 
   private onResize() {
@@ -416,6 +629,9 @@ export class EditorEngine {
 
     if (this.toolMode === 'hand') return;
 
+    if (!this.cutMode && this.beginHandleDrag(event)) return;
+    if (!this.cutMode && this.beginMoveDrag(event)) return;
+
     // Seleccion por rectangulo: solo en vistas fijas (ortograficas, sin rotacion).
     // Con el dedo, arrastrar mueve el plano; el marco solo con Multiselección.
     const touch = event.pointerType === 'touch';
@@ -439,6 +655,14 @@ export class EditorEngine {
 
   private onPointerMove = (event: PointerEvent) => {
     if (!event.isPrimary || this.presentation) return;
+    if (this.handleDrag) {
+      this.updateHandleDrag(event);
+      return;
+    }
+    if (this.moveDrag) {
+      this.updateMoveDrag(event);
+      return;
+    }
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY);
       if (point) this.updateDraft(point, event.shiftKey);
@@ -455,6 +679,11 @@ export class EditorEngine {
 
   private onPointerUp = (event: PointerEvent) => {
     if (!event.isPrimary || this.presentation) return;
+    if (this.handleDrag) {
+      this.endHandleDrag();
+      return;
+    }
+    if (this.endMoveDrag()) return;
     if (this.drafting) {
       const point = this.floorPoint(event.clientX, event.clientY) ?? this.drafting.current;
       this.finalizeDraft(point, event.shiftKey);
@@ -553,7 +782,14 @@ export class EditorEngine {
       mesh.updateMatrixWorld(true);
       const box = new THREE.Box3().setFromObject(mesh);
       if (box.min.y < 0) {
-        mesh.position.y += -box.min.y;
+        const worldPosition = mesh.getWorldPosition(new THREE.Vector3());
+        worldPosition.y += -box.min.y;
+        if (mesh.parent) {
+          mesh.parent.updateWorldMatrix(true, false);
+          mesh.position.copy(mesh.parent.worldToLocal(worldPosition));
+        } else {
+          mesh.position.copy(worldPosition);
+        }
         mesh.updateMatrix();
       }
     });
@@ -653,6 +889,7 @@ export class EditorEngine {
       ? new THREE.Vector3(point.x, start.y, point.z)
       : this.constrainPoint(point, start, orthoOverride);
 
+    this.pushUndo();
     this.drafting = null;
     if (this.preview) this.preview.visible = false;
     this.orbit.enabled = true;
@@ -722,6 +959,12 @@ export class EditorEngine {
 
     const intersects = this.raycaster.intersectObjects(this.selectableMeshes(), false);
 
+    if (this.cutMode) {
+      const hit = intersects.find((h) => this.isBoxPiece(h.object as THREE.Mesh));
+      if (hit) this.cutAt(hit.object as THREE.Mesh, hit.point, event.shiftKey);
+      return;
+    }
+
     if (intersects.length > 0) {
       const mesh = intersects[0].object as THREE.Mesh;
       if (event.ctrlKey || event.metaKey || this.multiSelect) {
@@ -757,10 +1000,26 @@ export class EditorEngine {
   private syncPivot() {
     if (this.selection.length === 0) return;
     const centroid = new THREE.Vector3();
-    this.selection.forEach((mesh) => centroid.add(mesh.position));
+    this.selection.forEach((mesh) => {
+      mesh.updateWorldMatrix(true, false);
+      centroid.add(mesh.getWorldPosition(new THREE.Vector3()));
+    });
     centroid.multiplyScalar(1 / this.selection.length);
-    this.pivot.position.copy(centroid);
-    this.pivot.quaternion.identity();
+    const parentQuat = new THREE.Quaternion();
+    if (this.pivot.parent) {
+      this.pivot.parent.updateWorldMatrix(true, false);
+      this.pivot.position.copy(this.pivot.parent.worldToLocal(centroid));
+      this.pivot.parent.getWorldQuaternion(parentQuat);
+    } else {
+      this.pivot.position.copy(centroid);
+    }
+    // Una sola pieza: los ejes del gizmo siguen a la pieza (pared girada).
+    if (this.selection.length === 1) {
+      const worldQuat = this.selection[0].getWorldQuaternion(new THREE.Quaternion());
+      this.pivot.quaternion.copy(parentQuat.invert().multiply(worldQuat));
+    } else {
+      this.pivot.quaternion.identity();
+    }
     this.pivot.scale.set(1, 1, 1);
     this.pivot.updateMatrixWorld(true);
   }
@@ -775,12 +1034,8 @@ export class EditorEngine {
     });
     this.selected = meshes[0] ?? null;
 
-    if (meshes.length === 0) {
-      this.transformControls.detach();
-    } else {
-      this.syncPivot();
-      this.transformControls.attach(this.pivot);
-    }
+    this.dragStart = null;
+    this.refreshGizmo();
     this.emitSelection();
     // Resaltar al instante la cota de lo seleccionado.
     if (this.measureKinds.size > 0) this.refreshMeasures();
@@ -795,6 +1050,7 @@ export class EditorEngine {
   }
 
   private emitSelection() {
+    if (!this.handleDrag) this.refreshHandles();
     const mesh = this.selected;
     if (!mesh) {
       this.onSelection(null);
@@ -847,42 +1103,56 @@ export class EditorEngine {
 
   private captureTransformStart() {
     if (this.selection.length === 0) return;
-    this.pivot.updateMatrix();
+    this.pivot.updateWorldMatrix(true, false);
     this.dragStart = {
-      pivot: this.pivot.matrix.clone(),
+      pivotWorld: this.pivot.matrixWorld.clone(),
       meshes: this.selection.map((mesh) => {
-        mesh.updateMatrix();
-        return { mesh, matrix: mesh.matrix.clone() };
+        mesh.updateWorldMatrix(true, false);
+        return { mesh, matrixWorld: mesh.matrixWorld.clone() };
       }),
     };
   }
 
   private applyTransformDelta() {
     if (!this.dragStart) return;
-    this.pivot.updateMatrix();
-    const inverse = new THREE.Matrix4().copy(this.dragStart.pivot).invert();
-    const delta = new THREE.Matrix4().multiplyMatrices(this.pivot.matrix, inverse);
-    // Shift: bloquear el movimiento vertical (arriba/abajo) al trasladar.
-    if (this.lockVertical && this.transformControls.mode === 'translate') {
+    this.pivot.updateWorldMatrix(true, false);
+    const inverse = new THREE.Matrix4().copy(this.dragStart.pivotWorld).invert();
+    const deltaWorld = new THREE.Matrix4().multiplyMatrices(this.pivot.matrixWorld, inverse);
+    // Mover: sin altura salvo con Alt (y nunca con Shift).
+    if ((this.lockVertical || !this.allowVertical) && this.transformControls.mode === 'translate') {
       const pos = new THREE.Vector3();
       const quat = new THREE.Quaternion();
       const scale = new THREE.Vector3();
-      delta.decompose(pos, quat, scale);
+      deltaWorld.decompose(pos, quat, scale);
       pos.y = 0;
-      delta.compose(pos, quat, scale);
+      deltaWorld.compose(pos, quat, scale);
     }
-    this.dragStart.meshes.forEach(({ mesh, matrix }) => {
-      const next = new THREE.Matrix4().multiplyMatrices(delta, matrix);
-      next.decompose(mesh.position, mesh.quaternion, mesh.scale);
+    this.dragStart.meshes.forEach(({ mesh, matrixWorld }) => {
+      const nextWorld = new THREE.Matrix4().multiplyMatrices(deltaWorld, matrixWorld);
+      const parent = mesh.parent;
+      if (parent) parent.updateWorldMatrix(true, false);
+      const nextLocal = parent
+        ? new THREE.Matrix4().copy(parent.matrixWorld).invert().multiply(nextWorld)
+        : nextWorld;
+      nextLocal.decompose(mesh.position, mesh.quaternion, mesh.scale);
       mesh.updateMatrix();
     });
-    this.clampSelectionToFloor();
-    this.syncPivot();
+    // Sin empujar al piso mientras se arrastra (eso hacía "dispararse" la pieza);
+    // se corrige al soltar.
+    this.selection.forEach((mesh) => this.refreshHostedWallForOpening(mesh, false));
     this.emitSelection();
   }
 
   loadModel(url: string | null, textures: { name: string; url: string }[], onLoaded?: () => void) {
     this.setPresentationMode(false);
+    this.clearAgentPreview();
+    this.agentTransaction = null;
+    this.undoStack = [];
+    this.redoStack = [];
+    this.lastUndoKey = null;
+    this.changeRevision++;
+    this.modelRevision++;
+    this.emitHistory();
     this.model?.dispose();
     this.model = new Modelo3D(
       this.scene,
@@ -894,6 +1164,7 @@ export class EditorEngine {
       () => {
         if (this.model) this.model.getObject3D().add(this.pivot);
         this.initAllMeshes();
+        this.repairMaterialIds();
         this.refreshVisibility();
         this.refreshAppearance();
         onLoaded?.();
@@ -902,15 +1173,15 @@ export class EditorEngine {
   }
 
   setMode(mode: TransformMode) {
+    this.mode = mode;
     this.transformControls.setMode(mode);
-    this.transformControls.showY = !(this.lockVertical && mode === 'translate');
+    this.updateShowY();
+    this.refreshGizmo();
   }
 
   setLockVertical(value: boolean) {
     this.lockVertical = value;
-    if (this.transformControls.mode === 'translate') {
-      this.transformControls.showY = !value;
-    }
+    this.updateShowY();
   }
 
   setSpace(space: 'local' | 'world') {
@@ -1127,6 +1398,7 @@ export class EditorEngine {
 
   setMaterials(materials: Material[]) {
     this.materials = materials;
+    this.repairMaterialIds();
     this.refreshAppearance();
     this.emitSelection();
   }
@@ -1155,10 +1427,14 @@ export class EditorEngine {
     if (layer) mesh.userData.layerName = layer.nombre;
     if (mesh.userData.color === undefined) mesh.userData.color = 'bylayer';
     if (mesh.userData.materialId === undefined) {
-      const name = DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind] ?? '';
-      mesh.userData.materialId = name ? this.materials.find((m) => m.nombre === name)?.id ?? '' : '';
+      const byName = (name?: string) => (name ? this.materials.find((m) => m.nombre === name)?.id : undefined);
+      mesh.userData.materialId =
+        byName(DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind]) ?? byName(FALLBACK_MATERIAL_BY_KIND[kind as MeasureKind]) ?? '';
+      // Catálogo aún sin cargar: se completa en repairMaterialIds().
+      if (!mesh.userData.materialId && this.materials.length === 0) mesh.userData.materialPending = true;
     }
     if (mesh.userData.elevation === undefined) mesh.userData.elevation = 0;
+    if (!mesh.userData.elementId) mesh.userData.elementId = THREE.MathUtils.generateUUID();
     if (!mesh.userData.baseDims) {
       mesh.updateMatrixWorld(true);
       const size = new THREE.Box3().setFromObject(mesh).getSize(new THREE.Vector3());
@@ -1167,6 +1443,15 @@ export class EditorEngine {
         height: size.y || 1,
         length: size.z || 1,
       };
+    }
+    if (!mesh.userData.originalBox) {
+      const b = this.localBox(mesh);
+      const s = mesh.scale;
+      mesh.userData.originalBox = {
+        min: [b.min.x * s.x, b.min.y * s.y, b.min.z * s.z],
+        max: [b.max.x * s.x, b.max.y * s.y, b.max.z * s.z],
+      };
+      if (this.isOpening(mesh)) mesh.userData.originalOpening = { ...this.openingDims(mesh) };
     }
     this.ensureEdges(mesh);
   }
@@ -1369,34 +1654,131 @@ export class EditorEngine {
     return texture;
   }
 
+  /**
+   * Material que debe verse aunque Texturas esté OFF: el elegido por el
+   * usuario (o el agente) o cualquiera distinto del de por defecto. El de por
+   * defecto sin elegir conserva el color de la capa (aspecto de siempre).
+   */
+  private visibleMaterial(mesh: THREE.Mesh): Material | undefined {
+    const material = this.materialById(mesh.userData.materialId);
+    if (!material) return undefined;
+    if (mesh.userData.materialExplicit) return material;
+    const kind = ((mesh.userData.kind as string) ?? this.kindOf(mesh)) as MeasureKind;
+    return isDefaultMaterial(kind, material.nombre) ? undefined : material;
+  }
+
+  /**
+   * Color base del patrón: el propio del usuario, el de la capa para el techo
+   * por defecto (terracota/café) o el del material.
+   */
+  private patternColor(mesh: THREE.Mesh, material: Material): string {
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    if (raw !== 'bylayer') return raw;
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    if (kind === 'roof' && !mesh.userData.materialExplicit) {
+      return this.resolveLayer(mesh)?.color ?? '#8a4a2a';
+    }
+    return material.color_difuso || '#cccccc';
+  }
+
+  /**
+   * Mapas de textura a escala real: patrón generado para los materiales del
+   * catálogo, o la foto subida por el usuario (1 repetición por metro).
+   * Null para el vidrio (sin patrón).
+   */
+  private texturedMaps(mesh: THREE.Mesh, material: Material): TexturedMaps | null {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    const pattern = patternFor(material, kind);
+    if (pattern === 'vidrio') return null;
+    ensureBoxUVs(mesh);
+    const custom = material.textura_url && !material.textura_url.startsWith('/static/');
+    if (custom) {
+      const map = this.textureCopy(material.textura_url!);
+      if (!map) return null;
+      map.wrapS = map.wrapT = THREE.RepeatWrapping;
+      map.repeat.set(1 / (material.escala_textura?.[0] || 1), 1 / (material.escala_textura?.[1] || 1));
+      return { map, normalMap: null, roughnessMap: null };
+    }
+    return patternMaps(pattern, this.patternColor(mesh, material));
+  }
+
+  /**
+   * Color que la pieza tiene con Texturas OFF: el propio, el del material
+   * elegido o el de su capa (misma regla que applyMeshAppearance).
+   */
+  /**
+   * Piezas con un material que ya no existe en el catálogo (ids de otra base o
+   * borrados) o que se cargaron antes que el catálogo: pasan al material por
+   * defecto de su tipo. "(sin material)" elegido a propósito se respeta.
+   */
+  private repairMaterialIds() {
+    if (this.materials.length === 0) return;
+    this.allMeshes().forEach((mesh) => {
+      const id = mesh.userData.materialId as string | undefined;
+      const missing = id ? !this.materialById(id) : Boolean(mesh.userData.materialPending);
+      if (!missing) return;
+      const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+      mesh.userData.materialId = this.defaultMaterialFor(kind)?.id ?? '';
+      mesh.userData.materialExplicit = false;
+      delete mesh.userData.materialPending;
+    });
+  }
+
+  /** Material por defecto del catálogo para un tipo de pieza (o su respaldo). */
+  private defaultMaterialFor(kind: string): Material | undefined {
+    const byName = (name?: string) => (name ? this.materials.find((m) => m.nombre === name) : undefined);
+    return byName(DEFAULT_MATERIAL_BY_KIND[kind as MeasureKind]) ?? byName(FALLBACK_MATERIAL_BY_KIND[kind as MeasureKind]);
+  }
+
+  private offColor(mesh: THREE.Mesh): string {
+    const raw = (mesh.userData.color as string) ?? 'bylayer';
+    if (raw !== 'bylayer') return raw;
+    const shown = this.visibleMaterial(mesh);
+    if (shown) return shown.color_difuso;
+    return this.resolveLayer(mesh)?.color ?? '#9aa4b2';
+  }
+
   private applyMeshAppearance(mesh: THREE.Mesh) {
     const layer = this.resolveLayer(mesh);
     const raw = (mesh.userData.color as string) ?? 'bylayer';
     const hasOverride = raw !== 'bylayer';
     const effectiveColor = hasOverride ? raw : layer?.color ?? '#9aa4b2';
     const transparency = layer?.transparencia ?? 0;
-    const material = this.showTextures ? this.materialById(mesh.userData.materialId) : undefined;
+    // El material asignado se ve siempre: con Texturas ON además su imagen;
+    // con OFF, su color (salvo el material por defecto, que usa el de la capa).
+    const assigned = this.materialById(mesh.userData.materialId);
+    const material = this.showTextures ? assigned : undefined;
+    const shown = this.showTextures ? undefined : this.visibleMaterial(mesh);
     const prevMaterial = mesh.material as THREE.MeshStandardMaterial | undefined;
 
-    if (material) {
-      const base = this.textureFor(material.textura_url);
-      let map: THREE.Texture | null = null;
-      if (base) {
-        ensurePlanarUVs(mesh);
-        map = base.clone();
-        map.needsUpdate = true;
-        map.wrapS = map.wrapT = THREE.RepeatWrapping;
-        const [u, v] = this.isStructural(mesh) ? horizontalRepeatFor(mesh) : textureRepeatFor(mesh);
-        map.repeat.set(u * material.escala_textura[0], v * material.escala_textura[1]);
-      }
+    if (shown) {
       mesh.material = new THREE.MeshStandardMaterial({
-        map,
-        color: new THREE.Color(effectiveColor),
-        roughness: material.rugosidad,
+        color: new THREE.Color(hasOverride ? raw : shown.color_difuso),
+        roughness: shown.rugosidad,
+        metalness: shown.metalico,
+        transparent: shown.opacidad < 1 || transparency > 0,
+        opacity: shown.opacidad * (1 - transparency / 100),
+        side: THREE.DoubleSide,
+        polygonOffset: true,
+        polygonOffsetFactor: 1,
+        polygonOffsetUnits: 1,
+      });
+    } else if (material) {
+      // Texturas ON: patrón realista a escala (ladrillo, piedra, tejas…).
+      const textured = this.texturedMaps(mesh, material);
+      mesh.material = new THREE.MeshStandardMaterial({
+        map: textured?.map ?? null,
+        normalMap: textured?.normalMap ?? null,
+        roughnessMap: textured?.roughnessMap ?? null,
+        normalScale: new THREE.Vector2(0.8, 0.8),
+        color: new THREE.Color(textured ? '#ffffff' : this.patternColor(mesh, material)),
+        roughness: textured ? 1 : material.rugosidad,
         metalness: material.metalico,
         transparent: material.opacidad < 1 || transparency > 0,
         opacity: material.opacidad * (1 - transparency / 100),
         side: THREE.DoubleSide,
+        // Las piezas no traen normales: se calculan por cara en el shader.
+        flatShading: true,
         polygonOffset: true,
         polygonOffsetFactor: 1,
         polygonOffsetUnits: 1,
@@ -1428,6 +1810,8 @@ export class EditorEngine {
     if (prevMaterial && prevMaterial !== nextMaterial) {
       const prevMap = prevMaterial.map;
       if (prevMap && !Array.from(this.textureCache.values()).includes(prevMap)) prevMap.dispose();
+      prevMaterial.normalMap?.dispose();
+      prevMaterial.roughnessMap?.dispose();
       prevMaterial.dispose();
     }
     // En modo Animado la pieza mantiene su aspecto de presentación.
@@ -1440,6 +1824,7 @@ export class EditorEngine {
 
   setSelectedLayer(id: string) {
     if (this.selection.length === 0) return;
+    this.pushUndo();
     const layer = this.layerById(id);
     this.selection.forEach((mesh) => {
       mesh.userData.layerId = id;
@@ -1452,6 +1837,7 @@ export class EditorEngine {
 
   setSelectedColorOverride(value: string) {
     if (this.selection.length === 0) return;
+    this.pushUndo();
     this.selection.forEach((mesh) => (mesh.userData.color = value));
     this.refreshAppearance();
     this.emitSelection();
@@ -1459,13 +1845,18 @@ export class EditorEngine {
 
   setSelectedMaterial(id: string) {
     if (this.selection.length === 0) return;
-    this.selection.forEach((mesh) => (mesh.userData.materialId = id));
+    this.pushUndo();
+    this.selection.forEach((mesh) => {
+      mesh.userData.materialId = id;
+      mesh.userData.materialExplicit = Boolean(id);
+    });
     this.refreshAppearance();
     this.emitSelection();
   }
 
   setSelectedElevation(y: number) {
     if (this.selection.length === 0) return;
+    this.pushUndo('elev');
     const first = this.selected as THREE.Mesh;
     if (this.isOpening(first)) {
       this.rebuildOpening(first, { ...this.openingDims(first), alfeizar: y });
@@ -1487,6 +1878,51 @@ export class EditorEngine {
   private isOpening(mesh: THREE.Mesh): boolean {
     const k = this.measureKindOf(mesh);
     return k === 'door' || k === 'window';
+  }
+
+  private refreshHostedWallForOpening(mesh: THREE.Mesh, detachOutside: boolean) {
+    if (!this.isOpening(mesh) || !this.model) return;
+    const hostId = mesh.userData.hostWallId as string | undefined;
+    if (!hostId) return;
+    const wall = this.model.getWalls().find((candidate) => candidate.userData.elementId === hostId);
+    if (!wall) {
+      delete mesh.userData.hostWallId;
+      return;
+    }
+    this.refreshWallOpeningGeometry(wall, detachOutside);
+  }
+
+  private refreshWallOpeningGeometry(wall: THREE.Mesh, detachOutside: boolean) {
+    if (!this.model || !wall.userData.generatedSegment) return;
+    const dims = wall.userData.baseDims as { thickness: number; height: number; length: number } | undefined;
+    if (!dims) return;
+
+    wall.updateWorldMatrix(true, false);
+    const hosted = [...this.model.getDoors(), ...this.model.getWindows()].filter(
+      (opening) => opening.userData.hostWallId === wall.userData.elementId,
+    );
+    const cuts: WallOpeningCut[] = [];
+    hosted.forEach((opening) => {
+      opening.updateWorldMatrix(true, false);
+      const centerLocal = wall.worldToLocal(opening.getWorldPosition(new THREE.Vector3()));
+      const openingDims = this.openingDims(opening);
+      const bottom = centerLocal.y - openingDims.alto / 2 + dims.height / 2;
+      const outside =
+        Math.abs(centerLocal.x) > dims.thickness / 2 + 0.25 ||
+        centerLocal.z - openingDims.ancho / 2 < -dims.length / 2 - 0.1 ||
+        centerLocal.z + openingDims.ancho / 2 > dims.length / 2 + 0.1 ||
+        bottom < -0.05 ||
+        bottom + openingDims.alto > dims.height + 0.05;
+
+      if (detachOutside && outside) {
+        delete opening.userData.hostWallId;
+        return;
+      }
+      cuts.push({ center: centerLocal.z, width: openingDims.ancho, bottom, height: openingDims.alto });
+    });
+
+    this.model.setWallOpenings(wall, cuts, Boolean(this.agentTransaction));
+    if (detachOutside) this.ensureEdges(wall);
   }
 
   /** Medidas actuales de un vano: ancho (a lo largo del muro), alto, alféizar, espesor. */
@@ -1532,7 +1968,7 @@ export class EditorEngine {
       kind === 'window'
         ? buildWindowFrameGeometry(d.espesor, d.alto, d.ancho)
         : buildDoorGeometry(d.espesor, d.alto, d.ancho);
-    old.dispose();
+    if (!this.agentTransaction?.before.some((entry) => entry.geometry === old)) old.dispose();
 
     const parent = mesh.parent ?? this.model.getObject3D();
     parent.updateMatrixWorld(true);
@@ -1549,6 +1985,7 @@ export class EditorEngine {
       (mesh.material as THREE.MeshStandardMaterial)?.emissive?.setHex(0x2a3550);
       this.syncPivot();
     }
+    this.refreshHostedWallForOpening(mesh, false);
     this.emitSelection();
   }
 
@@ -1575,10 +2012,21 @@ export class EditorEngine {
     });
     const h = host as { mesh: THREE.Mesh; a: THREE.Vector3; dir: THREE.Vector3; dist: number } | null;
     if (!h || h.dist > 1.5) return { ok: false, mensaje: 'No hay un muro a menos de 1.5 m.' };
+    if (!h.mesh.userData.generatedSegment) {
+      return { ok: false, mensaje: 'El hueco automático solo está disponible en muros dibujados en el editor.' };
+    }
 
-    const wallThickness = pieceQuantities(h.mesh, 'wall').thickness;
+    const wallDims = h.mesh.userData.baseDims as { thickness: number; height: number; length: number };
+    const wallThickness = wallDims.thickness;
     const normal = new THREE.Vector3(-h.dir.z, 0, h.dir.x);
-    const t = mid.clone().sub(h.a).dot(h.dir);
+    if (dims.ancho > wallDims.length) {
+      return { ok: false, mensaje: 'La abertura es más ancha que el muro seleccionado.' };
+    }
+    const t = THREE.MathUtils.clamp(
+      mid.clone().sub(h.a).dot(h.dir),
+      dims.ancho / 2,
+      wallDims.length - dims.ancho / 2,
+    );
     let s0 = t - dims.ancho / 2;
     let s1 = t + dims.ancho / 2;
 
@@ -1610,10 +2058,21 @@ export class EditorEngine {
       if (left !== null) s0 = left;
       if (right !== null) s1 = right;
     }
+    s0 = Math.max(0, s0);
+    s1 = Math.min(wallDims.length, s1);
 
     const ancho = s1 - s0;
     const center = h.a.clone().add(h.dir.clone().multiplyScalar((s0 + s1) / 2));
+    const oldHostId = mesh.userData.hostWallId as string | undefined;
+    const newHostId = h.mesh.userData.elementId as string;
+    if (oldHostId && oldHostId !== newHostId) {
+      delete mesh.userData.hostWallId;
+      const oldHost = this.model?.getWalls().find((wall) => wall.userData.elementId === oldHostId);
+      if (oldHost) this.refreshWallOpeningGeometry(oldHost, true);
+    }
+    mesh.userData.hostWallId = newHostId;
     this.rebuildOpening(mesh, { ...dims, ancho, espesor: wallThickness }, { mid: center, dir: h.dir });
+    this.refreshHostedWallForOpening(mesh, true);
     return {
       ok: true,
       mensaje: `Ajustada a ${h.mesh.name}: ancho ${ancho.toFixed(2)} m, espesor ${wallThickness.toFixed(2)} m.`,
@@ -1624,13 +2083,306 @@ export class EditorEngine {
 
   /** Ajusta al muro todos los vanos seleccionados. */
   snapSelectedOpenings(fill = true) {
+    this.pushUndo();
     const results = this.selection.filter((m) => this.isOpening(m)).map((m) => this.snapOpeningToWall(m, fill));
     return results.length ? results : [{ ok: false, mensaje: 'Selecciona una puerta o ventana.' }];
   }
 
+  // ============================ Colocar (auto-encaje) ============================
+
+  /** Distancia máxima (m) a la que una pared/piso se engancha a sus vecinos. */
+  private snapThreshold = 0.15;
+
+  setSnapThreshold(value: number) {
+    this.snapThreshold = Math.max(0.01, value);
+  }
+
+  /** Rectángulo en planta de una pieza caja: eje, dirección, largo y espesor (mundo). */
+  private pieceFrame(mesh: THREE.Mesh) {
+    const { a, b } = pieceAxis(mesh);
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    dir.normalize();
+    const s = this.localSize(mesh);
+    const across = s.x >= s.z ? s.z * Math.abs(mesh.scale.z) : s.x * Math.abs(mesh.scale.x);
+    return { a, b, dir, len, across, mid: a.clone().add(b).multiplyScalar(0.5) };
+  }
+
+  /**
+   * Calcula cómo encajar una pared o piso con sus vecinos sin aplicar nada:
+   * endereza el giro, alinea caras/ejes, une extremos y la asienta sobre el piso.
+   */
+  private computeSnap(mesh: THREE.Mesh): SnapPlan | null {
+    if (!this.isBoxPiece(mesh) || !mesh.visible) return null;
+    const kind = this.measureKindOf(mesh);
+    if (kind !== 'wall' && kind !== 'floor') return null;
+    const thr = this.snapThreshold;
+    const f = this.pieceFrame(mesh);
+    if (f.len < 1e-3) return null;
+    const selected = new Set(this.selection);
+    const others = this.allMeshes().filter(
+      (m) => m !== mesh && !selected.has(m) && m.visible && this.isBoxPiece(m) && this.measureKindOf(m) !== null,
+    );
+    const neighbors = others.map((m) => ({ mesh: m, kind: this.measureKindOf(m), f: this.pieceFrame(m) }));
+
+    // 1) Enderezar el giro: ángulo de un vecino o múltiplo de 90°.
+    const angleOf = (d: THREE.Vector3) => Math.atan2(-d.z, d.x);
+    const quarter = Math.PI / 2;
+    const diffTo = (target: number, ang: number) => {
+      let d = (target - ang) % quarter;
+      if (d > quarter / 2) d -= quarter;
+      if (d < -quarter / 2) d += quarter;
+      return d;
+    };
+    const ang = angleOf(f.dir);
+    const maxTurn = THREE.MathUtils.degToRad(6);
+    let rotate = 0;
+    let best = Infinity;
+    neighbors.forEach((n) => {
+      const d = diffTo(angleOf(n.f.dir), ang);
+      if (Math.abs(d) < maxTurn && Math.abs(d) < best) {
+        best = Math.abs(d);
+        rotate = d;
+      }
+    });
+    if (best === Infinity) {
+      const d = diffTo(0, ang);
+      if (Math.abs(d) < maxTurn) rotate = d;
+    }
+    if (Math.abs(rotate) < 1e-5) rotate = 0;
+    const Y = new THREE.Vector3(0, 1, 0);
+    const dir = f.dir.clone().applyAxisAngle(Y, rotate);
+    const normal = new THREE.Vector3(-dir.z, 0, dir.x);
+    const mid = f.mid;
+
+    let s0 = -f.len / 2;
+    let s1 = f.len / 2;
+    let across = f.across;
+    let offN = 0;
+
+    // Rectángulo de cada vecino proyectado en el marco de la pieza.
+    const rects = neighbors
+      .filter((n) => (kind === 'floor' ? true : n.kind === 'wall'))
+      .map((n) => {
+        const nn = new THREE.Vector3(-n.f.dir.z, 0, n.f.dir.x).multiplyScalar(n.f.across / 2);
+        const corners = [n.f.a.clone().add(nn), n.f.a.clone().sub(nn), n.f.b.clone().add(nn), n.f.b.clone().sub(nn)].map((c) =>
+          c.sub(mid),
+        );
+        const P = corners.map((c) => c.dot(dir));
+        const Q = corners.map((c) => c.dot(normal));
+        const dot = Math.abs(n.f.dir.dot(dir));
+        return {
+          kind: n.kind,
+          p0: Math.min(...P),
+          p1: Math.max(...P),
+          q0: Math.min(...Q),
+          q1: Math.max(...Q),
+          pc: n.f.mid.clone().sub(mid).dot(dir),
+          qc: n.f.mid.clone().sub(mid).dot(normal),
+          parallel: dot > 0.999,
+          perpendicular: dot < 0.035,
+        };
+      })
+      .filter((r) => r.parallel || r.perpendicular);
+
+    const gapP = (r: { p0: number; p1: number }) => Math.max(r.p0 - s1, s0 - r.p1, 0);
+    const gapQ = (r: { q0: number; q1: number }) => Math.max(r.q0 - (offN + across / 2), offN - across / 2 - r.q1, 0);
+
+    // 2) Alinear de costado (misma línea que la pared vecina / borde con borde).
+    if (kind === 'wall') {
+      let shift = 0;
+      let bestShift = thr;
+      rects
+        .filter((r) => r.parallel && r.kind === 'wall' && gapP(r) < thr)
+        .forEach((r) => {
+          [r.qc, r.q0 + across / 2, r.q1 - across / 2].forEach((c) => {
+            if (Math.abs(c) < bestShift) {
+              bestShift = Math.abs(c);
+              shift = c;
+            }
+          });
+        });
+      offN = shift;
+    } else {
+      let n0 = -across / 2;
+      let n1 = across / 2;
+      let b0 = thr;
+      let b1 = thr;
+      rects
+        .filter((r) => gapP(r) < thr)
+        .forEach((r) => {
+          [r.q0, r.q1].forEach((c) => {
+            if (Math.abs(c - n0) < b0) {
+              b0 = Math.abs(c - n0);
+              n0 = c;
+            }
+            if (Math.abs(c - n1) < b1) {
+              b1 = Math.abs(c - n1);
+              n1 = c;
+            }
+          });
+        });
+      if (n1 - n0 > 0.05) {
+        offN = (n0 + n1) / 2;
+        across = n1 - n0;
+      }
+    }
+
+    // 3) Unir extremos (esquinas en L, continuación en línea, bordes de piso).
+    let e0 = s0;
+    let e1 = s1;
+    let b0 = thr;
+    let b1 = thr;
+    rects
+      .filter((r) => gapQ(r) < thr)
+      .forEach((r) => {
+        const targets = [r.p0, r.p1];
+        if (kind === 'wall' && r.perpendicular) targets.push(r.pc);
+        targets.forEach((c) => {
+          if (Math.abs(c - s0) < b0) {
+            b0 = Math.abs(c - s0);
+            e0 = c;
+          }
+          if (Math.abs(c - s1) < b1) {
+            b1 = Math.abs(c - s1);
+            e1 = c;
+          }
+        });
+      });
+    if (e1 - e0 > 0.1) {
+      s0 = e0;
+      s1 = e1;
+    }
+
+    // 4) Asentar la pared sobre el piso que tiene debajo.
+    let dy = 0;
+    if (kind === 'wall') {
+      const minY = new THREE.Box3().setFromObject(mesh).min.y;
+      const foot = mid.clone().add(dir.clone().multiplyScalar((s0 + s1) / 2)).add(normal.clone().multiplyScalar(offN));
+      let bestDy = 0.3;
+      let found = false;
+      neighbors
+        .filter((n) => n.kind === 'floor')
+        .forEach((n) => {
+          const box = new THREE.Box3().setFromObject(n.mesh);
+          if (foot.x < box.min.x - 0.05 || foot.x > box.max.x + 0.05 || foot.z < box.min.z - 0.05 || foot.z > box.max.z + 0.05) return;
+          const d = box.max.y - minY;
+          if (Math.abs(d) < bestDy) {
+            bestDy = Math.abs(d);
+            dy = d;
+            found = true;
+          }
+        });
+      if (!found && Math.abs(minY) < thr) dy = -minY;
+      if (Math.abs(dy) < 1e-4) dy = 0;
+    }
+
+    const along = s1 - s0;
+    const changed =
+      rotate !== 0 ||
+      Math.abs(offN) > 1e-3 ||
+      Math.abs(s0 + f.len / 2) > 1e-3 ||
+      Math.abs(s1 - f.len / 2) > 1e-3 ||
+      Math.abs(across - f.across) > 1e-3 ||
+      dy !== 0;
+    if (!changed) return null;
+    const center = mid.clone().add(dir.clone().multiplyScalar((s0 + s1) / 2)).add(normal.clone().multiplyScalar(offN));
+    return { mesh, kind, rotate, center, along, across, dy, oldMid: mid, shift: normal.clone().multiplyScalar(offN) };
+  }
+
+  private applySnap(plan: SnapPlan) {
+    const { mesh } = plan;
+    const Y = new THREE.Vector3(0, 1, 0);
+    const hosted =
+      this.model && mesh.userData.generatedSegment
+        ? [...this.model.getDoors(), ...this.model.getWindows()].filter(
+            (o) => o.userData.hostWallId && o.userData.hostWallId === mesh.userData.elementId,
+          )
+        : [];
+
+    this.bakeScale(mesh);
+    if (plan.rotate) mesh.rotateOnWorldAxis(Y, plan.rotate);
+    const s = this.localSize(mesh);
+    const L: 'x' | 'z' = s.x >= s.z ? 'x' : 'z';
+    const T: 'x' | 'z' = L === 'x' ? 'z' : 'x';
+    const box = this.localBox(mesh);
+    box.min[L] = -plan.along / 2;
+    box.max[L] = plan.along / 2;
+    box.min[T] = -plan.across / 2;
+    box.max[T] = plan.across / 2;
+    this.setBoxGeometry(mesh, box);
+    mesh.updateMatrixWorld(true);
+    const origin = mesh.localToWorld(new THREE.Vector3(0, 0, 0));
+    mesh.position.x += plan.center.x - origin.x;
+    mesh.position.z += plan.center.z - origin.z;
+    mesh.position.y += plan.dy;
+    mesh.updateMatrix();
+    mesh.updateMatrixWorld(true);
+
+    // Puertas/ventanas de la pared se mueven con ella.
+    hosted.forEach((o) => {
+      if (plan.rotate) {
+        const rel = o.position.clone().sub(plan.oldMid).applyAxisAngle(Y, plan.rotate);
+        o.position.set(plan.oldMid.x + rel.x, o.position.y, plan.oldMid.z + rel.z);
+        o.rotateOnWorldAxis(Y, plan.rotate);
+      }
+      o.position.add(plan.shift);
+      o.position.y += plan.dy;
+      o.updateMatrix();
+      o.updateMatrixWorld(true);
+    });
+    if (hosted.length) this.refreshWallOpeningGeometry(mesh, false);
+    this.applyMeshAppearance(mesh);
+  }
+
+  /** ¿La selección tiene algo que "Colocar" pueda encajar? */
+  canSnapSelected(): boolean {
+    return this.selection.some((m) => this.isOpening(m) || this.computeSnap(m) !== null);
+  }
+
+  /** Botón "Colocar": encaja paredes, pisos, puertas y ventanas seleccionadas. */
+  snapSelectedPieces(): { ok: boolean; mensaje: string }[] {
+    const sel = [...this.selection];
+    const plans = sel.map((m) => this.computeSnap(m)).filter((p): p is NonNullable<typeof p> => p !== null);
+    const openings = sel.filter((m) => this.isOpening(m));
+    if (plans.length === 0 && openings.length === 0) {
+      return [{ ok: false, mensaje: 'Ya está alineada o no hay otra pieza cerca.' }];
+    }
+    this.pushUndo();
+    plans.forEach((p) => this.applySnap(p));
+    const results = [
+      ...plans.map((p) => ({ ok: true, mensaje: `${p.mesh.name} colocada.` })),
+      ...openings.map((m) => this.snapOpeningToWall(m, true)),
+    ];
+    this.syncPivot();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+    return results;
+  }
+
   setSelectedDimension(field: 'height' | 'thickness' | 'length' | 'width', value: number) {
     if (!this.selected) return;
-    const mesh = this.selected;
+    this.pushUndo('dim-' + field);
+    this.applyDimension(this.selected, field, value);
+  }
+
+  /** Cambia una medida real de la pieza (sin historial: lo maneja quien llama). */
+  private applyDimension(mesh: THREE.Mesh, field: 'height' | 'thickness' | 'length' | 'width', value: number) {
+    if (this.isBoxPiece(mesh) && value > 0.01) {
+      // Paredes/pisos: geometría nueva con la medida real (no se estira).
+      this.bakeScale(mesh);
+      const size = this.localSize(mesh);
+      const len = this.lengthAxis(mesh);
+      const axis: 'x' | 'y' | 'z' =
+        field === 'height' ? 'y' : field === 'length' ? len : len === 'x' ? 'z' : 'x';
+      mesh.scale.set(1, 1, 1);
+      mesh.scale[axis] = value / (size[axis] || 1);
+      this.bakeScale(mesh);
+      this.clampSelectionToFloor();
+      this.syncPivot();
+      this.emitSelection();
+      return;
+    }
     if (this.isOpening(mesh)) {
       // Vanos: se reconstruyen con la medida nueva (no se estiran con scale).
       const d = this.openingDims(mesh);
@@ -1652,6 +2404,617 @@ export class EditorEngine {
     this.clampSelectionToFloor();
     this.syncPivot();
     this.emitSelection();
+  }
+
+  // ============================ Deshacer / Rehacer ============================
+
+  setHistoryListener(listener: (info: { canUndo: boolean; canRedo: boolean; cutMode: boolean }) => void) {
+    this.onHistory = listener;
+    this.emitHistory();
+  }
+
+  private emitHistory() {
+    this.onHistory({ canUndo: this.undoStack.length > 0, canRedo: this.redoStack.length > 0, cutMode: this.cutMode });
+  }
+
+  private snapshot(): SceneSnapshot {
+    return this.allMeshes().map((mesh) => ({
+      mesh,
+      geometry: mesh.geometry,
+      position: mesh.position.clone(),
+      quaternion: mesh.quaternion.clone(),
+      scale: mesh.scale.clone(),
+      userData: JSON.parse(JSON.stringify(mesh.userData)),
+      material: mesh.material,
+    }));
+  }
+
+  private sceneChanged(before: SceneSnapshot): boolean {
+    const current = this.snapshot();
+    if (before.length !== current.length) return true;
+    const byMesh = new Map(before.map((entry) => [entry.mesh, entry]));
+    return current.some((entry) => {
+      const old = byMesh.get(entry.mesh);
+      return !old || old.geometry !== entry.geometry ||
+        !old.position.equals(entry.position) || !old.quaternion.equals(entry.quaternion) ||
+        !old.scale.equals(entry.scale) ||
+        JSON.stringify(old.userData) !== JSON.stringify(entry.userData);
+    });
+  }
+
+  /** Una acción completa del agente ocupa un solo paso del historial. */
+  beginAgentTransaction() {
+    if (!this.model) throw new Error('No hay un plano cargado.');
+    if (this.agentTransaction) throw new Error('Ya hay una acción del agente en curso.');
+    this.agentTransaction = { before: this.snapshot() };
+  }
+
+  commitAgentTransaction(): number | null {
+    const transaction = this.agentTransaction;
+    if (!transaction) throw new Error('La acción del agente ya no está activa.');
+    this.agentTransaction = null;
+    this.refreshVisibility();
+    this.refreshAppearance();
+    this.emitSelection();
+    if (!this.sceneChanged(transaction.before)) return null;
+    const agentId = this.nextAgentTransactionId++;
+    this.undoStack.push({ snapshot: transaction.before, agentId });
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
+    this.lastUndoKey = null;
+    this.changeRevision++;
+    this.emitHistory();
+    queueMicrotask(() => this.onChange());
+    return agentId;
+  }
+
+  /** Revierte una acción incompleta sin activar el autoguardado. */
+  rollbackAgentTransaction() {
+    const transaction = this.agentTransaction;
+    if (!transaction) return;
+    this.agentTransaction = null;
+    if (!this.sceneChanged(transaction.before)) return;
+    this.restore(transaction.before);
+    this.changeRevision++;
+    this.emitHistory();
+  }
+
+  canUndoAgentTransaction(id: number): boolean {
+    const top = this.undoStack.at(-1);
+    return top?.agentId === id;
+  }
+
+  /** Deshace solo si la última edición general fue la acción indicada de IA. */
+  undoAgentTransaction(id?: number): boolean {
+    const top = this.undoStack.at(-1);
+    if (top?.agentId == null || (id !== undefined && top.agentId !== id)) return false;
+    return this.undo();
+  }
+
+  getChangeRevision(): number {
+    return this.changeRevision;
+  }
+
+  getModelRevision(): number {
+    return this.modelRevision;
+  }
+
+  /**
+   * Guarda el estado antes de un cambio. `key` agrupa cambios seguidos del
+   * mismo campo (p. ej. teclear en el panel) en un solo paso de deshacer.
+   */
+  pushUndo(key?: string) {
+    if (!this.model) return;
+    this.changeRevision++;
+    // Avisar al editor (autoguardado) justo después de aplicar el cambio.
+    queueMicrotask(() => this.onChange());
+    const now = Date.now();
+    if (key && this.lastUndoKey?.key === key && now - this.lastUndoKey.at < 1500) {
+      this.lastUndoKey.at = now;
+      return;
+    }
+    this.lastUndoKey = key ? { key, at: now } : null;
+    this.undoStack.push({ snapshot: this.snapshot(), agentId: null });
+    if (this.undoStack.length > 60) this.undoStack.shift();
+    this.redoStack = [];
+    this.emitHistory();
+  }
+
+  private restore(snap: SceneSnapshot) {
+    const model = this.model;
+    if (!model) return;
+    this.transformControls.detach();
+    const keep = new Set(snap.map((s) => s.mesh));
+    this.allMeshes().forEach((m) => {
+      if (keep.has(m)) return;
+      // La geometría debe seguir disponible para rehacer.
+      model.removeElement(m, true);
+    });
+    snap.forEach((s) => {
+      const m = s.mesh;
+      m.geometry = s.geometry;
+      m.position.copy(s.position);
+      m.quaternion.copy(s.quaternion);
+      m.scale.copy(s.scale);
+      m.userData = JSON.parse(JSON.stringify(s.userData));
+      m.material = s.material;
+      m.updateMatrix();
+      model.addExisting(m);
+      this.ensureEdges(m);
+    });
+    this.lastUndoKey = null;
+    this.refreshVisibility();
+    this.refreshAppearance();
+    this.clearSelection();
+  }
+
+  setChangeListener(listener: () => void) {
+    this.onChange = listener;
+  }
+
+  undo() {
+    const entry = this.undoStack.pop();
+    if (!entry) return false;
+    queueMicrotask(() => this.onChange());
+    this.redoStack.push({ snapshot: this.snapshot(), agentId: entry.agentId });
+    this.restore(entry.snapshot);
+    this.changeRevision++;
+    this.emitHistory();
+    return true;
+  }
+
+  redo() {
+    const entry = this.redoStack.pop();
+    if (!entry) return false;
+    queueMicrotask(() => this.onChange());
+    this.undoStack.push({ snapshot: this.snapshot(), agentId: entry.agentId });
+    this.restore(entry.snapshot);
+    this.changeRevision++;
+    this.emitHistory();
+    return true;
+  }
+
+  // ============================ Medidas reales y Cortar ============================
+
+  /** Paredes y pisos son cajas: se pueden redimensionar y cortar sin deformar. */
+  private isBoxPiece(mesh: THREE.Mesh): boolean {
+    const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+    return kind === 'wall' || kind === 'floor';
+  }
+
+  private localBox(mesh: THREE.Mesh): THREE.Box3 {
+    const g = mesh.geometry as THREE.BufferGeometry;
+    if (!g.boundingBox) g.computeBoundingBox();
+    return g.boundingBox!.clone();
+  }
+
+  private localSize(mesh: THREE.Mesh): THREE.Vector3 {
+    return this.localBox(mesh).getSize(new THREE.Vector3());
+  }
+
+  /** Eje local horizontal más largo (el "largo" de la pieza). */
+  private lengthAxis(mesh: THREE.Mesh): 'x' | 'z' {
+    const s = this.localSize(mesh);
+    return s.x > s.z ? 'x' : 'z';
+  }
+
+  /** Reemplaza la geometría por una caja nueva con la escala aplicada (scale = 1). */
+  private bakeScale(mesh: THREE.Mesh) {
+    const sc = mesh.scale;
+    if (Math.abs(sc.x - 1) < 1e-4 && Math.abs(sc.y - 1) < 1e-4 && Math.abs(sc.z - 1) < 1e-4) return;
+    const box = this.localBox(mesh);
+    box.min.multiply(sc);
+    box.max.multiply(sc);
+    mesh.scale.set(1, 1, 1);
+    this.setBoxGeometry(mesh, box);
+    mesh.updateMatrix();
+  }
+
+  private setBoxGeometry(mesh: THREE.Mesh, box: THREE.Box3) {
+    const size = box.getSize(new THREE.Vector3());
+    const center = box.getCenter(new THREE.Vector3());
+    const geo = new THREE.BoxGeometry(Math.max(size.x, 0.01), Math.max(size.y, 0.01), Math.max(size.z, 0.01));
+    geo.translate(center.x, center.y, center.z);
+    geo.computeBoundingBox();
+    // No se libera la geometría vieja: deshacer puede volver a usarla.
+    mesh.geometry = geo;
+    const len = this.lengthAxis(mesh);
+    mesh.userData.baseDims = {
+      thickness: len === 'z' ? size.x : size.z,
+      height: size.y,
+      length: len === 'z' ? size.z : size.x,
+    };
+    this.ensureEdges(mesh);
+  }
+
+  setCutMode(on: boolean) {
+    this.cutMode = on;
+    if (on) this.cancelDraft();
+    this.canvas.style.cursor = on ? 'crosshair' : '';
+    this.emitHistory();
+  }
+
+  isCutMode() {
+    return this.cutMode;
+  }
+
+  /**
+   * Corta una pared o piso en el punto clicado, en dos piezas. El corte es
+   * perpendicular al largo de la pieza; con Shift, en el otro eje.
+   * Queda seleccionado el trozo más pequeño para borrarlo rápido (Supr).
+   */
+  private cutAt(mesh: THREE.Mesh, worldPoint: THREE.Vector3, otherAxis: boolean) {
+    if (!this.model) return;
+    this.pushUndo();
+    this.bakeScale(mesh);
+    mesh.updateMatrixWorld(true);
+    const local = mesh.worldToLocal(worldPoint.clone());
+    const box = this.localBox(mesh);
+    let axis: 'x' | 'z' = this.lengthAxis(mesh);
+    if (otherAxis) axis = axis === 'x' ? 'z' : 'x';
+    let at = local[axis];
+    if (this.translationSnap) {
+      const snapped = Math.round(at / this.translationSnap) * this.translationSnap;
+      if (snapped > box.min[axis] && snapped < box.max[axis]) at = snapped;
+    }
+    const minPiece = 0.05;
+    if (at - box.min[axis] < minPiece || box.max[axis] - at < minPiece) return;
+    const boxA = box.clone();
+    boxA.max[axis] = at;
+    const boxB = box.clone();
+    boxB.min[axis] = at;
+
+    const piece = mesh.clone(false) as THREE.Mesh;
+    piece.name = `${mesh.name.replace(/_cut\d+$/, '')}_cut${Date.now()}`;
+    piece.userData = JSON.parse(JSON.stringify(mesh.userData));
+    this.setBoxGeometry(mesh, boxA);
+    this.setBoxGeometry(piece, boxB);
+    mesh.userData.originalBox = { min: boxA.min.toArray(), max: boxA.max.toArray() };
+    piece.userData.originalBox = { min: boxB.min.toArray(), max: boxB.max.toArray() };
+    this.model.addExisting(piece);
+    if (mesh.parent && piece.parent !== mesh.parent) mesh.parent.add(piece);
+    this.applyMeshAppearance(mesh);
+    this.applyMeshAppearance(piece);
+    this.refreshVisibility();
+    const sizeA = boxA.max[axis] - boxA.min[axis];
+    const sizeB = boxB.max[axis] - boxB.min[axis];
+    this.select(sizeA <= sizeB ? mesh : piece);
+  }
+
+  // ============================ Construcción fácil ============================
+
+  private rayFrom(event: PointerEvent) {
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+  }
+
+  /** Piezas con tiradores de medida (paredes, pisos, puertas, ventanas). */
+  private isHandleable(mesh: THREE.Mesh): boolean {
+    return this.isBoxPiece(mesh) || this.isOpening(mesh);
+  }
+
+  /** Eje del largo y del grosor/ancho en coordenadas locales de la pieza. */
+  private axesOf(mesh: THREE.Mesh): { L: 'x' | 'z'; T: 'x' | 'z' } {
+    // Los vanos se construyen siempre con el ancho en Z.
+    const L = this.isOpening(mesh) ? 'z' : this.lengthAxis(mesh);
+    return { L, T: L === 'x' ? 'z' : 'x' };
+  }
+
+  private usesHandles(): boolean {
+    return this.mode === 'scale' && this.selection.length === 1 && this.isHandleable(this.selection[0]);
+  }
+
+  /** En modo Escalar con una pieza: tiradores en lugar del gizmo de escala. */
+  private refreshGizmo() {
+    if (this.selection.length === 0 || this.usesHandles()) {
+      this.transformControls.detach();
+    } else {
+      this.syncPivot();
+      this.transformControls.attach(this.pivot);
+    }
+    this.refreshHandles();
+  }
+
+  private ensureHandles() {
+    if (this.handles.children.length > 0) return;
+    const make = (id: HandleId, color: number) => {
+      const m = new THREE.Mesh(
+        new THREE.SphereGeometry(0.14, 20, 14),
+        new THREE.MeshBasicMaterial({ color, depthTest: false, transparent: true, opacity: 0.95 }),
+      );
+      m.renderOrder = 10;
+      m.name = `__handle_${id}`;
+      m.userData.handle = id;
+      this.handles.add(m);
+    };
+    make('len+', 0xf59e0b);
+    make('len-', 0xf59e0b);
+    make('side', 0x22d3ee);
+    make('top', 0x22c55e);
+    this.scene.add(this.handles);
+  }
+
+  private refreshHandles() {
+    this.ensureHandles();
+    if (!this.usesHandles()) {
+      this.handles.visible = false;
+      return;
+    }
+    const mesh = this.selection[0];
+    mesh.updateMatrixWorld(true);
+    const box = this.localBox(mesh);
+    const { L, T } = this.axesOf(mesh);
+    const c = box.getCenter(new THREE.Vector3());
+    const at = (id: HandleId) => {
+      const p = c.clone();
+      if (id === 'len+') p[L] = box.max[L];
+      else if (id === 'len-') p[L] = box.min[L];
+      else if (id === 'side') p[T] = box.max[T];
+      else p.y = box.max.y;
+      return mesh.localToWorld(p);
+    };
+    const camDir = this.camera.getWorldDirection(new THREE.Vector3());
+    this.handles.children.forEach((h) => {
+      const id = h.userData.handle as HandleId;
+      h.position.copy(at(id));
+      // Vista desde arriba: el alto no se puede arrastrar.
+      h.visible = !(id === 'top' && Math.abs(camDir.y) > 0.95);
+      const dist = this.camera.position.distanceTo(h.position);
+      const s = (this.camera as THREE.OrthographicCamera).isOrthographicCamera
+        ? 1
+        : THREE.MathUtils.clamp(dist / 12, 0.4, 3);
+      h.scale.setScalar(s);
+    });
+    this.handles.visible = true;
+  }
+
+  /** Clic sobre un tirador visible: empieza a cambiar la medida. */
+  private beginHandleDrag(event: PointerEvent): boolean {
+    if (!this.handles.visible || !this.usesHandles()) return false;
+    this.rayFrom(event);
+    const hit = this.raycaster.intersectObjects(this.handles.children.filter((h) => h.visible), false)[0];
+    if (!hit) return false;
+    const id = hit.object.userData.handle as HandleId;
+    const mesh = this.selection[0];
+    this.pushUndo();
+    this.bakeScale(mesh);
+    mesh.updateMatrixWorld(true);
+    let plane: THREE.Plane;
+    if (id === 'top') {
+      const n = this.camera.getWorldDirection(new THREE.Vector3()).setY(0).normalize().negate();
+      plane = new THREE.Plane().setFromNormalAndCoplanarPoint(n, hit.object.position);
+    } else {
+      plane = new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), hit.object.position);
+    }
+    this.handleDrag = {
+      mesh,
+      id,
+      plane,
+      startBox: this.localBox(mesh),
+      startPos: mesh.position.clone(),
+      startQuat: mesh.quaternion.clone(),
+      startWorld: mesh.matrixWorld.clone(),
+      startInv: mesh.matrixWorld.clone().invert(),
+      opening: this.isOpening(mesh) ? { ...this.openingDims(mesh) } : null,
+      ...this.axesOf(mesh),
+    };
+    this.orbit.enabled = false;
+    return true;
+  }
+
+  private updateHandleDrag(event: PointerEvent) {
+    const d = this.handleDrag;
+    if (!d) return;
+    this.rayFrom(event);
+    const p = this.raycaster.ray.intersectPlane(d.plane, new THREE.Vector3());
+    if (!p) return;
+    const { mesh, id, L, T } = d;
+
+    // Imán: extremo de pared cerca de otro extremo de pared (unir esquinas).
+    if ((id === 'len+' || id === 'len-') && this.isBoxPiece(mesh)) {
+      const ends: THREE.Vector3[] = [];
+      this.allMeshes()
+        .filter((m) => m !== mesh && ((m.userData.kind as string) ?? this.kindOf(m)) === 'wall')
+        .forEach((m) => {
+          const { a, b } = pieceAxis(m);
+          ends.push(a, b);
+        });
+      const flat = p.clone().setY(0);
+      const near = ends.find((e) => e.distanceTo(flat) < 0.15);
+      if (near) p.set(near.x, p.y, near.z);
+    }
+
+    const local = p.clone().applyMatrix4(d.startInv);
+    const box = d.startBox.clone();
+    const minSize = 0.1;
+    const snap = (len: number) => (this.translationSnap ? Math.max(this.translationSnap, Math.round(len / this.translationSnap) * this.translationSnap) : len);
+    if (id === 'len+') box.max[L] = box.min[L] + Math.max(minSize, snap(local[L] - box.min[L]));
+    else if (id === 'len-') box.min[L] = box.max[L] - Math.max(minSize, snap(box.max[L] - local[L]));
+    else if (id === 'side') {
+      // Grosor/ancho simétrico respecto al eje de la pieza.
+      const mid = (box.min[T] + box.max[T]) / 2;
+      const half = Math.max(minSize / 2, snap(Math.abs(local[T] - mid) * 2) / 2);
+      box.min[T] = mid - half;
+      box.max[T] = mid + half;
+    } else box.max.y = box.min.y + Math.max(minSize, snap(local.y - box.min.y));
+
+    const c = box.getCenter(new THREE.Vector3());
+    if (d.opening) {
+      const size = box.getSize(new THREE.Vector3());
+      const dims = { ...d.opening };
+      if (id === 'top') dims.alto = size.y;
+      else if (id === 'side') dims.espesor = size[T];
+      else dims.ancho = size[L];
+      const mid = new THREE.Vector3(c.x, 0, c.z).applyMatrix4(d.startWorld);
+      const dir = new THREE.Vector3(0, 0, 1).applyQuaternion(d.startQuat);
+      this.rebuildOpening(mesh, dims, { mid, dir });
+    } else {
+      // Recentrar: el lado opuesto al tirador queda quieto.
+      const offset = new THREE.Vector3(c.x, 0, c.z).applyQuaternion(d.startQuat);
+      mesh.position.copy(d.startPos).add(offset);
+      box.translate(new THREE.Vector3(-c.x, 0, -c.z));
+      this.setBoxGeometry(mesh, box);
+      this.applyMeshAppearance(mesh);
+      (mesh.material as THREE.MeshStandardMaterial)?.emissive?.setHex(0x2a3550);
+      mesh.updateMatrix();
+      this.emitSelection();
+    }
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  private endHandleDrag() {
+    if (!this.handleDrag) return;
+    this.handleDrag = null;
+    this.orbit.enabled = true;
+    this.justDraggedAt = Date.now();
+    this.syncPivot();
+    this.emitSelection();
+  }
+
+  /** Clic sobre una pieza ya seleccionada: prepara el arrastre sobre el piso. */
+  private beginMoveDrag(event: PointerEvent): boolean {
+    if (this.selection.length === 0 || event.ctrlKey || event.metaKey) return false;
+    this.rayFrom(event);
+    const hit = this.raycaster.intersectObjects(this.selectableMeshes(), false)[0];
+    if (!hit || !this.selection.includes(hit.object as THREE.Mesh)) return false;
+    this.moveDrag = {
+      x: event.clientX,
+      y: event.clientY,
+      active: false,
+      plane: new THREE.Plane().setFromNormalAndCoplanarPoint(new THREE.Vector3(0, 1, 0), hit.point),
+      start: hit.point.clone(),
+      items: [],
+    };
+    this.orbit.enabled = false;
+    return true;
+  }
+
+  private updateMoveDrag(event: PointerEvent) {
+    const d = this.moveDrag;
+    if (!d || !this.model) return;
+    if (!d.active) {
+      if (Math.hypot(event.clientX - d.x, event.clientY - d.y) < 5) return;
+      d.active = true;
+      this.pushUndo();
+      d.items = this.selection.map((m) => ({ mesh: m, pos: m.position.clone() }));
+    }
+    this.rayFrom(event);
+    const p = this.raycaster.ray.intersectPlane(d.plane, new THREE.Vector3());
+    if (!p) return;
+    const parent = this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    const delta = parent.worldToLocal(p.clone()).sub(parent.worldToLocal(d.start.clone()));
+    delta.y = 0; // Nunca cambia de altura al arrastrar.
+    if (this.translationSnap) {
+      delta.x = Math.round(delta.x / this.translationSnap) * this.translationSnap;
+      delta.z = Math.round(delta.z / this.translationSnap) * this.translationSnap;
+    }
+    d.items.forEach(({ mesh, pos }) => {
+      mesh.position.copy(pos).add(delta);
+      mesh.updateMatrix();
+    });
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  private endMoveDrag(): boolean {
+    const d = this.moveDrag;
+    if (!d) return false;
+    this.moveDrag = null;
+    this.orbit.enabled = true;
+    if (!d.active) return false;
+    this.justDraggedAt = Date.now();
+    this.clampSelectionToFloor();
+    // Puertas/ventanas sueltas cerca de una pared se pegan solas.
+    this.selection.filter((m) => this.isOpening(m)).forEach((m) => this.snapOpeningToWall(m, false));
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    return true;
+  }
+
+  /** Alt: permitir mover en altura con el gizmo. */
+  setAllowVertical(value: boolean) {
+    this.allowVertical = value;
+    this.updateShowY();
+  }
+
+  private updateShowY() {
+    this.transformControls.showY =
+      this.transformControls.mode !== 'translate' || (this.allowVertical && !this.lockVertical);
+  }
+
+  /** Vuelve a la medida con la que se creó o cargó la pieza. */
+  resetToOriginal() {
+    if (this.selection.length === 0) return;
+    this.pushUndo();
+    this.selection.forEach((mesh) => {
+      const orig = mesh.userData.originalOpening as OpeningDims | undefined;
+      if (this.isOpening(mesh) && orig) {
+        this.rebuildOpening(mesh, { ...orig });
+        return;
+      }
+      const ob = mesh.userData.originalBox as { min: number[]; max: number[] } | undefined;
+      mesh.scale.set(1, 1, 1);
+      if (this.isBoxPiece(mesh) && ob) {
+        this.setBoxGeometry(mesh, new THREE.Box3(new THREE.Vector3(...ob.min), new THREE.Vector3(...ob.max)));
+        this.applyMeshAppearance(mesh);
+        (mesh.material as THREE.MeshStandardMaterial)?.emissive?.setHex(0x2a3550);
+      }
+      mesh.updateMatrix();
+    });
+    this.clampSelectionToFloor();
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+  }
+
+  /** Gira 90° la selección sobre el centro de cada pieza. */
+  rotateSelection90() {
+    if (this.selection.length === 0 || !this.model) return;
+    this.pushUndo();
+    const parent = this.model.getObject3D();
+    parent.updateMatrixWorld(true);
+    const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI / 2);
+    this.selection.forEach((mesh) => {
+      mesh.updateMatrixWorld(true);
+      const center = parent.worldToLocal(new THREE.Box3().setFromObject(mesh).getCenter(new THREE.Vector3()));
+      const rel = mesh.position.clone().sub(center);
+      rel.y = 0;
+      rel.applyQuaternion(q);
+      mesh.position.set(center.x + rel.x, mesh.position.y, center.z + rel.z);
+      mesh.quaternion.premultiply(q);
+      mesh.updateMatrix();
+    });
+    this.syncPivot();
+    this.refreshGizmo();
+    this.emitSelection();
+  }
+
+  /** Ctrl+D: copia la selección desplazada 50 cm. */
+  duplicateSelection() {
+    if (this.selection.length === 0 || !this.model) return;
+    this.pushUndo();
+    const copies = this.selection.map((mesh, i) => {
+      const copy = mesh.clone(false) as THREE.Mesh;
+      copy.geometry = (mesh.geometry as THREE.BufferGeometry).clone();
+      copy.userData = JSON.parse(JSON.stringify(mesh.userData));
+      copy.userData.source ??= 'manual'; // una copia es una pieza nueva
+      copy.name = `${mesh.name.replace(/_(cut|dup)\d+$/, '')}_dup${Date.now()}${i}`;
+      copy.position.add(new THREE.Vector3(0.5, 0, 0.5));
+      copy.updateMatrix();
+      this.model!.addExisting(copy);
+      if (mesh.parent && copy.parent !== mesh.parent) mesh.parent.add(copy);
+      this.ensureEdges(copy);
+      this.applyMeshAppearance(copy);
+      return copy;
+    });
+    this.refreshVisibility();
+    this.setSelection(copies);
   }
 
   setDraftListener(listener: (info: DraftInfo | null) => void) {
@@ -1679,6 +3042,7 @@ export class EditorEngine {
     const baseY = this.model.getWalls().length > 0 ? this.model.getWalls()[0].position.y : 0;
     point.y = baseY;
 
+    this.pushUndo();
     const mesh = this.model.createElement(this.creating, 2, 3, 0.4, point);
     this.creating = null;
     this.select(mesh);
@@ -1686,9 +3050,23 @@ export class EditorEngine {
 
   deleteSelected() {
     if (this.selection.length === 0 || !this.model) return;
+    this.pushUndo();
     const meshes = [...this.selection];
+    const removedWallIds = new Set(
+      meshes.filter((mesh) => mesh.userData.generatedSegment).map((mesh) => mesh.userData.elementId as string),
+    );
+    const hostIds = new Set(
+      meshes.map((mesh) => mesh.userData.hostWallId as string | undefined).filter((id): id is string => Boolean(id)),
+    );
+    [...this.model.getDoors(), ...this.model.getWindows()].forEach((opening) => {
+      if (removedWallIds.has(opening.userData.hostWallId as string)) delete opening.userData.hostWallId;
+    });
     this.transformControls.detach();
     meshes.forEach((mesh) => this.model?.removeElement(mesh));
+    hostIds.forEach((id) => {
+      const wall = this.model?.getWalls().find((candidate) => candidate.userData.elementId === id);
+      if (wall) this.refreshWallOpeningGeometry(wall, true);
+    });
     this.selection = [];
     this.selected = null;
     this.onSelection(null);
@@ -1714,6 +3092,7 @@ export class EditorEngine {
 
   updatePosition(axis: 'x' | 'y' | 'z', value: number) {
     if (!this.selected) return;
+    this.pushUndo('updatePosition-' + axis);
     this.selected.position[axis] = value;
     this.clampSelectionToFloor();
     this.syncPivot();
@@ -1722,6 +3101,7 @@ export class EditorEngine {
 
   updateRotation(axis: 'x' | 'y' | 'z', deg: number) {
     if (!this.selected) return;
+    this.pushUndo('updateRotation-' + axis);
     this.selected.rotation[axis] = THREE.MathUtils.degToRad(deg);
     this.clampSelectionToFloor();
     this.syncPivot();
@@ -1730,6 +3110,7 @@ export class EditorEngine {
 
   updateScale(axis: 'x' | 'y' | 'z', value: number) {
     if (!this.selected) return;
+    this.pushUndo('updateScale-' + axis);
     this.selected.scale[axis] = value;
     this.clampSelectionToFloor();
     this.syncPivot();
@@ -1738,6 +3119,7 @@ export class EditorEngine {
 
   resetScale() {
     if (!this.selected) return;
+    this.pushUndo();
     this.selected.scale.set(1, 1, 1);
     this.clampSelectionToFloor();
     this.syncPivot();
@@ -1749,6 +3131,18 @@ export class EditorEngine {
     // Nunca exportar/guardar con los materiales o luces de presentación.
     this.setPresentationMode(false);
     return this.model.exportAsGLB(filename);
+  }
+
+  async exportGltf(filename: string) {
+    if (!this.model) throw new Error('Sin modelo');
+    this.setPresentationMode(false);
+    return this.model.exportAsGLTF(filename);
+  }
+
+  async exportStl(filename: string) {
+    if (!this.model) throw new Error('Sin modelo');
+    this.setPresentationMode(false);
+    return this.model.exportAsSTL(filename);
   }
 
   /**
@@ -1784,9 +3178,12 @@ export class EditorEngine {
     if (mesh) {
       const kind = this.measureKindOf(mesh);
       const q = kind ? pieceQuantities(mesh, kind) : null;
+      const center = mesh.getWorldPosition(new THREE.Vector3());
       seleccion = {
+        id: mesh.userData.elementId as string | undefined,
         nombre: mesh.name,
         tipo: kind ?? 'otro',
+        posicion_mundo_m: { x: r2(center.x), z: r2(center.z) },
         material: this.materialById(mesh.userData.materialId as string)?.nombre ?? null,
         piezas_seleccionadas: this.selection.length,
         ...(q
@@ -1819,6 +3216,7 @@ export class EditorEngine {
         });
 
     return {
+      revision_plano: this.changeRevision,
       unidad: this.measureUnit,
       vista: this.view,
       tipos: { wall: 'muros', door: 'puertas', window: 'ventanas', floor: 'pisos', roof: 'techos' },
@@ -1851,6 +3249,425 @@ export class EditorEngine {
 
   private agentCounter = 0;
 
+  /** Prepara un movimiento en ejes de planta sin modificar el modelo. */
+  prepareAgentMove(direction: AgentMoveDirection, distanceM: number): AgentMoveProposal {
+    if (!this.model) throw new Error('No hay un plano cargado.');
+    if (this.selection.length !== 1) {
+      throw new Error(this.selection.length === 0
+        ? 'Selecciona primero la pieza que quieres mover.'
+        : 'Selecciona una sola pieza para moverla con la IA.');
+    }
+    if (!Number.isFinite(distanceM) || distanceM < 0.01 || distanceM > 50) {
+      throw new Error('La distancia debe estar entre 0.01 y 50 m.');
+    }
+    const vector: Record<AgentMoveDirection, [number, number]> = {
+      derecha: [1, 0], izquierda: [-1, 0], arriba: [0, -1], abajo: [0, 1],
+    };
+    const axis = vector[direction];
+    if (!axis) throw new Error('Dirección inválida para la vista de planta.');
+    const selected = this.selection[0];
+    const kind = this.measureKindOf(selected);
+    if (!kind || !['wall', 'door', 'window', 'floor', 'roof'].includes(kind) || !this.agentHas(selected)) {
+      throw new Error('La pieza seleccionada no se puede mover con el agente.');
+    }
+    const dx = axis[0] * distanceM;
+    const dz = axis[1] * distanceM;
+    const fromWorld = selected.getWorldPosition(new THREE.Vector3());
+    const from = { x: fromWorld.x, z: fromWorld.z };
+    const to = { x: from.x + dx, z: from.z + dz };
+    const hosted = kind === 'wall' && selected.userData.elementId
+      ? [...this.model.getDoors(), ...this.model.getWindows()].filter(
+          (opening) => opening.userData.hostWallId === selected.userData.elementId,
+        )
+      : [];
+    const targets = [selected, ...hosted];
+    let blockingReason: string | undefined;
+    if (targets.some((mesh) => {
+      const box = new THREE.Box3().setFromObject(mesh).translate(new THREE.Vector3(dx, 0, dz));
+      return Math.max(Math.abs(box.min.x), Math.abs(box.max.x), Math.abs(box.min.z), Math.abs(box.max.z)) > 200;
+    })) {
+      blockingReason = 'El movimiento dejaría una pieza fuera del área de trabajo (±200 m).';
+    }
+    if (!blockingReason && (kind === 'door' || kind === 'window')) {
+      blockingReason = this.agentOpeningMoveBlockReason(selected, to);
+    }
+    return {
+      direction, distanceM, dx, dz, from, to, selected, targets,
+      modelRevision: this.modelRevision, changeRevision: this.changeRevision,
+      ...(blockingReason ? { blockingReason } : {}),
+    };
+  }
+
+  /** Impide que una abertura asociada se salga de los límites de su muro. */
+  private agentOpeningMoveBlockReason(opening: THREE.Mesh, to: { x: number; z: number }): string | undefined {
+    const hostId = opening.userData.hostWallId as string | undefined;
+    if (!hostId) return undefined; // Abertura suelta: el usuario ya puede moverla libremente.
+    const wall = this.model?.getWalls().find((candidate) => candidate.userData.elementId === hostId);
+    if (!wall) return 'La abertura ya no tiene su muro asociado. Usa Colocar antes de moverla.';
+    const wallAxis = pieceAxis(wall);
+    const vx = wallAxis.b.x - wallAxis.a.x;
+    const vz = wallAxis.b.z - wallAxis.a.z;
+    const wallLength = Math.hypot(vx, vz);
+    if (wallLength < 0.01) return 'El muro asociado no tiene un eje válido.';
+    const ux = vx / wallLength;
+    const uz = vz / wallLength;
+    const rx = to.x - wallAxis.a.x;
+    const rz = to.z - wallAxis.a.z;
+    const along = rx * ux + rz * uz;
+    const across = Math.abs(rx * -uz + rz * ux);
+    const current = opening.getWorldPosition(new THREE.Vector3());
+    const currentAcross = (current.x - wallAxis.a.x) * -uz + (current.z - wallAxis.a.z) * ux;
+    const nextAcross = rx * -uz + rz * ux;
+    const openingAxis = pieceAxis(opening);
+    const openingLength = Math.hypot(openingAxis.b.x - openingAxis.a.x, openingAxis.b.z - openingAxis.a.z);
+    const wallThickness = pieceQuantities(wall, 'wall').thickness;
+    if (along < openingLength / 2 - 0.05 || along > wallLength - openingLength / 2 + 0.05 ||
+        across > wallThickness / 2 + 0.03 || Math.abs(nextAcross - currentAcross) > 0.03) {
+      return 'La puerta o ventana quedaría fuera de su muro. Muévela a lo largo del muro o ajusta la distancia.';
+    }
+    return undefined;
+  }
+
+  private agentMoveStaleReason(proposal: AgentMoveProposal): string | null {
+    if (this.modelRevision !== proposal.modelRevision || !this.model) return 'El plano cambió. Pide el movimiento de nuevo.';
+    if (this.changeRevision !== proposal.changeRevision) return 'El plano cambió durante la vista previa. Pide el movimiento de nuevo.';
+    if (this.selection.length !== 1 || this.selection[0] !== proposal.selected) {
+      return 'La pieza seleccionada cambió. Pide el movimiento de nuevo.';
+    }
+    if (proposal.targets.some((mesh) => !this.agentHas(mesh))) {
+      return 'Una de las piezas del movimiento ya no está en el plano.';
+    }
+    return null;
+  }
+
+  validateAgentMoveProposal(proposal: AgentMoveProposal): string | null {
+    return this.agentMoveStaleReason(proposal) ?? proposal.blockingReason ?? null;
+  }
+
+  /** Fantasma en la posición final; excluye las piezas movidas al buscar choques. */
+  setAgentMovePreview(proposal: AgentMoveProposal): string[] {
+    const stale = this.agentMoveStaleReason(proposal);
+    if (stale) throw new Error(stale);
+    this.clearAgentPreview();
+    const moving = new Set(proposal.targets);
+    const existing = this.allMeshes()
+      .filter((mesh) => mesh.visible && !moving.has(mesh))
+      .map((mesh) => ({ mesh, box: new THREE.Box3().setFromObject(mesh) }));
+    const warnings: string[] = [];
+    if (this.isOpening(proposal.selected) && !proposal.selected.userData.hostWallId) {
+      warnings.push('La puerta o ventana no está asociada a un muro; seguirá suelta.');
+    }
+    if (['floor', 'roof'].includes(this.measureKindOf(proposal.selected) ?? '')) {
+      warnings.push('Comprueba que la pieza siga alineada con los muros después de moverla.');
+    }
+    proposal.targets.forEach((mesh, index) => {
+      mesh.updateWorldMatrix(true, false);
+      const ghost = new THREE.Mesh(mesh.geometry.clone(), new THREE.MeshBasicMaterial({
+        color: proposal.blockingReason ? 0xef4444 : 0x22d3ee,
+        transparent: true, opacity: 0.45, depthTest: false, depthWrite: false,
+        side: THREE.DoubleSide,
+      }));
+      mesh.matrixWorld.decompose(ghost.position, ghost.quaternion, ghost.scale);
+      ghost.position.x += proposal.dx;
+      ghost.position.z += proposal.dz;
+      ghost.renderOrder = 100;
+      this.agentPreview.add(ghost);
+      const box = new THREE.Box3().setFromObject(ghost);
+      const hostId = mesh.userData.hostWallId as string | undefined;
+      const collided = existing.find(({ mesh: other, box: otherBox }) => {
+        if (hostId && other.userData.elementId === hostId) return false;
+        const intersection = box.clone().intersect(otherBox);
+        if (intersection.isEmpty()) return false;
+        const size = intersection.getSize(new THREE.Vector3());
+        return size.x > 0.04 && size.y > 0.04 && size.z > 0.04;
+      });
+      if (collided) {
+        warnings.push(`${index === 0 ? 'La pieza' : 'Una abertura asociada'} puede solaparse con ${collided.mesh.name}.`);
+        if (!proposal.blockingReason) (ghost.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
+      }
+    });
+    return warnings.slice(0, 8);
+  }
+
+  /** Aplica el vector en coordenadas mundo dentro de la transacción del chat. */
+  applyAgentMove(proposal: AgentMoveProposal) {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
+    const invalid = this.validateAgentMoveProposal(proposal);
+    if (invalid) throw new Error(invalid);
+    const delta = new THREE.Vector3(proposal.dx, 0, proposal.dz);
+    proposal.targets.forEach((mesh) => {
+      const parent = mesh.parent;
+      if (!parent) throw new Error('Una pieza del movimiento ya no está en el plano.');
+      parent.updateWorldMatrix(true, false);
+      const world = mesh.getWorldPosition(new THREE.Vector3());
+      mesh.position.copy(parent.worldToLocal(world.add(delta)));
+      mesh.updateMatrix();
+      mesh.updateWorldMatrix(true, false);
+    });
+    if (this.isOpening(proposal.selected) && proposal.selected.userData.hostWallId) {
+      this.refreshHostedWallForOpening(proposal.selected, false);
+    }
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  /** Dibuja una propuesta fuera del modelo guardable y señala choques con piezas existentes. */
+  setAgentPreview(items: AgentPreviewItem[]): string[] {
+    this.clearAgentPreview();
+    if (!this.model) return ['No hay un plano cargado.'];
+    const existing = this.allMeshes()
+      .filter((mesh) => mesh.visible)
+      .map((mesh) => ({ mesh, box: new THREE.Box3().setFromObject(mesh) }));
+    const warnings: string[] = [];
+
+    items.forEach((item, index) => {
+      const values = [item.x1, item.z1, item.x2, item.z2];
+      if (values.some((value) => !Number.isFinite(value))) {
+        warnings.push(`La pieza ${index + 1} tiene coordenadas inválidas.`);
+        return;
+      }
+      const width = Math.abs(item.x2 - item.x1);
+      const depth = Math.abs(item.z2 - item.z1);
+      let geometry: THREE.BufferGeometry;
+      let y = 0;
+      let angle = 0;
+      if (item.kind === 'segment') {
+        const type = item.type ?? 'wall';
+        const dims = this.elementDims(type);
+        const height = item.height ?? dims.height;
+        const thickness = item.thickness ?? dims.thickness;
+        const length = Math.hypot(width, depth);
+        geometry = new THREE.BoxGeometry(thickness, height, length);
+        y = dims.sill + height / 2;
+        angle = Math.atan2(item.x2 - item.x1, item.z2 - item.z1);
+      } else {
+        const roof = item.type === 'roof';
+        const thickness = roof ? ROOF_THICKNESS_M : SLAB_THICKNESS_M;
+        if (roof && item.roofKind === 'dos_aguas') {
+          const alongX = width >= depth;
+          geometry = buildGableRoofGeometry(alongX ? width : depth, alongX ? depth : width);
+          if (!alongX) geometry.rotateY(Math.PI / 2);
+        } else {
+          const overhang = roof ? ROOF_OVERHANG_M : 0;
+          geometry = new THREE.BoxGeometry(width + 2 * overhang, thickness, depth + 2 * overhang);
+          y = roof ? WALL_HEIGHT_M + thickness / 2 : -thickness / 2;
+        }
+      }
+      const ghost = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({
+        color: 0x22d3ee, transparent: true, opacity: 0.4,
+        depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+      }));
+      ghost.position.set((item.x1 + item.x2) / 2, y, (item.z1 + item.z2) / 2);
+      ghost.rotation.y = angle;
+      ghost.renderOrder = 100;
+      this.agentPreview.add(ghost);
+
+      const box = new THREE.Box3().setFromObject(ghost);
+      const collided = existing.find(({ box: other }) => {
+        const intersection = box.clone().intersect(other);
+        if (intersection.isEmpty()) return false;
+        const size = intersection.getSize(new THREE.Vector3());
+        return size.x > 0.04 && size.y > 0.04 && size.z > 0.04;
+      });
+      if (collided) {
+        warnings.push(`La pieza ${index + 1} puede solaparse con ${collided.mesh.name}.`);
+        (ghost.material as THREE.MeshBasicMaterial).color.setHex(0xf59e0b);
+      }
+    });
+    return warnings.slice(0, 8);
+  }
+
+  /** Copia translúcida de una pieza (en su posición mundial actual). */
+  private agentGhostOf(mesh: THREE.Mesh, hex: number, opacity = 0.45, grow = 1.0): THREE.Mesh {
+    mesh.updateWorldMatrix(true, false);
+    const ghost = new THREE.Mesh(mesh.geometry.clone(), new THREE.MeshBasicMaterial({
+      color: hex, transparent: true, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+    }));
+    mesh.matrixWorld.decompose(ghost.position, ghost.quaternion, ghost.scale);
+    if (grow !== 1) ghost.scale.multiplyScalar(grow);
+    ghost.renderOrder = 100;
+    return ghost;
+  }
+
+  /**
+   * Vista previa de acciones sobre piezas existentes (se suma a la de
+   * setAgentPreview, no la borra). Devuelve avisos para el chat.
+   */
+  addAgentPreviewExtras(extras: AgentPreviewExtra[]): string[] {
+    if (!this.model) return ['No hay un plano cargado.'];
+    const warnings: string[] = [];
+    const byId = new Map(this.allMeshes().map((m) => [m.uuid, m]));
+    extras.forEach((extra) => {
+      if (extra.kind === 'highlight') {
+        extra.meshIds.forEach((id) => {
+          const mesh = byId.get(id);
+          if (mesh) this.agentPreview.add(this.agentGhostOf(mesh, extra.hex, 0.55, 1.01));
+        });
+        return;
+      }
+      // Simulación: aplicar dentro de una transacción de prueba, copiar el
+      // resultado como fantasma y revertir sin tocar el historial.
+      const selection = [...this.selection];
+      const revision = this.changeRevision;
+      const before = this.selection[0];
+      try {
+        this.beginAgentTransaction();
+        if (extra.op === 'resize') this.agentResize(extra.dims, extra.crecer ?? 'ambos');
+        else this.agentRotate(extra.grados, extra.pivote ?? 'centro');
+        const affected = before && this.measureKindOf(before) === 'wall' && extra.op === 'rotate'
+          ? [before, ...this.agentHostedOpenings(before)]
+          : before ? [before] : [];
+        affected.forEach((m) => this.agentPreview.add(this.agentGhostOf(m, 0x22d3ee, 0.45)));
+      } catch (err) {
+        warnings.push(err instanceof Error ? err.message : String(err));
+      } finally {
+        const transaction = this.agentTransaction;
+        this.agentTransaction = null;
+        if (transaction && this.sceneChanged(transaction.before)) this.restore(transaction.before);
+        this.changeRevision = revision;
+        if (selection.length) this.setSelection(selection.filter((m) => this.agentHas(m)));
+      }
+      // La pieza actual en rojo tenue para comparar con el resultado.
+      if (before) this.agentPreview.add(this.agentGhostOf(before, 0xf59e0b, 0.25, 1.005));
+    });
+    return warnings.slice(0, 8);
+  }
+
+  /**
+   * Revisa lo dibujado (o todo el plano si no se pasan ids) y devuelve
+   * problemas concretos para que el agente se corrija.
+   */
+  inspectPlan(meshIds?: string[]): PlanIssue[] {
+    if (!this.model) return [];
+    const plan = this.getFloorPlan();
+    const walls = plan.items.filter((it) => it.kind === 'wall');
+    const openings = plan.items.filter((it) => it.kind !== 'wall');
+    const focus = meshIds ? new Set(meshIds) : null;
+    const names = new Map(this.allMeshes().map((m) => [m.uuid, m.name]));
+    const nameOf = (id: string) => names.get(id) ?? id;
+    const issues: PlanIssue[] = [];
+
+    type P = [number, number];
+    const axisOf = (poly: [number, number][]) => {
+      const e1 = Math.hypot(poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]);
+      const e3 = Math.hypot(poly[3][0] - poly[0][0], poly[3][1] - poly[0][1]);
+      const mid = (p: P, q: P): P => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];
+      return e1 >= e3
+        ? { a: mid(poly[0], poly[3]), b: mid(poly[1], poly[2]), t: e3 }
+        : { a: mid(poly[0], poly[1]), b: mid(poly[3], poly[2]), t: e1 };
+    };
+    const segDist = (p: P, a: P, b: P) => {
+      const dx = b[0] - a[0];
+      const dz = b[1] - a[1];
+      const l2 = dx * dx + dz * dz || 1e-9;
+      const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / l2));
+      return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dz));
+    };
+    const center = (poly: [number, number][]): P => [
+      poly.reduce((s, p) => s + p[0], 0) / poly.length,
+      poly.reduce((s, p) => s + p[1], 0) / poly.length,
+    ];
+    const wallAxes = walls.map((w) => ({ w, ...axisOf(w.poly) }));
+
+    // 1) Puertas/ventanas fuera de muro.
+    openings.forEach((o) => {
+      if (focus && !focus.has(o.id)) return;
+      const c = center(o.poly);
+      let best = Infinity;
+      let bestT = 0.15;
+      wallAxes.forEach(({ a, b, t }) => {
+        const d = segDist(c, a, b);
+        if (d < best) {
+          best = d;
+          bestT = t;
+        }
+      });
+      if (!wallAxes.length || best > Math.max(0.05, bestT / 2 + 0.03)) {
+        const cm = Number.isFinite(best) ? Math.round(best * 100) : null;
+        issues.push({
+          tipo: 'abertura_fuera_de_muro',
+          pieza: nameOf(o.id),
+          detalle: cm === null ? 'No hay muros en el plano.' : `Su centro está a ${cm} cm del muro más cercano.`,
+          sugerencia: 'Usa ajustar_al_muro con alcance "seleccion" después de seleccionarla.',
+        });
+      }
+    });
+
+    // 2) Aberturas superpuestas.
+    for (let i = 0; i < openings.length; i++) {
+      for (let j = i + 1; j < openings.length; j++) {
+        const a = openings[i];
+        const b = openings[j];
+        if (focus && !focus.has(a.id) && !focus.has(b.id)) continue;
+        const ca = center(a.poly);
+        const cb = center(b.poly);
+        if (Math.hypot(ca[0] - cb[0], ca[1] - cb[1]) < Math.min(a.length, b.length) / 2) {
+          issues.push({
+            tipo: 'aberturas_superpuestas',
+            pieza: `${nameOf(a.id)} / ${nameOf(b.id)}`,
+            detalle: 'Dos aberturas ocupan casi el mismo lugar.',
+            sugerencia: 'Elimina una o muévela a otro tramo del muro.',
+          });
+        }
+      }
+    }
+
+    // 3) Muros nuevos: sueltos (extremo lejos de otros muros) o cruzados.
+    const onFocus = wallAxes.filter(({ w }) => !focus || focus.has(w.id));
+    onFocus.forEach(({ w, a, b, t }) => {
+      const others = wallAxes.filter((o) => o.w.id !== w.id);
+      if (!others.length) return;
+      const tol = Math.max(0.1, t);
+      const loose = [a, b].filter((p) => others.every((o) => segDist(p, o.a, o.b) > tol));
+      if (loose.length === 2) {
+        issues.push({
+          tipo: 'muro_suelto',
+          pieza: nameOf(w.id),
+          detalle: 'Ninguno de sus extremos toca otro muro.',
+          sugerencia: 'Muévelo o alárgalo hasta tocar el muro vecino (si fue intencional, ignóralo).',
+        });
+      }
+      // Cruce: los ejes se cortan lejos de los extremos de ambos.
+      others.forEach((o) => {
+        if (focus && focus.has(o.w.id) && o.w.id < w.id) return; // evitar duplicados
+        const d1x = b[0] - a[0];
+        const d1z = b[1] - a[1];
+        const d2x = o.b[0] - o.a[0];
+        const d2z = o.b[1] - o.a[1];
+        const den = d1x * d2z - d1z * d2x;
+        if (Math.abs(den) < 1e-9) return;
+        const s = ((o.a[0] - a[0]) * d2z - (o.a[1] - a[1]) * d2x) / den;
+        const u = ((o.a[0] - a[0]) * d1z - (o.a[1] - a[1]) * d1x) / den;
+        const l1 = Math.hypot(d1x, d1z) || 1;
+        const l2 = Math.hypot(d2x, d2z) || 1;
+        const m1 = (t + 0.05) / l1;
+        const m2 = (o.t + 0.05) / l2;
+        if (s > m1 && s < 1 - m1 && u > m2 && u < 1 - m2) {
+          issues.push({
+            tipo: 'muros_cruzados',
+            pieza: `${nameOf(w.id)} / ${nameOf(o.w.id)}`,
+            detalle: 'Los muros se atraviesan en medio de ambos.',
+            sugerencia: 'Acorta uno de los dos hasta el punto de cruce o elimínalo.',
+          });
+        }
+      });
+    });
+    return issues.slice(0, 12);
+  }
+
+  clearAgentPreview() {
+    this.agentPreview.children.slice().forEach((child) => {
+      this.agentPreview.remove(child);
+      if (child instanceof THREE.Mesh) {
+        child.geometry.dispose();
+        if (Array.isArray(child.material)) child.material.forEach((material) => material.dispose());
+        else child.material.dispose();
+      }
+    });
+  }
+
   /** Muro/puerta/ventana de (x1,z1) a (x2,z2). Devuelve la malla creada. */
   agentCreateSegment(
     type: ElementType,
@@ -1860,6 +3677,7 @@ export class EditorEngine {
     z2: number,
     opts: { thickness?: number; height?: number } = {},
   ): THREE.Mesh | null {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return null;
     const dims = this.elementDims(type);
     const parent = this.model.getObject3D();
@@ -1875,6 +3693,7 @@ export class EditorEngine {
       dims.sill,
     );
     if (!mesh) return null;
+    mesh.userData.source = 'ia'; // el plano trabajado lo marca como nuevo (IA)
     mesh.name = `${mesh.name}_ia${++this.agentCounter}`; // nombres únicos en lote
     this.initMesh(mesh);
     return mesh;
@@ -1889,6 +3708,7 @@ export class EditorEngine {
     z2: number,
     roofKind: RoofDrawKind = 'plano',
   ): THREE.Mesh | null {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return null;
     const parent = this.model.getObject3D();
     parent.updateMatrixWorld(true);
@@ -1935,10 +3755,12 @@ export class EditorEngine {
 
   /** Asigna material; devuelve los anteriores para poder deshacer. */
   agentSetMaterial(meshes: THREE.Mesh[], materialId: string): Map<THREE.Mesh, string> {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     const previous = new Map<THREE.Mesh, string>();
     meshes.forEach((m) => {
       previous.set(m, (m.userData.materialId as string) ?? '');
       m.userData.materialId = materialId;
+      m.userData.materialExplicit = Boolean(materialId);
     });
     this.refreshAppearance();
     this.emitSelection();
@@ -1953,22 +3775,368 @@ export class EditorEngine {
 
   /** Elimina piezas (las que estaban seleccionadas se deseleccionan). */
   agentRemove(meshes: THREE.Mesh[]) {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
     if (!this.model) return;
     const set = new Set(meshes);
     if (this.selection.some((m) => set.has(m))) {
       this.setSelection(this.selection.filter((m) => !set.has(m)));
     }
-    meshes.forEach((m) => this.model?.removeElement(m));
+    meshes.forEach((m) => this.model?.removeElement(m, Boolean(this.agentTransaction)));
     this.emitSelection();
+  }
+
+  /** Medidas reales (m) de una pieza: largo, alto y grosor. */
+  private agentPieceDims(mesh: THREE.Mesh): { largo: number; alto: number; grosor: number } {
+    if (this.isOpening(mesh)) {
+      const d = this.openingDims(mesh);
+      return { largo: d.ancho, alto: d.alto, grosor: d.espesor };
+    }
+    const size = this.localSize(mesh);
+    const s = mesh.scale;
+    const len = this.lengthAxis(mesh);
+    const other = len === 'x' ? 'z' : 'x';
+    return {
+      largo: Math.abs(size[len] * s[len]),
+      alto: Math.abs(size.y * s.y),
+      grosor: Math.abs(size[other] * s[other]),
+    };
+  }
+
+  /** La única pieza seleccionada que el agente puede transformar. */
+  private agentSingleSelected(action: string): { mesh: THREE.Mesh; kind: MeasureKind } {
+    if (!this.agentTransaction) throw new Error('La acción del agente ya no está activa.');
+    if (this.selection.length !== 1) {
+      throw new Error(this.selection.length === 0
+        ? `Selecciona primero la pieza que quieres ${action}.`
+        : `Selecciona una sola pieza para ${action}la con la IA.`);
+    }
+    const mesh = this.selection[0];
+    const kind = this.measureKindOf(mesh);
+    if (!kind || !['wall', 'door', 'window', 'floor'].includes(kind) || !this.agentHas(mesh)) {
+      throw new Error(`La pieza seleccionada no se puede ${action} con el agente.`);
+    }
+    return { mesh, kind };
+  }
+
+  /** Puertas y ventanas alojadas en un muro (se mueven/giran con él). */
+  private agentHostedOpenings(wall: THREE.Mesh): THREE.Mesh[] {
+    if (!this.model || !wall.userData.elementId) return [];
+    return [...this.model.getDoors(), ...this.model.getWindows()].filter(
+      (opening) => opening.userData.hostWallId === wall.userData.elementId,
+    );
+  }
+
+  private agentTranslateWorld(meshes: THREE.Mesh[], delta: THREE.Vector3) {
+    meshes.forEach((mesh) => {
+      const parent = mesh.parent;
+      if (!parent) return;
+      parent.updateWorldMatrix(true, false);
+      const world = mesh.getWorldPosition(new THREE.Vector3()).add(delta);
+      mesh.position.copy(parent.worldToLocal(world));
+      mesh.updateMatrix();
+      mesh.updateWorldMatrix(true, false);
+    });
+  }
+
+  private agentAfterTransform(mesh: THREE.Mesh) {
+    if (this.isOpening(mesh)) this.refreshHostedWallForOpening(mesh, false);
+    else if (this.measureKindOf(mesh) === 'wall') this.refreshWallOpeningGeometry(mesh, false);
+    this.syncPivot();
+    this.refreshHandles();
+    this.emitSelection();
+    if (this.measureKinds.size > 0) this.refreshMeasures();
+  }
+
+  /**
+   * Redimensiona la pieza seleccionada (metros). `crecer` indica hacia dónde
+   * crece/encoge el largo en la vista Planta; el extremo opuesto queda fijo.
+   */
+  agentResize(
+    dims: { largo?: number; alto?: number; grosor?: number },
+    crecer: 'ambos' | 'derecha' | 'izquierda' | 'arriba' | 'abajo' = 'ambos',
+  ) {
+    const { mesh, kind } = this.agentSingleSelected('redimensionar');
+    const before = this.agentPieceDims(mesh);
+    const check = (v: number | undefined, min: number, max: number, name: string) => {
+      if (v === undefined) return;
+      if (!Number.isFinite(v) || v < min || v > max) throw new Error(`El ${name} debe estar entre ${min} y ${max} m.`);
+    };
+    check(dims.largo, 0.1, 50, 'largo');
+    check(dims.alto, 0.1, 10, 'alto');
+    check(dims.grosor, 0.02, 1.5, 'grosor');
+    if (dims.largo === undefined && dims.alto === undefined && dims.grosor === undefined) {
+      throw new Error('Indica al menos una medida: largo, alto o grosor.');
+    }
+    if ((kind === 'door' || kind === 'window') && dims.largo !== undefined && mesh.userData.hostWallId) {
+      const host = this.model?.getWalls().find((w) => w.userData.elementId === mesh.userData.hostWallId);
+      if (host && dims.largo > this.agentPieceDims(host).largo) {
+        throw new Error('La abertura no puede ser más larga que su muro.');
+      }
+    }
+
+    // Punto que debe quedar fijo (centro o el extremo opuesto al crecimiento).
+    const fixedPoint = (m: THREE.Mesh) => {
+      const { a, b } = pieceAxis(m);
+      if (crecer === 'ambos') return a.clone().add(b).multiplyScalar(0.5);
+      const pick = crecer === 'derecha' ? (a.x <= b.x ? a : b)
+        : crecer === 'izquierda' ? (a.x >= b.x ? a : b)
+          : crecer === 'abajo' ? (a.z <= b.z ? a : b)
+            : (a.z >= b.z ? a : b);
+      return pick.clone();
+    };
+    const fixedBefore = fixedPoint(mesh);
+
+    if (dims.largo !== undefined) this.applyDimension(mesh, 'length', dims.largo);
+    if (dims.alto !== undefined) this.applyDimension(mesh, 'height', dims.alto);
+    if (dims.grosor !== undefined) this.applyDimension(mesh, kind === 'floor' ? 'width' : 'thickness', dims.grosor);
+
+    mesh.updateWorldMatrix(true, false);
+    const delta = fixedBefore.sub(fixedPoint(mesh)).setY(0);
+    if (delta.lengthSq() > 1e-8) this.agentTranslateWorld([mesh], delta);
+    this.agentAfterTransform(mesh);
+    return { pieza: mesh.name, tipo: kind, antes: before, despues: this.agentPieceDims(mesh) };
+  }
+
+  /**
+   * Gira la pieza seleccionada en la vista Planta. Grados positivos = sentido
+   * antihorario visto desde arriba. Un muro gira junto con sus puertas/ventanas.
+   */
+  agentRotate(grados: number, pivote: 'centro' | 'extremo' = 'centro') {
+    const { mesh, kind } = this.agentSingleSelected('girar');
+    if (!Number.isFinite(grados) || Math.abs(grados) < 0.1 || Math.abs(grados) > 360) {
+      throw new Error('Indica un ángulo entre 0.1 y 360 grados.');
+    }
+    const { a, b } = pieceAxis(mesh);
+    const pivot = pivote === 'extremo'
+      ? (a.x < b.x - 1e-6 || (Math.abs(a.x - b.x) <= 1e-6 && a.z <= b.z) ? a : b).clone()
+      : a.clone().add(b).multiplyScalar(0.5);
+    pivot.y = 0;
+    const rad = THREE.MathUtils.degToRad(grados);
+    const up = new THREE.Vector3(0, 1, 0);
+    const targets = kind === 'wall' ? [mesh, ...this.agentHostedOpenings(mesh)] : [mesh];
+    targets.forEach((m) => {
+      const parent = m.parent;
+      if (!parent) return;
+      parent.updateWorldMatrix(true, false);
+      const world = m.getWorldPosition(new THREE.Vector3());
+      const offset = world.clone().sub(pivot);
+      offset.applyAxisAngle(up, rad);
+      m.position.copy(parent.worldToLocal(pivot.clone().add(offset).setY(world.y)));
+      m.rotateOnWorldAxis(up, rad);
+      m.updateMatrix();
+      m.updateWorldMatrix(true, false);
+    });
+    this.agentAfterTransform(mesh);
+    return { pieza: mesh.name, tipo: kind, grados, pivote, giradas: targets.length };
   }
 
   agentSelect(meshes: THREE.Mesh[]) {
     this.setSelection(meshes.filter((m) => this.selectableMeshes().includes(m)));
   }
 
+  /**
+   * "Créame una pared/puerta/ventana/cuarto" sin coordenadas: el editor elige
+   * dónde. Puerta/ventana con un muro seleccionado → centrada en ese muro.
+   * Si no, afuera del modelo, a 1 m del lado pedido, sin chocar con nada.
+   */
+  agentQuickSpot(opts: {
+    tipo: 'muro' | 'puerta' | 'ventana' | 'ambiente';
+    cantidad?: number;
+    largo?: number;
+    fondo?: number;
+    lado?: 'derecha' | 'izquierda' | 'arriba' | 'abajo';
+  }): { items: AgentPreviewItem[]; descripcion: string } {
+    const tipo = opts.tipo;
+    const cantidad = Math.max(1, Math.min(10, Math.round(opts.cantidad ?? 1)));
+    const defLargo = tipo === 'muro' ? 3 : tipo === 'puerta' ? 0.9 : tipo === 'ventana' ? 1.2 : 3;
+    const largo = THREE.MathUtils.clamp(opts.largo ?? defLargo, 0.3, 50);
+    const fondo = THREE.MathUtils.clamp(opts.fondo ?? 4, 0.5, 50);
+    const lado = opts.lado ?? 'derecha';
+    const segType: 'wall' | 'door' | 'window' = tipo === 'puerta' ? 'door' : tipo === 'ventana' ? 'window' : 'wall';
+    const r2 = (n: number) => Math.round(n * 100) / 100;
+
+    // 1) Puerta/ventana en el muro seleccionado (repartidas a lo largo del muro).
+    const sel = this.selection.length === 1 ? this.selection[0] : null;
+    if ((tipo === 'puerta' || tipo === 'ventana') && sel && this.measureKindOf(sel) === 'wall') {
+      const { a, b } = pieceAxis(sel);
+      const dir = b.clone().sub(a).setY(0);
+      const wallLen = dir.length();
+      dir.normalize();
+      const ancho = Math.min(largo, Math.max(0.3, wallLen / cantidad - 0.2));
+      const items: AgentPreviewItem[] = [];
+      for (let i = 0; i < cantidad; i++) {
+        const c = a.clone().add(dir.clone().multiplyScalar((wallLen * (i + 1)) / (cantidad + 1)));
+        const p1 = c.clone().add(dir.clone().multiplyScalar(-ancho / 2));
+        const p2 = c.clone().add(dir.clone().multiplyScalar(ancho / 2));
+        items.push({ kind: 'segment', type: segType, x1: r2(p1.x), z1: r2(p1.z), x2: r2(p2.x), z2: r2(p2.z) });
+      }
+      return { items, descripcion: `sobre el muro seleccionado (${sel.name})` };
+    }
+
+    // 2) Afuera del modelo.
+    const bounds = new THREE.Box3();
+    const boxes: THREE.Box3[] = [];
+    this.allMeshes().forEach((m) => {
+      if (!m.visible) return;
+      const box = new THREE.Box3().setFromObject(m);
+      if (box.isEmpty()) return;
+      boxes.push(box);
+      bounds.union(box);
+    });
+    const empty = bounds.isEmpty();
+    const minX = empty ? 0 : bounds.min.x;
+    const maxX = empty ? 0 : bounds.max.x;
+    const minZ = empty ? 0 : bounds.min.z;
+    const maxZ = empty ? 0 : bounds.max.z;
+    const gap = empty ? 0 : 1;
+    // Eje "a lo largo" del lado y dirección "hacia afuera".
+    const vertical = lado === 'derecha' || lado === 'izquierda'; // pieza a lo largo de z
+    const out = lado === 'derecha' || lado === 'abajo' ? 1 : -1;
+    const startAlong = empty ? -((cantidad * (largo + 0.5)) / 2) : vertical ? minZ : minX;
+    let offset = empty ? 0 : (vertical ? (out > 0 ? maxX : minX) : (out > 0 ? maxZ : minZ)) + out * gap;
+
+    const build = (off: number): AgentPreviewItem[] => {
+      const items: AgentPreviewItem[] = [];
+      for (let i = 0; i < cantidad; i++) {
+        const s = startAlong + i * (largo + 0.5);
+        const e = s + largo;
+        if (tipo === 'ambiente') {
+          // Rectángulo: `largo` a lo largo del lado y `fondo` hacia afuera.
+          const o1 = off;
+          const o2 = off + out * fondo;
+          const [x1, x2, z1, z2] = vertical
+            ? [Math.min(o1, o2), Math.max(o1, o2), s, e]
+            : [s, e, Math.min(o1, o2), Math.max(o1, o2)];
+          items.push(
+            { kind: 'segment', type: 'wall', x1, z1, x2, z2: z1, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1: x2, z1, x2, z2, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1: x2, z1: z2, x2: x1, z2, thickness: 0.15 },
+            { kind: 'segment', type: 'wall', x1, z1: z2, x2: x1, z2: z1, thickness: 0.15 },
+          );
+        } else {
+          items.push(vertical
+            ? { kind: 'segment', type: segType, x1: off, z1: s, x2: off, z2: e }
+            : { kind: 'segment', type: segType, x1: s, z1: off, x2: e, z2: off });
+        }
+      }
+      return items.map((it) => (it.kind === 'segment'
+        ? { ...it, x1: r2(it.x1), z1: r2(it.z1), x2: r2(it.x2), z2: r2(it.z2) } : it));
+    };
+
+    // Correr hacia afuera de a 0.5 m hasta que no choque con nada.
+    const collides = (items: AgentPreviewItem[]) => items.some((it) => {
+      const pad = 0.12;
+      const box = new THREE.Box3(
+        new THREE.Vector3(Math.min(it.x1, it.x2) - pad, 0.05, Math.min(it.z1, it.z2) - pad),
+        new THREE.Vector3(Math.max(it.x1, it.x2) + pad, 2.5, Math.max(it.z1, it.z2) + pad),
+      );
+      return boxes.some((b) => b.intersectsBox(box));
+    });
+    let items = build(offset);
+    for (let step = 0; step < 60 && collides(items); step++) {
+      offset += out * 0.5;
+      items = build(offset);
+    }
+    const ladoTxt = { derecha: 'a la derecha', izquierda: 'a la izquierda', arriba: 'arriba (norte)', abajo: 'abajo (sur)' }[lado];
+    const descripcion = empty
+      ? 'en el centro del plano (estaba vacío)'
+      : `afuera del modelo, ${ladoTxt}, en ${vertical ? 'x' : 'z'} = ${r2(offset)} m`;
+    return { items, descripcion };
+  }
+
+  /** uuid de las piezas seleccionadas (los mismos ids que getFloorPlan). */
+  getSelectionIds(): string[] {
+    return this.selection.map((m) => m.uuid);
+  }
+
   /** ¿La malla sigue en el modelo? (para deshacer con seguridad) */
   agentHas(mesh: THREE.Mesh): boolean {
     return this.allMeshes().includes(mesh);
+  }
+
+  /**
+   * Planta 2D del modelo actual (vista desde arriba, en metros): huella de
+   * cada muro, puerta y ventana visible. x = mundo X, y = mundo Z.
+   */
+  getFloorPlan(): FloorPlan2D {
+    const items: FloorPlanItem[] = [];
+    const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+    if (!this.model) return { items, bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 } };
+    this.model.getObject3D().updateMatrixWorld(true);
+    const v = new THREE.Vector3();
+    for (const mesh of this.allMeshes()) {
+      const kind = this.measureKindOf(mesh);
+      if (kind !== 'wall' && kind !== 'door' && kind !== 'window') continue;
+      if (!mesh.visible) continue;
+      const b = this.localBox(mesh);
+      if (b.isEmpty()) continue;
+      const poly = (
+        [
+          [b.min.x, b.min.z],
+          [b.max.x, b.min.z],
+          [b.max.x, b.max.z],
+          [b.min.x, b.max.z],
+        ] as const
+      ).map(([x, z]) => {
+        v.set(x, b.min.y, z).applyMatrix4(mesh.matrixWorld);
+        bounds.minX = Math.min(bounds.minX, v.x);
+        bounds.maxX = Math.max(bounds.maxX, v.x);
+        bounds.minY = Math.min(bounds.minY, v.z);
+        bounds.maxY = Math.max(bounds.maxY, v.z);
+        return [v.x, v.z] as [number, number];
+      });
+      const e1 = Math.hypot(poly[1][0] - poly[0][0], poly[1][1] - poly[0][1]);
+      const e2 = Math.hypot(poly[3][0] - poly[0][0], poly[3][1] - poly[0][1]);
+      const source = mesh.userData.source as FloorPlanItem['source'];
+      items.push({
+        id: mesh.uuid,
+        kind,
+        poly,
+        footprint: kind === 'wall' ? this.topFootprintPath(mesh) : undefined,
+        length: Math.max(e1, e2),
+        thickness: Math.min(e1, e2),
+        source: source === 'manual' || source === 'ia' ? source : 'plano',
+      });
+    }
+    if (!items.length) return { items, bounds: { minX: 0, minY: 0, maxX: 1, maxY: 1 } };
+    return { items, bounds };
+  }
+
+  /**
+   * Huella real de una pieza vista desde arriba: los triángulos de sus caras
+   * superiores proyectados en X/Z, como un path SVG. A diferencia de la caja
+   * envolvente, respeta muros en L, tramos unidos en una sola malla y vanos.
+   */
+  private topFootprintPath(mesh: THREE.Mesh): string | undefined {
+    const geo = mesh.geometry as THREE.BufferGeometry;
+    const pos = geo.getAttribute('position') as THREE.BufferAttribute | undefined;
+    if (!pos) return undefined;
+    const index = geo.getIndex();
+    const count = index ? index.count : pos.count;
+    if (count > 60000) return undefined; // malla demasiado pesada: usar la caja
+    const m = mesh.matrixWorld;
+    const a = new THREE.Vector3();
+    const b = new THREE.Vector3();
+    const c = new THREE.Vector3();
+    const ab = new THREE.Vector3();
+    const ac = new THREE.Vector3();
+    const r = (n: number) => Math.round(n * 1000) / 1000;
+    const parts: string[] = [];
+    for (let i = 0; i + 2 < count; i += 3) {
+      const ia = index ? index.getX(i) : i;
+      const ib = index ? index.getX(i + 1) : i + 1;
+      const ic = index ? index.getX(i + 2) : i + 2;
+      a.fromBufferAttribute(pos, ia).applyMatrix4(m);
+      b.fromBufferAttribute(pos, ib).applyMatrix4(m);
+      c.fromBufferAttribute(pos, ic).applyMatrix4(m);
+      ab.subVectors(b, a);
+      ac.subVectors(c, a);
+      const n = ab.cross(ac);
+      const area = n.length();
+      if (area < 1e-9 || n.y / area < 0.7) continue; // solo caras que miran hacia arriba
+      parts.push(`M${r(a.x)} ${r(a.z)}L${r(b.x)} ${r(b.z)}L${r(c.x)} ${r(c.z)}Z`);
+    }
+    return parts.length ? parts.join('') : undefined;
   }
 
   getSummary(): ModelSummary | null {
@@ -2004,6 +4172,7 @@ export class EditorEngine {
     const obj = this.model.getObject3D();
     if (!obj) return;
     obj.position[axis] = value;
+    this.changeRevision++;
   }
 
   // ------------------------------------------------------------------
@@ -2073,6 +4242,11 @@ export class EditorEngine {
       labelsDisplay: this.labelRenderer.domElement.style.display,
       originals: new Map(),
       looks: new Map(),
+      effects: new Map(),
+      environment: this.scene.environment,
+      envTexture: this.createEnvironment(),
+      reducedMotion,
+      startTime: performance.now(),
       onStart: () => {
         window.clearTimeout(state.resumeTimer);
         this.orbit.autoRotate = false;
@@ -2099,6 +4273,9 @@ export class EditorEngine {
     this.grid.visible = false;
     this.scene.background = backgroundTexture;
     this.scene.fog = makePresentationFog(radius);
+    // Entorno para que metales, vidrios y barnices reflejen.
+    this.scene.environment = state.envTexture;
+    this.scene.environmentIntensity = 0.6;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMappingExposure = 1.15;
@@ -2165,6 +4342,11 @@ export class EditorEngine {
     this.grid.visible = state.gridVisible;
     this.scene.background = state.background;
     this.scene.fog = state.fog;
+    this.scene.environment = state.environment;
+    this.scene.environmentIntensity = 1;
+    this.scene.environmentRotation.set(0, 0, 0);
+    state.envTexture.dispose();
+    state.effects.clear();
     state.backgroundTexture.dispose();
     this.renderer.shadowMap.enabled = state.shadows;
     this.renderer.toneMappingExposure = state.exposure;
@@ -2211,6 +4393,7 @@ export class EditorEngine {
     if (stale && stale !== current) this.disposeEditorMaterial(stale);
 
     state.originals.set(mesh, mesh.material);
+    state.effects.delete(mesh);
     const look = this.buildPresentationLook(mesh, current as THREE.MeshStandardMaterial);
     mesh.material = look;
     state.looks.set(mesh, look);
@@ -2223,6 +4406,25 @@ export class EditorEngine {
 
   private buildPresentationLook(mesh: THREE.Mesh, current: THREE.MeshStandardMaterial): THREE.Material {
     const kind = (mesh.userData.kind as string) ?? this.kindOf(mesh);
+
+    // Material de la pieza (elegido o por defecto): patrón realista + efecto.
+    // Sin material del catálogo (ids viejos): se usa el de por defecto de su tipo.
+    const assigned = this.materialById(mesh.userData.materialId) ?? this.defaultMaterialFor(kind);
+    if (assigned) {
+      // Animado sigue el modo: ON → patrón con relieve; OFF → colores lisos del editor.
+      const maps = this.showTextures ? this.texturedMaps(mesh, assigned) : null;
+      const color = this.showTextures ? this.patternColor(mesh, assigned) : this.offColor(mesh);
+      const effect = createMaterialEffect(assigned, maps, color);
+      const standard = effect.material as THREE.MeshStandardMaterial;
+      if (!maps && standard.isMeshStandardMaterial && !standard.transparent && standard.metalness < 0.5) {
+        // Liso: rugosidad media y algo de reflejo para que no quede plano ni quemado.
+        standard.roughness = 0.75;
+        standard.envMapIntensity = 0.5;
+      }
+      effect.material.userData.ownMap = Boolean(maps);
+      if (effect.update) this.presentation?.effects.set(mesh, effect.update);
+      return effect.material;
+    }
 
     // Ventanas: vidrio que brilla en cian.
     if (kind === 'window') {
@@ -2244,7 +4446,7 @@ export class EditorEngine {
     const look = (current.isMeshStandardMaterial ? current.clone() : new THREE.MeshStandardMaterial()) as THREE.MeshStandardMaterial;
     const preset = PRESENTATION_LOOK[kind];
     // Sin textura propia: textura temporal según el tipo de pieza.
-    if (!current.map && preset) {
+    if (!current.map && preset && this.showTextures) {
       look.color.set(preset.tint);
       const map = preset.url ? this.textureCopy(preset.url) : null;
       if (map) {
@@ -2271,9 +4473,37 @@ export class EditorEngine {
     return look;
   }
 
+  /** Entorno de reflejos (sala neutra de three) para el modo Animado. */
+  private createEnvironment(): THREE.Texture {
+    const pmrem = new THREE.PMREMGenerator(this.renderer);
+    const room = new RoomEnvironment();
+    const texture = pmrem.fromScene(room, 0.04).texture;
+    room.traverse((child) => {
+      const mesh = child as THREE.Mesh;
+      mesh.geometry?.dispose();
+      (mesh.material as THREE.Material | undefined)?.dispose?.();
+    });
+    pmrem.dispose();
+    return texture;
+  }
+
+  /** Animaciones de los materiales en modo Animado (cada cuadro). */
+  private updatePresentationEffects() {
+    const state = this.presentation;
+    if (!state || state.reducedMotion) return;
+    const t = (performance.now() - state.startTime) / 1000;
+    // Reflejos que recorren las piezas (metal, vidrio, barniz).
+    this.scene.environmentRotation.y = t * 0.25;
+    state.effects.forEach((update) => update(t));
+  }
+
   private disposeLook(material: THREE.Material) {
     const standard = material as THREE.MeshStandardMaterial;
-    if (material.userData.ownMap && standard.map) standard.map.dispose();
+    if (material.userData.ownMap) {
+      standard.map?.dispose();
+      standard.normalMap?.dispose();
+      standard.roughnessMap?.dispose();
+    }
     material.dispose();
   }
 
@@ -2288,6 +4518,7 @@ export class EditorEngine {
   }
 
   dispose() {
+    this.clearAgentPreview();
     this.setPresentationMode(false);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
@@ -2303,6 +4534,9 @@ export class EditorEngine {
     this.transformControls.dispose();
     this.orbit.dispose();
     this.model?.dispose();
+    this.grid.geometry.dispose();
+    if (Array.isArray(this.grid.material)) this.grid.material.forEach((material) => material.dispose());
+    else this.grid.material.dispose();
     this.renderer.dispose();
   }
 }

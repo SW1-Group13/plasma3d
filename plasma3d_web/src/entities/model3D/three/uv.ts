@@ -61,3 +61,56 @@ export function horizontalRepeatFor(
   geom.boundingBox!.getSize(size);
   return [Math.max(1, size.x / tile), Math.max(1, size.z / tile)];
 }
+
+/**
+ * UVs por proyección de caja, en METROS: cada cara se proyecta sobre el plano
+ * al que mira (pared → largo × alto; piso/techo → x × z). Así una textura con
+ * `repeat = 1 / tamaño real` queda a escala sin estirarse en ninguna cara.
+ * Si la geometría está indexada se duplica por cara (toNonIndexed) para que
+ * cada cara tenga sus propias UV.
+ */
+export function ensureBoxUVs(mesh: THREE.Mesh): void {
+  let geom = mesh.geometry as THREE.BufferGeometry;
+  if (geom.userData.boxUV) return;
+  if (geom.index) {
+    const flat = geom.toNonIndexed();
+    flat.userData = { ...geom.userData };
+    geom.dispose();
+    mesh.geometry = flat;
+    geom = flat;
+  }
+  const pos = geom.attributes.position as THREE.BufferAttribute;
+  const uv = new Float32Array(pos.count * 2);
+  const a = new THREE.Vector3();
+  const b = new THREE.Vector3();
+  const c = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  for (let i = 0; i + 2 < pos.count; i += 3) {
+    a.fromBufferAttribute(pos, i);
+    b.fromBufferAttribute(pos, i + 1);
+    c.fromBufferAttribute(pos, i + 2);
+    n.subVectors(c, b).cross(new THREE.Vector3().subVectors(a, b));
+    const ax = Math.abs(n.x);
+    const ay = Math.abs(n.y);
+    const az = Math.abs(n.z);
+    for (let k = 0; k < 3; k++) {
+      const p = k === 0 ? a : k === 1 ? b : c;
+      let u: number;
+      let v: number;
+      if (ay >= ax && ay >= az) {
+        u = p.x;
+        v = p.z;
+      } else if (ax >= az) {
+        u = p.z;
+        v = p.y;
+      } else {
+        u = p.x;
+        v = p.y;
+      }
+      uv[(i + k) * 2] = u;
+      uv[(i + k) * 2 + 1] = v;
+    }
+  }
+  geom.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  geom.userData.boxUV = true;
+}

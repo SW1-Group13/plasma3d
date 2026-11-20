@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useModelStore } from '@/entities/model3D/store';
-import type { RoofType } from '@/entities/model3D/api';
+import { model3DApi, type GapMode, type RoofType } from '@/entities/model3D/api';
+import type { PlanQuality } from '@/entities/model3D/types';
 import { useSession } from '@/entities/session/store';
+import { structuralApi } from '@/entities/structural/api';
+import type { StructuralAnalysis } from '@/entities/structural/types';
+import { RiskDialog } from '@/features/risk/ui/RiskDialog';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { BackgroundTask } from '@/shared/ui/loader';
 import { Button } from '@/shared/ui/button';
@@ -16,12 +20,13 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/ui/dialog';
-import { CubeIcon, LayersIcon, PlusIcon, TrashIcon, UploadIcon } from '@/shared/ui/icons';
+import { CubeIcon, LayersIcon, PlusIcon, SparklesIcon, TrashIcon, UploadIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
 function serverMessage(error: unknown, fallback: string): string {
-  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  return typeof detail === 'string' && detail.length > 0 ? detail : fallback;
+  const data = (error as { response?: { data?: { detail?: string; error?: string } } })?.response?.data;
+  const message = data?.detail ?? data?.error;
+  return typeof message === 'string' && message.length > 0 ? message : fallback;
 }
 
 export function DashboardPage() {
@@ -45,7 +50,22 @@ export function DashboardPage() {
   const [creating, setCreating] = useState(false);
   const [task, setTask] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<number | null>(null);
+  const [riskOpen, setRiskOpen] = useState(false);
+  const [riskLoading, setRiskLoading] = useState(false);
+  const [riskAnalysis, setRiskAnalysis] = useState<StructuralAnalysis | null>(null);
+  const [riskError, setRiskError] = useState<string | null>(null);
+  const [riskPlanId, setRiskPlanId] = useState<number | null>(null);
+  const riskRequestRef = useRef(0);
   const [roofType, setRoofType] = useState<RoofType>('plano');
+  const [gapMode, setGapMode] = useState<GapMode>('rellenar');
+  // Ancho total real del plano en metros (opcional): escala exacta.
+  const [realWidth, setRealWidth] = useState('');
+  // Revisar y corregir las detecciones en 2D antes de construir el 3D.
+  const [reviewFirst, setReviewFirst] = useState(true);
+  const realWidthM = (() => {
+    const value = Number(realWidth.replace(',', '.'));
+    return Number.isFinite(value) && value >= 1 && value <= 500 ? value : null;
+  })();
 
   useEffect(() => {
     fetchModels().catch(() => toast.error('Error', 'No se pudieron cargar los modelos.'));
@@ -55,9 +75,21 @@ export function DashboardPage() {
     const file = event.target.files?.[0];
     event.target.value = '';
     if (!file || !user) return;
+    if (reviewFirst) {
+      setTask('Subiendo y detectando muros, puertas y ventanas...');
+      try {
+        const job = await model3DApi.detectPlan(file, realWidthM);
+        navigate(`/private/review/${job.id}`);
+      } catch (error) {
+        toast.error('Error', serverMessage(error, 'No se pudo procesar el plano.'));
+      } finally {
+        setTask(null);
+      }
+      return;
+    }
     setTask('Subiendo y procesando plano...');
     try {
-      await uploadPlan(file, user.id, roofType);
+      await uploadPlan(file, user.id, roofType, gapMode, realWidthM);
       toast.success('Exito', 'Modelo subido con exito.');
     } catch (error) {
       toast.error('Error', serverMessage(error, 'No se pudo subir el modelo.'));
@@ -74,8 +106,8 @@ export function DashboardPage() {
     try {
       await uploadGlb(file, user.id);
       toast.success('Exito', 'Modelo 3D subido con exito.');
-    } catch {
-      toast.error('Error', 'No se pudo subir el modelo 3D.');
+    } catch (error) {
+      toast.error('Error', serverMessage(error, 'No se pudo subir el modelo 3D.'));
     } finally {
       setTask(null);
     }
@@ -116,12 +148,46 @@ export function DashboardPage() {
     setRegenId(null);
     setTask('Regenerando modelo 3D...');
     try {
-      await regenerateModel(id);
+      await regenerateModel(id, gapMode, realWidthM);
       toast.success('Listo', 'Modelo regenerado con ventanas y puertas mejoradas.');
     } catch (error) {
       toast.error('Error', serverMessage(error, 'No se pudo regenerar el modelo.'));
     } finally {
       setTask(null);
+    }
+  }
+
+  async function onAnalyzeRisk(planId: number) {
+    const requestId = ++riskRequestRef.current;
+    setRiskPlanId(planId);
+    setRiskAnalysis(null);
+    setRiskError(null);
+    setRiskOpen(true);
+    setRiskLoading(true);
+    try {
+      const data = await structuralApi.analyzePlan(planId);
+      if (requestId !== riskRequestRef.current) return;
+      if (!data.success || !data.analisis?.resumen_general ||
+          !Array.isArray(data.analisis.elementos_bien_hechos) ||
+          !Array.isArray(data.analisis.elementos_mal_hechos) ||
+          !Array.isArray(data.analisis.recomendaciones)) {
+        setRiskError('El servidor devolvió un análisis incompleto. Inténtalo de nuevo.');
+        return;
+      }
+      setRiskAnalysis(data);
+    } catch (error) {
+      if (requestId !== riskRequestRef.current) return;
+      setRiskError(serverMessage(error, 'No se pudo analizar el riesgo del modelo.'));
+    } finally {
+      if (requestId === riskRequestRef.current) setRiskLoading(false);
+    }
+  }
+
+  function onRiskOpenChange(open: boolean) {
+    setRiskOpen(open);
+    if (!open) {
+      riskRequestRef.current++;
+      setRiskLoading(false);
     }
   }
 
@@ -135,10 +201,16 @@ export function DashboardPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-foreground">Mis modelos</h1>
-          <p className="mt-1 text-sm text-muted">Sube un plano o un GLB y editalo en 3D.</p>
+          <p className="mt-1 text-sm text-muted">Sube un plano, un GLB o un GLTF y edítalo en 3D.</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <input ref={planInputRef} type="file" accept="image/*" hidden onChange={onPlanSelected} />
+          <input
+            ref={planInputRef}
+            type="file"
+            accept="image/*,.pdf,.dxf,.dwg"
+            hidden
+            onChange={onPlanSelected}
+          />
           <input ref={glbInputRef} type="file" accept=".glb,.gltf" hidden onChange={onGlbSelected} />
           <label className="flex items-center gap-2 text-sm text-muted">
             Techo
@@ -154,11 +226,44 @@ export function DashboardPage() {
               <option value="ninguno">Sin techo</option>
             </select>
           </label>
+          <label className="flex items-center gap-2 text-sm text-muted">
+            Huecos sin puerta
+            <select
+              value={gapMode}
+              onChange={(e) => setGapMode(e.target.value as GapMode)}
+              disabled={isLoading}
+              title="Espacios entre muros donde la IA no detectó puerta ni ventana. Donde hay puerta o ventana detectada nunca se rellena."
+              className="h-9 rounded-md border border-border bg-surface px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              aria-label="Huecos entre muros sin puerta detectada"
+            >
+              <option value="rellenar">Rellenar</option>
+              <option value="paso">Dejar paso</option>
+            </select>
+          </label>
+          <label className="flex items-center gap-2 text-sm text-muted" title="Opcional: ancho total de la casa según el plano (por ejemplo 16,76). Hace que las medidas del 3D sean exactas.">
+            Ancho real
+            <input
+              value={realWidth}
+              onChange={(e) => setRealWidth(e.target.value)}
+              inputMode="decimal"
+              placeholder="m (opcional)"
+              disabled={isLoading}
+              className="h-9 w-28 rounded-md border border-border bg-surface px-2 text-sm text-foreground placeholder:text-muted/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              aria-label="Ancho total real del plano en metros (opcional)"
+            />
+          </label>
+          <label
+            className="flex items-center gap-2 text-sm text-muted"
+            title="Antes de generar el 3D verás lo detectado sobre el plano para borrar lo que sobra (muebles) y dibujar lo que falta."
+          >
+            <input type="checkbox" checked={reviewFirst} onChange={(e) => setReviewFirst(e.target.checked)} />
+            Revisar en 2D
+          </label>
           <Button variant="outline" onClick={() => planInputRef.current?.click()} disabled={isLoading}>
             <UploadIcon width={16} height={16} /> Subir plano
           </Button>
           <Button variant="outline" onClick={() => glbInputRef.current?.click()} disabled={isLoading}>
-            <UploadIcon width={16} height={16} /> Subir GLB
+            <UploadIcon width={16} height={16} /> Subir GLB/GLTF
           </Button>
           <Button onClick={onCreateModel} disabled={creating || isLoading}>
             <PlusIcon width={16} height={16} /> Crear modelo
@@ -224,6 +329,7 @@ export function DashboardPage() {
                 <div className="flex flex-1 flex-col gap-3 p-4">
                   <div>
                     <p className="font-semibold text-foreground">Modelo #{model.id}</p>
+                    {model.calidad && <QualityNote quality={model.calidad} />}
                     <p className="mt-0.5 text-xs tabular-nums text-muted">
                       {model.widht ?? '-'} x {model.height ?? '-'} ·{' '}
                       {model.created_at ? new Date(model.created_at).toLocaleDateString() : '-'}
@@ -231,10 +337,26 @@ export function DashboardPage() {
                   </div>
 
                   <div className="mt-auto flex flex-wrap items-center gap-2">
-                    <Button size="sm" onClick={() => openModel(model)}>
-                      Abrir editor
-                    </Button>
-                    {model.detections_json && (
+                    {model.status === 'review' ? (
+                      <Button size="sm" onClick={() => navigate(`/private/review/${model.id}`)}>
+                        Revisar 2D
+                      </Button>
+                    ) : (
+                      <Button size="sm" onClick={() => openModel(model)}>
+                        Abrir editor
+                      </Button>
+                    )}
+                    {model.status !== 'review' && model.plan_image && model.detections_json && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => navigate(`/private/review/${model.id}`)}
+                        title="Corregir muros, puertas y ventanas sobre el plano y volver a generar el 3D"
+                      >
+                        Corregir 2D
+                      </Button>
+                    )}
+                    {model.status !== 'review' && model.detections_json && (
                       <Button
                         size="sm"
                         variant="outline"
@@ -244,6 +366,14 @@ export function DashboardPage() {
                         Regenerar 3D
                       </Button>
                     )}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void onAnalyzeRisk(model.id)}
+                      title="Analizar el riesgo estructural con IA"
+                    >
+                      <SparklesIcon width={14} height={14} /> Riesgo IA
+                    </Button>
                     <Button
                       size="sm"
                       variant="ghost"
@@ -274,13 +404,25 @@ export function DashboardPage() {
         </div>
       )}
 
+      <RiskDialog
+        open={riskOpen}
+        onOpenChange={onRiskOpenChange}
+        analysis={riskAnalysis}
+        loading={riskLoading}
+        planId={riskPlanId}
+        error={riskError}
+        onRetry={riskPlanId == null ? undefined : () => void onAnalyzeRisk(riskPlanId)}
+      />
+
       <Dialog open={regenId != null} onOpenChange={(v) => !v && setRegenId(null)}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>Regenerar modelo 3D</DialogTitle>
             <DialogDescription>
               Se reconstruirá el modelo #{regenId} desde el plano original, con ventanas con vidrio, marco y dintel, y
-              puertas de 2.10 m encajadas en su muro. Se conserva el tipo de techo.
+              puertas de 2.10 m encajadas en su muro, y muros continuos (une tramos y cierra esquinas).
+              Huecos sin puerta: <strong>{gapMode === 'rellenar' ? 'se rellenan' : 'quedan como paso'}</strong>
+              {' '}(se cambia arriba). Se conserva el tipo de techo.
               <strong className="mt-2 block text-warning">
                 Se perderán los cambios que hiciste a mano en el editor para este plano.
               </strong>
@@ -313,6 +455,32 @@ export function DashboardPage() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+const SCALE_LABEL: Record<string, string> = {
+  usuario: 'medida indicada',
+  puertas: 'por las puertas',
+  puertas_dibujadas: 'por las puertas dibujadas',
+  estimada: 'estimada',
+};
+
+/** Resumen de lo detectado en el plano y avisos si algo falló. */
+function QualityNote({ quality }: { quality: PlanQuality }) {
+  const avisos = quality.avisos ?? [];
+  return (
+    <div className="mt-1 flex flex-col gap-1 text-xs text-muted">
+      <span className="tabular-nums">
+        {quality.muros} muros · {quality.puertas} puertas · {quality.ventanas} ventanas
+        {quality.ancho_m ? ` · ${quality.ancho_m.toLocaleString('es')} m de ancho` : ''} · escala{' '}
+        {SCALE_LABEL[quality.escala] ?? quality.escala}
+      </span>
+      {avisos.map((aviso) => (
+        <span key={aviso} className="rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-warning">
+          {aviso}
+        </span>
+      ))}
     </div>
   );
 }

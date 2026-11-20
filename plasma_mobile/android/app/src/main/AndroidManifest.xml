@@ -3,11 +3,17 @@
         <uses-permission android:name="android.permission.CAMERA"/>
         <!-- Necesario en el APK release (debug/profile ya lo traen): sin esto no conecta al backend -->
         <uses-permission android:name="android.permission.INTERNET"/>
+        <!-- Notificaciones locales y push en Android 13+. -->
+        <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+        <uses-permission android:name="android.permission.VIBRATE"/>
     <application
         android:usesCleartextTraffic="true"
         android:label="plasma_mobile"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
+        <meta-data
+            android:name="firebase_messaging_installation_id_enabled"
+            android:value="true" />
         <activity
             android:name=".MainActivity"
             android:exported="true"

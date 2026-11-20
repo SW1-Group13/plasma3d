@@ -4,6 +4,7 @@ import 'package:model_viewer_plus/model_viewer_plus.dart';
 import '../../../api/api_client.dart';
 import '../../../api/models_service.dart';
 import '../../../config/app_colors.dart';
+import '../../../notifications/local_notifications_service.dart';
 import '../../widgets/ui/app_ui.dart';
 
 class Visualizador3dPage extends StatefulWidget {
@@ -39,10 +40,18 @@ class _Visualizador3dPageState extends State<Visualizador3dPage> {
         _selected = withModel.isEmpty ? null : withModel.first;
         _loading = false;
       });
+      if (withModel.isNotEmpty) {
+        await LocalNotificationsService.instance.show(
+          'Modelo cargado',
+          'Modelo #${withModel.first.id} listo para visualizar.',
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
-        _error = e is ApiException ? e.message : 'No se pudieron cargar los modelos.';
+        _error = e is ApiException
+            ? e.message
+            : 'No se pudieron cargar los modelos.';
         _loading = false;
       });
     }
@@ -50,9 +59,7 @@ class _Visualizador3dPageState extends State<Visualizador3dPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _buildBody(),
-    );
+    return Scaffold(body: _buildBody());
   }
 
   Widget _buildBody() {
@@ -80,7 +87,8 @@ class _Visualizador3dPageState extends State<Visualizador3dPage> {
       return const AppEmptyState(
         icon: Icons.view_in_ar_rounded,
         title: 'Sin modelos 3D',
-        message: 'Genera un modelo desde “IA Diseño” o sube un plano desde Inicio.',
+        message:
+            'Genera un modelo desde “IA Diseño” o sube un plano desde Inicio.',
       );
     }
 
@@ -94,9 +102,7 @@ class _Visualizador3dPageState extends State<Visualizador3dPage> {
             Expanded(
               child: Text(
                 'Visualizador 3D',
-                style: Theme.of(context)
-                    .textTheme
-                    .headlineSmall
+                style: Theme.of(context).textTheme.headlineSmall
                     ?.copyWith(fontWeight: FontWeight.w700),
               ),
             ),
@@ -168,9 +174,7 @@ class _Visualizador3dPageState extends State<Visualizador3dPage> {
               Expanded(
                 child: Text(
                   'Arrastra para rotar · pellizca para zoom · usa AR para verlo en tu espacio.',
-                  style: Theme.of(context)
-                      .textTheme
-                      .bodySmall
+                  style: Theme.of(context).textTheme.bodySmall
                       ?.copyWith(color: AppColors.muted),
                 ),
               ),

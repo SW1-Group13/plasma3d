@@ -56,6 +56,14 @@ class Plan3DJob(models.Model):
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
+    # Informe de la detección: muros/puertas/ventanas, escala y avisos.
+    calidad = models.JSONField(null=True, blank=True)
+    # 'review': detectado, esperando que el usuario lo corrija en 2D.
+    # 'built': ya tiene GLB. 'failed': no se pudo construir.
+    STATUS_CHOICES = [('review', 'review'), ('built', 'built'), ('failed', 'failed')]
+    status = models.CharField(max_length=10, choices=STATUS_CHOICES, default='built')
+    # Lo que propuso la IA antes de la corrección del usuario (para medir/reentrenar).
+    detections_original = models.JSONField(null=True, blank=True)
     width = models.IntegerField(default=0)
     height = models.IntegerField(default=0)
 

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
+import { userApi } from '@/entities/user/api';
 import { Button } from '@/shared/ui/button';
 import {
   CubeIcon,
@@ -8,16 +9,25 @@ import {
   LayoutDashboardIcon,
   LogOutIcon,
   MenuIcon,
+  ShieldIcon,
   UserIcon,
   XIcon,
 } from '@/shared/ui/icons';
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
+import { ThemeToggle } from '@/features/theme/ui/ThemeToggle';
+import { SupportChat } from '@/features/support/ui/SupportChat';
 
-const links = [
+const links: {
+  to: string;
+  label: string;
+  icon: typeof LayoutDashboardIcon;
+  adminOnly?: boolean;
+}[] = [
   { to: '/private/dashboard', label: 'Dashboard', icon: LayoutDashboardIcon },
   { to: '/private/perfil', label: 'Perfil', icon: UserIcon },
   { to: '/private/pago', label: 'Pagos', icon: CreditCardIcon },
+  { to: '/private/admin', label: 'Admin', icon: ShieldIcon, adminOnly: true },
 ];
 
 export function PrivateLayout() {
@@ -25,8 +35,28 @@ export function PrivateLayout() {
   const location = useLocation();
   const fullBleed = location.pathname.startsWith('/private/editor');
   const user = useSession((s) => s.user);
+  const setUser = useSession((s) => s.setUser);
   const logout = useSession((s) => s.logout);
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // Mantiene el rol/avatar sincronizados (p. ej. si un admin te cambia el rol).
+  useEffect(() => {
+    if (!user?.id) return;
+    let alive = true;
+    userApi
+      .get(user.id)
+      .then((fresh) => {
+        if (alive) setUser(fresh);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [user?.id, setUser]);
+
+  const visibleLinks = links.filter(
+    (link) => !link.adminOnly || user?.rol === 'administrador',
+  );
 
   // Cerrar el menú móvil al navegar o con Esc.
   useEffect(() => setMenuOpen(false), [location.pathname]);
@@ -67,20 +97,22 @@ export function PrivateLayout() {
             </Link>
 
             <div className="hidden items-center gap-1 text-sm sm:flex">
-              {links.map(({ to, label, icon: Icon }) => (
-                <NavLink
-                  key={to}
-                  to={to}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                      isActive && 'bg-surface-2 font-medium text-foreground',
-                    )
-                  }
-                >
-                  <Icon width={16} height={16} />
-                  {label}
-                </NavLink>
+              {visibleLinks.map(({ to, label, icon: Icon }) => (
+                <Fragment key={to}>
+                  <NavLink
+                    to={to}
+                    className={({ isActive }) =>
+                      cn(
+                        'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                        isActive && 'bg-surface-2 font-medium text-foreground',
+                      )
+                    }
+                  >
+                    <Icon width={16} height={16} />
+                    {label}
+                  </NavLink>
+                  {to === '/private/pago' && <ThemeToggle />}
+                </Fragment>
               ))}
             </div>
           </div>
@@ -166,20 +198,22 @@ export function PrivateLayout() {
               </div>
             )}
 
-            {links.map(({ to, label, icon: Icon }) => (
-              <NavLink
-                key={to}
-                to={to}
-                className={({ isActive }) =>
-                  cn(
-                    'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                    isActive && 'bg-surface-2 font-medium text-foreground',
-                  )
-                }
-              >
-                <Icon width={18} height={18} />
-                {label}
-              </NavLink>
+            {visibleLinks.map(({ to, label, icon: Icon }) => (
+              <Fragment key={to}>
+                <NavLink
+                  to={to}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                      isActive && 'bg-surface-2 font-medium text-foreground',
+                    )
+                  }
+                >
+                  <Icon width={18} height={18} />
+                  {label}
+                </NavLink>
+                {to === '/private/pago' && <ThemeToggle showLabel />}
+              </Fragment>
             ))}
 
             <button
@@ -203,6 +237,7 @@ export function PrivateLayout() {
           </div>
         )}
       </main>
+      {!fullBleed && <SupportChat />}
     </section>
   );
 }

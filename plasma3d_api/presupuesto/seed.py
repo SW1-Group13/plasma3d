@@ -44,6 +44,18 @@ DEFAULT_PRECIOS = [
     ("roof", "Cemento", "m2", 10),
     ("roof", "Terracota", "m2", 18),
     ("roof", "Acero", "m2", 22),
+    ("roof", "Teja de arcilla", "m2", 25),
+    ("roof", "Teja de concreto", "m2", 20),
+    ("roof", "Teja asfáltica", "m2", 15),
+    ("roof", "Lámina trapezoidal", "m2", 18),
+    ("roof", "Lámina corrugada", "m2", 12),
+    ("roof", "Pizarra", "m2", 45),
+    ("roof", "Tejuela de madera", "m2", 30),
+    ("roof", "Policarbonato", "m2", 22),
+    ("roof", "Alquitrán y grava", "m2", 10),
+    ("roof", "Caucho EPDM", "m2", 16),
+    ("roof", "Membrana TPO", "m2", 19),
+    ("roof", "Techo verde", "m2", 55),
 ]
 
 # La lista vieja, exactamente como venía por defecto. Solo se borra si nadie

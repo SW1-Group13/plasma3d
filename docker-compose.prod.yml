@@ -30,8 +30,14 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       DEBUG: "False"
+      # Produccion sin HTTPS: acceso por IP publica y dominio por HTTP.
+      CORS_ALLOWED_ORIGINS: http://54.89.10.236,http://plasma3d.sebaces.fyi
+      CSRF_TRUSTED_ORIGINS: http://54.89.10.236,http://plasma3d.sebaces.fyi
+      # False: por la IP (HTTP) la cookie CSRF no viajaria si fuera "solo HTTPS".
+      CSRF_COOKIE_SECURE: "False"
     volumes:
       - media_data:/app/media
+      - ./plasma3d_api/secrets:/app/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -46,8 +52,9 @@ services:
       args:
         VITE_BASE_URL: /
     restart: always
-    ports:
-      - "5173:5173"
+    # Solo accesible desde la red interna; el borde es plasma3d-nginx.
+    expose:
+      - "5173"
     depends_on:
       - plasma3d-api
     networks:

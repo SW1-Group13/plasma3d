@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:model_viewer_plus/model_viewer_plus.dart';
 
 import '../../config/app_colors.dart';
+import '../../notifications/local_notifications_service.dart';
 import '../widgets/ui/app_ui.dart';
 
 class GlbViewerPage extends StatefulWidget {
@@ -22,7 +23,7 @@ class _GlbViewerPageState extends State<GlbViewerPage> {
     super.dispose();
   }
 
-  void _load() {
+  Future<void> _load() async {
     FocusScope.of(context).unfocus();
     final url = _urlController.text.trim();
     setState(() {
@@ -34,6 +35,12 @@ class _GlbViewerPageState extends State<GlbViewerPage> {
         _glbUrl = url;
       }
     });
+    if (_glbUrl != null) {
+      await LocalNotificationsService.instance.show(
+        'Modelo cargado',
+        'El modelo 3D se cargó en el visor.',
+      );
+    }
   }
 
   @override

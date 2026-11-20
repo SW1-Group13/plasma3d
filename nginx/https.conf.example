@@ -1,15 +1,13 @@
 # ==========================================================
-# HTTPS para producción (necesario para INSTALAR la PWA en el celular).
+# Plantilla HTTPS para otros dominios.
 #
-# Uso (en el servidor, con un dominio apuntando a su IP):
-#   1. Obtener certificado (Let's Encrypt):
-#        certbot certonly --standalone -d TU_DOMINIO
-#   2. Copiar este archivo a nginx/default.conf (reemplaza el actual) y
-#      cambiar TU_DOMINIO.
-#   3. En docker-compose.prod.yml, servicio plasma3d-nginx:
-#        ports:  - "80:80"  y  - "443:443"
-#        volumes: - /etc/letsencrypt:/etc/letsencrypt:ro
-#   4. docker compose -f docker-compose.prod.yml up -d
+# La configuracion activa de Plasma3D es nginx/default.conf y ya
+# apunta a https://plasma3d.sebaces.fyi.
+#
+# Para otro dominio:
+#   1. Reemplaza TU_DOMINIO por tu dominio.
+#   2. Emite el certificado (ver nginx/HTTPS.md).
+#   3. Copia este archivo a nginx/default.conf.
 # ==========================================================
 
 upstream plasma3d_api {
@@ -20,11 +18,19 @@ upstream plasma3d_web {
     server plasma3d-web:5173;
 }
 
-# HTTP -> HTTPS
+# HTTP -> HTTPS + reto ACME
 server {
     listen 80;
     server_name TU_DOMINIO;
-    return 301 https://$host$request_uri;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+        default_type text/plain;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
 }
 
 server {

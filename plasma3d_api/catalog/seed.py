@@ -46,7 +46,21 @@ DEFAULT_LAYERS = [
 # Agregados despues de la primera version: se crean tambien en bases de
 # datos que ya tenian capas/materiales.
 ADDED_LAYERS = ('Pisos', 'Techos')
-ADDED_MATERIALS = ('Ceramica piso',)
+ROOF_MATERIALS = (
+    'Teja de arcilla',
+    'Teja de concreto',
+    'Teja asfáltica',
+    'Lámina trapezoidal',
+    'Lámina corrugada',
+    'Pizarra',
+    'Tejuela de madera',
+    'Policarbonato',
+    'Alquitrán y grava',
+    'Caucho EPDM',
+    'Membrana TPO',
+    'Techo verde',
+)
+ADDED_MATERIALS = ('Ceramica piso',) + ROOF_MATERIALS
 
 DEFAULT_MATERIALS = [
     {'nombre': 'Ladrillo rojo', 'categoria': 'Mampostería', 'textura_path': '/static/textures/ladrillo.jpg', 'color_difuso': '#A0522D'},
@@ -71,6 +85,19 @@ DEFAULT_MATERIALS = [
     {'nombre': 'Gris perla', 'categoria': 'Pintura', 'color_difuso': '#BFBFBF'},
     {'nombre': 'Beige', 'categoria': 'Pintura', 'color_difuso': '#D9CBB3'},
     {'nombre': 'Terracota', 'categoria': 'Pintura', 'color_difuso': '#B5623C'},
+    # Techos (cubiertas)
+    {'nombre': 'Teja de arcilla', 'categoria': 'Techo', 'color_difuso': '#B5532F', 'rugosidad': 0.85, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Teja de concreto', 'categoria': 'Techo', 'color_difuso': '#7D7F80', 'rugosidad': 0.9, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Teja asfáltica', 'categoria': 'Techo', 'color_difuso': '#4A4A4F', 'rugosidad': 0.95, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Lámina trapezoidal', 'categoria': 'Techo', 'color_difuso': '#3E5C8A', 'rugosidad': 0.35, 'metalico': 0.7, 'opacidad': 1},
+    {'nombre': 'Lámina corrugada', 'categoria': 'Techo', 'color_difuso': '#B9BEC2', 'rugosidad': 0.3, 'metalico': 0.85, 'opacidad': 1},
+    {'nombre': 'Pizarra', 'categoria': 'Techo', 'color_difuso': '#3B4048', 'rugosidad': 0.45, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Tejuela de madera', 'categoria': 'Techo', 'color_difuso': '#9A6A3F', 'rugosidad': 0.8, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Policarbonato', 'categoria': 'Techo', 'color_difuso': '#CFE3EA', 'rugosidad': 0.15, 'metalico': 0, 'opacidad': 0.55},
+    {'nombre': 'Alquitrán y grava', 'categoria': 'Techo', 'color_difuso': '#6E6A63', 'rugosidad': 1, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Caucho EPDM', 'categoria': 'Techo', 'color_difuso': '#26282B', 'rugosidad': 0.9, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Membrana TPO', 'categoria': 'Techo', 'color_difuso': '#EEF1F2', 'rugosidad': 0.4, 'metalico': 0, 'opacidad': 1},
+    {'nombre': 'Techo verde', 'categoria': 'Techo', 'color_difuso': '#5E8A3A', 'rugosidad': 1, 'metalico': 0, 'opacidad': 1},
 ]
 
 

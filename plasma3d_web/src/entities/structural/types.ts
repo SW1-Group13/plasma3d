@@ -37,6 +37,10 @@ export interface StructuralAnalysis {
     recomendaciones: Recomendacion[];
     resumen_general: ResumenGeneral;
   };
-  nombre_archivo: string;
-  texturas_enviadas: number;
+  nombre_archivo?: string;
+  texturas_enviadas?: number;
+  /** 'gemini' si respondio la IA; 'heuristica' si uso el motor de reglas. */
+  fuente?: 'gemini' | 'heuristica' | string;
+  nivel_riesgo?: string;
+  plan_id?: number;
 }

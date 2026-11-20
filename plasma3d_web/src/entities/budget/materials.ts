@@ -83,6 +83,18 @@ export const DEFAULT_MATERIALS: MaterialInterface[] = [
   { categoria: 'roof', nombre: 'Cemento', unidad: 'm2', precio_unitario: 10 },
   { categoria: 'roof', nombre: 'Terracota', unidad: 'm2', precio_unitario: 18 },
   { categoria: 'roof', nombre: 'Acero', unidad: 'm2', precio_unitario: 22 },
+  { categoria: 'roof', nombre: 'Teja de arcilla', unidad: 'm2', precio_unitario: 25 },
+  { categoria: 'roof', nombre: 'Teja de concreto', unidad: 'm2', precio_unitario: 20 },
+  { categoria: 'roof', nombre: 'Teja asfáltica', unidad: 'm2', precio_unitario: 15 },
+  { categoria: 'roof', nombre: 'Lámina trapezoidal', unidad: 'm2', precio_unitario: 18 },
+  { categoria: 'roof', nombre: 'Lámina corrugada', unidad: 'm2', precio_unitario: 12 },
+  { categoria: 'roof', nombre: 'Pizarra', unidad: 'm2', precio_unitario: 45 },
+  { categoria: 'roof', nombre: 'Tejuela de madera', unidad: 'm2', precio_unitario: 30 },
+  { categoria: 'roof', nombre: 'Policarbonato', unidad: 'm2', precio_unitario: 22 },
+  { categoria: 'roof', nombre: 'Alquitrán y grava', unidad: 'm2', precio_unitario: 10 },
+  { categoria: 'roof', nombre: 'Caucho EPDM', unidad: 'm2', precio_unitario: 16 },
+  { categoria: 'roof', nombre: 'Membrana TPO', unidad: 'm2', precio_unitario: 19 },
+  { categoria: 'roof', nombre: 'Techo verde', unidad: 'm2', precio_unitario: 55 },
 ];
 
 /** Clave única de un precio (el mismo material puede estar en varias categorías). */

@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 /* ==========================================================
-   Plasma3D - Design tokens (dark only)
+   Plasma3D - Design tokens (dark by default)
    ========================================================== */
 @theme {
   --color-canvas: #0a0e1a; /* fondo de la app */
@@ -23,6 +23,23 @@
 
 :root {
   color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-canvas: #f6f8fc;
+  --color-surface: #ffffff;
+  --color-surface-2: #e9eef7;
+  --color-border: #d6deeb;
+  --color-border-strong: #a6b4c9;
+  --color-foreground: #1c2840;
+  --color-muted: #526178;
+  --color-primary: #315fcb;
+  --color-primary-hover: #264ea8;
+  --color-accent: #08738f;
+  --color-success: #13764d;
+  --color-warning: #946000;
+  --color-danger: #b83245;
 }
 
 html,
@@ -52,6 +69,34 @@ canvas {
   color: #fff;
 }
 
+:root[data-theme="light"] ::selection {
+  background: color-mix(in srgb, var(--color-primary) 30%, white);
+  color: var(--color-foreground);
+}
+
+/* Texto de estado y enlaces que usan tonos claros fijos en el modo oscuro. */
+:root[data-theme="light"] .text-cyan-100,
+:root[data-theme="light"] .text-cyan-200,
+:root[data-theme="light"] .text-sky-400 {
+  color: var(--color-accent);
+}
+
+:root[data-theme="light"] .text-emerald-400 {
+  color: var(--color-success);
+}
+
+:root[data-theme="light"] .text-amber-400 {
+  color: var(--color-warning);
+}
+
+:root[data-theme="light"] .text-red-400 {
+  color: var(--color-danger);
+}
+
+:root[data-theme="light"] .hover\:text-cyan-200:hover {
+  color: var(--color-accent);
+}
+
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--color-border-strong) transparent;
@@ -64,6 +109,91 @@ canvas {
   background: var(--color-border-strong);
   border-radius: 9999px;
   border: 2px solid var(--color-canvas);
+}
+
+/* ===== Login: animación plano 2D -> paredes 3D (ciclo de 10 s) ===== */
+@keyframes p3d-draw { 0% { stroke-dashoffset: 1200; } 30%, 100% { stroke-dashoffset: 0; } }
+@keyframes p3d-floor-fade { 0%, 88% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes p3d-rise {
+  0%, 30% { transform: scaleY(0); opacity: 0; }
+  55%, 88% { transform: scaleY(1); opacity: 1; }
+  100% { transform: scaleY(1); opacity: 0; }
+}
+@keyframes p3d-spin { to { transform: rotate(360deg); } }
+@keyframes p3d-label1 { 0%, 25% { opacity: 1; } 35%, 100% { opacity: 0; } }
+@keyframes p3d-label2 { 0%, 45% { opacity: 0; } 55%, 88% { opacity: 1; } 100% { opacity: 0; } }
+
+.p3d-login-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+.p3d-login-glow {
+  background: radial-gradient(ellipse at 30% 50%, color-mix(in srgb, var(--color-primary) 16%, transparent), transparent 60%);
+}
+.p3d-plan { stroke-dasharray: 1200; animation: p3d-draw 10s ease-in-out infinite, p3d-floor-fade 10s linear infinite; }
+.p3d-walls {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+  animation: p3d-rise 10s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
+}
+.p3d-ring { transform-origin: 330px 300px; animation: p3d-spin 40s linear infinite; }
+.p3d-l1 { animation: p3d-label1 10s linear infinite; }
+.p3d-l2 { animation: p3d-label2 10s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .p3d-plan, .p3d-walls, .p3d-ring, .p3d-l1, .p3d-l2 { animation: none; }
+}
+
+/* ===== Home: fondo de plano, título con brillo, botón con destello, pasos ===== */
+@keyframes p3d-drift { to { background-position: 64px 64px, 64px 64px; } }
+@keyframes p3d-sketch {
+  0% { stroke-dashoffset: 900; }
+  45%, 80% { stroke-dashoffset: 0; opacity: 1; }
+  100% { stroke-dashoffset: 0; opacity: 0; }
+}
+@keyframes p3d-sweep { to { background-position: 200% 0; } }
+@keyframes p3d-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@keyframes p3d-fill { 0% { width: 0; } 70%, 100% { width: 100%; } }
+@keyframes p3d-rise-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: none; } }
+@keyframes p3d-shine { 0% { left: -60%; } 60%, 100% { left: 130%; } }
+
+.p3d-home-grid {
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--color-primary) 7%, transparent) 1px, transparent 1px);
+  background-size: 64px 64px;
+  -webkit-mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 80%);
+  mask-image: radial-gradient(ellipse at 50% 30%, #000 30%, transparent 80%);
+  animation: p3d-drift 12s linear infinite;
+}
+.p3d-sketch { stroke-dasharray: 900; animation: p3d-sketch 9s ease-in-out infinite; }
+.p3d-grad-text {
+  background: linear-gradient(90deg, #4f7cff, #38bdf8, #a78bfa, #4f7cff);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: p3d-sweep 6s linear infinite;
+}
+.p3d-blink { animation: p3d-blink 1.6s ease-in-out infinite; }
+.p3d-shine { position: relative; overflow: hidden; }
+.p3d-shine::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 40%;
+  left: -60%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.35), transparent);
+  transform: skewX(-20deg);
+  animation: p3d-shine 3.5s ease-in-out infinite;
+  pointer-events: none;
+}
+.p3d-bar { height: 100%; animation: p3d-fill 6s ease-in-out infinite; }
+.p3d-rise-in { animation: p3d-rise-in 0.8s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .p3d-home-grid, .p3d-sketch, .p3d-grad-text, .p3d-blink, .p3d-bar, .p3d-rise-in, .p3d-shine::after { animation: none; }
 }
 
 /* Animaciones sutiles y respeto por reduced-motion */
@@ -130,6 +260,23 @@ canvas {
   border-color: #ffffff;
   box-shadow: 0 0 0 2px var(--m), 0 4px 12px rgb(0 0 0 / 0.5);
   z-index: 9999 !important;
+}
+
+:root[data-theme="light"] .measure-label {
+  background: color-mix(in srgb, var(--m) 16%, rgb(255 255 255 / 0.96));
+  color: var(--color-foreground);
+  text-shadow: none;
+}
+
+:root[data-theme="light"] .measure-label--active {
+  border-color: var(--color-foreground);
+  box-shadow: 0 0 0 2px var(--m), 0 4px 12px rgb(31 49 79 / 0.18);
+}
+
+:root[data-theme="light"] .p3d-home-preview {
+  border-color: var(--color-border-strong);
+  background: radial-gradient(ellipse at 50% 40%, rgb(49 95 203 / 0.14), rgb(8 127 164 / 0.05) 45%, var(--color-canvas) 80%);
+  box-shadow: 0 20px 50px rgb(39 66 112 / 0.12), inset 0 0 0 1px rgb(255 255 255 / 0.8);
 }
 
 /* Tiras deslizables (barras del editor en celular) sin barra de scroll visible */

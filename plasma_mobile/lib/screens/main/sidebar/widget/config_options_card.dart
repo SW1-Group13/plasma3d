@@ -13,7 +13,6 @@ class ConfigOptionsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final themeCtrl = Get.find<ThemeController>();
 
     return Scaffold(
       body: ListView(
@@ -28,8 +27,8 @@ class ConfigOptionsCard extends StatelessWidget {
           const SizedBox(height: 14),
           const AppSectionTitle(title: 'Apariencia'),
           const SizedBox(height: 10),
-          Obx(
-            () => AppCard(
+          GetBuilder<ThemeController>(
+            builder: (themeCtrl) => AppCard(
               padding: EdgeInsets.zero,
               child: SwitchListTile(
                 value: themeCtrl.isDarkMode,
@@ -120,10 +119,7 @@ class _OptionTile extends StatelessWidget {
         subtitle,
         style: const TextStyle(fontSize: 12, color: AppColors.muted),
       ),
-      trailing: const Icon(
-        Icons.chevron_right_rounded,
-        color: AppColors.muted,
-      ),
+      trailing: const Icon(Icons.chevron_right_rounded, color: AppColors.muted),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppColors.radius),
       ),

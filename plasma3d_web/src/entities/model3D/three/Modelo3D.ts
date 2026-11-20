@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
+import { STLExporter } from 'three/examples/jsm/exporters/STLExporter.js';
 import type { ModelJson, TextureRef } from '@/entities/model3D/types';
 import { ensurePlanarUVs, textureRepeatFor } from '@/entities/model3D/three/uv';
 import {
@@ -74,12 +75,71 @@ export function buildDoorGeometry(thickness: number, height: number, length: num
   );
 }
 
+export interface WallOpeningCut {
+  /** Centro a lo largo del eje local Z del muro. */
+  center: number;
+  width: number;
+  /** Altura del borde inferior medida desde la base del muro. */
+  bottom: number;
+  height: number;
+}
+
+/** Geometría de muro con huecos pasantes para puertas y ventanas. */
+export function buildWallWithOpeningsGeometry(
+  thickness: number,
+  height: number,
+  length: number,
+  openings: WallOpeningCut[],
+): THREE.BufferGeometry {
+  if (openings.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+
+  const halfLength = length / 2;
+  const halfHeight = height / 2;
+  const cuts = openings
+    .map((opening) => ({
+      left: Math.max(-halfLength, opening.center - opening.width / 2),
+      right: Math.min(halfLength, opening.center + opening.width / 2),
+      bottom: Math.max(0, opening.bottom),
+      top: Math.min(height, opening.bottom + opening.height),
+    }))
+    .filter((cut) => cut.right - cut.left > 0.001 && cut.top - cut.bottom > 0.001);
+  if (cuts.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+
+  const uniqueSorted = (values: number[]) =>
+    values.sort((a, b) => a - b).filter((value, index, all) => index === 0 || Math.abs(value - all[index - 1]) > 0.001);
+  const xCuts = uniqueSorted([-halfLength, halfLength, ...cuts.flatMap((cut) => [cut.left, cut.right])]);
+  const yCuts = uniqueSorted([0, height, ...cuts.flatMap((cut) => [cut.bottom, cut.top])]);
+  const pieces: THREE.BufferGeometry[] = [];
+
+  for (let xi = 0; xi < xCuts.length - 1; xi += 1) {
+    const left = xCuts[xi];
+    const right = xCuts[xi + 1];
+    const center = (left + right) / 2;
+    for (let yi = 0; yi < yCuts.length - 1; yi += 1) {
+      const bottom = yCuts[yi];
+      const top = yCuts[yi + 1];
+      const middleY = (bottom + top) / 2;
+      const insideOpening = cuts.some(
+        (cut) => center > cut.left && center < cut.right && middleY > cut.bottom && middleY < cut.top,
+      );
+      if (insideOpening) continue;
+
+      const piece = new THREE.BoxGeometry(thickness, top - bottom, right - left);
+      piece.translate(0, middleY - halfHeight, center);
+      pieces.push(piece);
+    }
+  }
+
+  if (pieces.length === 0) return new THREE.BoxGeometry(thickness, height, length);
+  return merge(pieces, () => new THREE.BoxGeometry(thickness, height, length));
+}
+
 /**
  * Techo a dos aguas sobre un rectángulo (largo L en X, luz S en Z), con la
  * base y=0 en el arranque de los muros. Dos faldones + los dos hastiales,
  * unidos en una sola geometría. La cumbrera va a lo largo de X.
  */
-function buildGableRoofGeometry(L: number, S: number): THREE.BufferGeometry {
+export function buildGableRoofGeometry(L: number, S: number): THREE.BufferGeometry {
   const o = ROOF_OVERHANG_M;
   const t = ROOF_THICKNESS_M;
   const H = WALL_HEIGHT_M;
@@ -463,22 +523,29 @@ export class Modelo3D {
     });
   }
 
-  exportAsGLB(filename = 'modelo.glb'): Promise<{ blob: Blob; filename: string }> {
+  private detachEdges(): () => void {
+    const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
+    this.objeto?.traverse((child) => {
+      if (child.name === '__edges' && child.parent) {
+        detached.push({ parent: child.parent, child });
+      }
+    });
+    detached.forEach(({ child }) => child.removeFromParent());
+    return () => detached.forEach(({ parent, child }) => parent.add(child));
+  }
+
+  private exportGLTF(
+    binary: boolean,
+    filename: string,
+    mime: string,
+  ): Promise<{ blob: Blob; filename: string }> {
     return new Promise((resolve, reject) => {
       if (!this.objeto) {
         reject(new Error('No hay modelo cargado'));
         return;
       }
 
-      const detached: { parent: THREE.Object3D; child: THREE.Object3D }[] = [];
-      this.objeto.traverse((child) => {
-        if (child.name === '__edges' && child.parent) {
-          detached.push({ parent: child.parent, child });
-        }
-      });
-      detached.forEach(({ child }) => child.removeFromParent());
-      const restore = () => detached.forEach(({ parent, child }) => parent.add(child));
-
+      const restore = this.detachEdges();
       const exporter = new GLTFExporter();
       exporter.parse(
         this.objeto,
@@ -486,8 +553,8 @@ export class Modelo3D {
           restore();
           const blob =
             result instanceof ArrayBuffer
-              ? new Blob([result], { type: 'model/gltf-binary' })
-              : new Blob([JSON.stringify(result, null, 2)], { type: 'application/json' });
+              ? new Blob([result], { type: mime })
+              : new Blob([JSON.stringify(result, null, 2)], { type: mime });
           resolve({ blob, filename });
         },
         (error) => {
@@ -496,8 +563,48 @@ export class Modelo3D {
         },
         // onlyVisible:false → lo oculto en pantalla (techo, capas apagadas)
         // se sigue guardando; ocultar es solo una opción de vista.
-        { binary: true, onlyVisible: false },
+        { binary, onlyVisible: false },
       );
+    });
+  }
+
+  exportAsGLB(filename = 'modelo.glb'): Promise<{ blob: Blob; filename: string }> {
+    return this.exportGLTF(true, filename, 'model/gltf-binary');
+  }
+
+  /** Exporta un .gltf (JSON autocontenido, con buffers/imágenes embebidos). */
+  exportAsGLTF(filename = 'modelo.gltf'): Promise<{ blob: Blob; filename: string }> {
+    return this.exportGLTF(false, filename, 'model/gltf+json');
+  }
+
+  /** Exporta un .stl binario (geometría, sin materiales). */
+  exportAsSTL(filename = 'modelo.stl'): Promise<{ blob: Blob; filename: string }> {
+    return new Promise((resolve, reject) => {
+      if (!this.objeto) {
+        reject(new Error('No hay modelo cargado'));
+        return;
+      }
+
+      const restore = this.detachEdges();
+      try {
+        const exporter = new STLExporter();
+        const result = exporter.parse(this.objeto, { binary: true });
+        restore();
+        let parts: BlobPart[];
+        if (result instanceof DataView) {
+          const copy = new Uint8Array(result.byteLength);
+          copy.set(
+            new Uint8Array(result.buffer, result.byteOffset, result.byteLength),
+          );
+          parts = [copy.buffer as ArrayBuffer];
+        } else {
+          parts = [result];
+        }
+        resolve({ blob: new Blob(parts, { type: 'model/stl' }), filename });
+      } catch (error) {
+        restore();
+        reject(error);
+      }
     });
   }
 
@@ -615,6 +722,7 @@ export class Modelo3D {
     mesh.position.copy(pos);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.source = 'manual';
 
     this.objeto.add(mesh);
     if (type === 'wall') this.walls.push(mesh);
@@ -675,6 +783,7 @@ export class Modelo3D {
 
     if (type === 'wall') {
       mesh.name = `wall_internal_${Date.now()}`;
+      mesh.userData.generatedSegment = true;
       this.walls.push(mesh);
     } else if (type === 'door') {
       mesh.name = `door_${Date.now()}`;
@@ -686,8 +795,21 @@ export class Modelo3D {
 
     mesh.castShadow = true;
     mesh.receiveShadow = true;
+    mesh.userData.baseDims = { thickness, height, length };
+    // Pieza agregada después del plano (el agente IA la re-marca como 'ia').
+    mesh.userData.source = 'manual';
     this.objeto.add(mesh);
     return mesh;
+  }
+
+  setWallOpenings(mesh: THREE.Mesh, openings: WallOpeningCut[], preservePreviousGeometry = false) {
+    if (!mesh.userData.generatedSegment || !this.walls.includes(mesh)) return;
+    const dims = mesh.userData.baseDims as { thickness: number; height: number; length: number } | undefined;
+    if (!dims) return;
+    const old = mesh.geometry;
+    mesh.geometry = buildWallWithOpeningsGeometry(dims.thickness, dims.height, dims.length, openings);
+    mesh.userData.openingCuts = openings;
+    if (!preservePreviousGeometry) old.dispose();
   }
 
   /**
@@ -742,10 +864,25 @@ export class Modelo3D {
     return mesh;
   }
 
-  removeElement(mesh: THREE.Mesh) {
+  /** Vuelve a registrar una malla existente (deshacer, piezas de un corte). */
+  addExisting(mesh: THREE.Mesh) {
+    if (!this.objeto) return;
+    const kind = (mesh.userData.kind as string) ?? classifyMeshName(mesh.name);
+    const arr =
+      kind === 'wall' ? this.walls
+      : kind === 'door' ? this.doors
+      : kind === 'window' ? this.windows
+      : kind === 'floor' ? this.floors
+      : kind === 'roof' ? this.roofs
+      : null;
+    if (arr && !arr.includes(mesh)) arr.push(mesh);
+    if (mesh.parent !== this.objeto) this.objeto.add(mesh);
+  }
+
+  removeElement(mesh: THREE.Mesh, preserveGeometry = false) {
     if (!this.objeto) return;
     // No disponer del material: puede estar compartido entre varias mallas.
-    mesh.geometry.dispose();
+    if (!preserveGeometry) mesh.geometry.dispose();
     this.objeto.remove(mesh);
     this.walls = this.walls.filter((m) => m !== mesh);
     this.doors = this.doors.filter((m) => m !== mesh);

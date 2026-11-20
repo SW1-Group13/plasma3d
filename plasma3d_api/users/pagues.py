@@ -11,11 +11,14 @@ Flujo:
        si esta 'succeeded', se registra el pago y se activa el plan.
     (Opcional) POST payment/webhook/ hace lo mismo desde Stripe.
 """
+import hashlib
 import json
 import os
+import time
 from datetime import date, timedelta
 from decimal import Decimal
 
+import requests
 import stripe
 from django.db import transaction
 from django.http import HttpResponse
@@ -36,6 +39,10 @@ stripe.api_key = os.getenv("STRIPE_API_KEY")
 MONEDA = 'usd'
 DIAS_PLAN = 30
 
+# Cache del chequeo pk/sk (evita crear un intent en cada carga de la pagina).
+_KEYS_CHECK = {'signature': None, 'at': 0.0, 'result': None}
+_KEYS_CHECK_TTL = 300
+
 # Precio de cada plan de pago, en centavos. El monto SIEMPRE se toma de aqui,
 # nunca del cliente.
 PRECIOS_PLANES = {
@@ -45,6 +52,63 @@ PRECIOS_PLANES = {
 
 def _stripe_configurado():
     return bool(stripe.api_key)
+
+
+def _stripe_keys_match():
+    """
+    Comprueba que la publishable key pertenezca a la cuenta de la secret key.
+
+    Stripe.js falla con "No such payment_intent" cuando las claves son de
+    cuentas distintas. Se verifica leyendo un PaymentIntent de prueba con la
+    publishable key + client_secret y se cachea el resultado unos minutos.
+
+    Returns:
+        True/False, o None si no se pudo comprobar (red/API).
+    """
+    publishable = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
+    secret = os.getenv('STRIPE_API_KEY', '')
+    if not publishable or not secret:
+        return False
+
+    signature = hashlib.sha256(
+        (publishable + secret).encode('utf-8')
+    ).hexdigest()
+    now = time.time()
+    if (
+        _KEYS_CHECK['signature'] == signature
+        and now - _KEYS_CHECK['at'] < _KEYS_CHECK_TTL
+    ):
+        return _KEYS_CHECK['result']
+
+    result = None
+    try:
+        intent = stripe.PaymentIntent.create(
+            amount=50,
+            currency=MONEDA,
+            payment_method_types=['card'],
+        )
+        try:
+            response = requests.get(
+                'https://api.stripe.com/v1/payment_intents/{}'.format(
+                    intent.id
+                ),
+                params={
+                    'key': publishable,
+                    'client_secret': intent.client_secret,
+                },
+                timeout=10,
+            )
+            result = response.status_code == 200
+        finally:
+            try:
+                stripe.PaymentIntent.cancel(intent.id)
+            except Exception:
+                pass
+    except Exception:
+        result = None
+
+    _KEYS_CHECK.update(signature=signature, at=now, result=result)
+    return result
 
 
 def _error(message, code):
@@ -134,7 +198,8 @@ def create_payment_intent(request):
         intent = stripe.PaymentIntent.create(
             amount=centavos,
             currency=MONEDA,
-            payment_method_types=['card'],
+            # Stripe administra los métodos de pago desde el Dashboard.
+            # payment_method_types=['card'],  # Ya no es compatible con la API configurada.
             description='Plasma3D - {}'.format(plan),
             receipt_email=user.email or None,
             metadata={'usuario_id': str(user.id), 'plan': plan},
@@ -298,10 +363,24 @@ def payment_config(request):
     en el backend y nunca se envia al frontend.
     """
     publishable = os.getenv('STRIPE_PUBLISHABLE_KEY', '')
+    keys_match = _stripe_keys_match()
+    warning = None
+    if keys_match is False:
+        warning = (
+            'La publishable key no corresponde a la cuenta de la secret key. '
+            'Copia ambas claves del mismo Dashboard de Stripe '
+            '(Developers > API keys).'
+        )
     return Response(
         {
             'publishable_key': publishable,
-            'enabled': bool(publishable) and _stripe_configurado(),
+            'enabled': (
+                bool(publishable)
+                and _stripe_configurado()
+                and keys_match is not False
+            ),
+            'keys_match': keys_match,
+            'warning': warning,
             'precios': {
                 plan: centavos / 100
                 for plan, centavos in PRECIOS_PLANES.items()

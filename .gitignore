@@ -28,9 +28,12 @@ db.sqlite3
 # Migraciones (si quieres ignorarlas al resetear BD)
 **/migrations/*
 !*/migrations/__init__.py
+!plasma3d_api/push_notifications/migrations/
+!plasma3d_api/push_notifications/migrations/*.py
 
 # Archivos de entorno
 .env
+plasma3d_api/secrets/
 *.env
 
 # Compilados / caches

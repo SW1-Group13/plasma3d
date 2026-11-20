@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'presupuesto',
     'suggestion_risk',
     'catalog',
+    'push_notifications',
 ]
 
 MIDDLEWARE = [
@@ -193,5 +194,42 @@ CORS_ALLOW_CREDENTIALS = True
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # AUTH_USER_MODEL = 'view_url_3D.Usuario'
 
-# Gemini API Configuration
-GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
+# --- Proveedores de IA (OpenAI-compatible) ---
+# El proveedor se elige en el chat (gemini/deepseek/ollama), no por entorno.
+GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
+GEMINI_MODELS = os.getenv('GEMINI_MODELS', '')
+GEMINI_BASE_URL = os.getenv(
+    'GEMINI_BASE_URL',
+    'https://generativelanguage.googleapis.com/v1beta/openai',
+)
+
+DEEPSEEK_API_KEY = os.getenv('DEEPSEEK_API_KEY', '')
+DEEPSEEK_MODELS = os.getenv('DEEPSEEK_MODELS', '')
+DEEPSEEK_BASE_URL = os.getenv(
+    'DEEPSEEK_BASE_URL',
+    'https://api.deepseek.com',
+)
+
+# --- IA local con Ollama (opcional) ---
+# OLLAMA_URL: dirección de Ollama sin /v1, p. ej. http://localhost:11434 o el
+# túnel https://xxxx.trycloudflare.com. Vacía = Ollama desactivado.
+OLLAMA_URL = os.getenv('OLLAMA_URL', '').strip()
+OLLAMA_MODELS = os.getenv('OLLAMA_MODELS', 'qwen2.5:3b')
+# Un modelo local en CPU tarda más que Gemini: más tiempo de espera.
+OLLAMA_TIMEOUT = int(os.getenv('OLLAMA_TIMEOUT', '240') or 240)
+
+# --- Groq (transcripcion de audio / Whisper) ---
+GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
+GROQ_MODEL = os.getenv('GROQ_MODEL', 'whisper-large-v3')
+GROQ_BASE_URL = os.getenv(
+    'GROQ_BASE_URL',
+    'https://api.groq.com/openai/v1',
+)
+GROQ_LANGUAGE = os.getenv('GROQ_LANGUAGE', 'es')
+
+# Administrador por defecto (se crea/asegura despues de cada migrate).
+# Si ADMIN_PASSWORD esta vacio no se crea, pero si el email ya existe se
+# asegura igualmente su rol de administrador.
+ADMIN_NOMBRE = os.getenv('ADMIN_NOMBRE', 'Administrador')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@plasma3d.local')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', '')
