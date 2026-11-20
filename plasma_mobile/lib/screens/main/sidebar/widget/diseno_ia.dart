@@ -9,6 +9,7 @@ import 'package:model_viewer_plus/model_viewer_plus.dart';
 import '../../../../api/api_client.dart';
 import '../../../../api/models_service.dart';
 import '../../../../config/app_colors.dart';
+import '../../../../notifications/local_notifications_service.dart';
 import '../../../auth/controller/model_controller.dart';
 import '../../../auth/service/auth_controller.dart';
 import '../../../widgets/ui/app_ui.dart';
@@ -34,8 +35,8 @@ class _IADisenoScreenState extends State<IADisenoScreen> {
       success ? 'Listo' : 'Ups',
       message,
       snackPosition: SnackPosition.BOTTOM,
-      backgroundColor:
-          (success ? AppColors.success : AppColors.danger).withValues(alpha: 0.95),
+      backgroundColor: (success ? AppColors.success : AppColors.danger)
+          .withValues(alpha: 0.95),
       colorText: Colors.white,
       margin: const EdgeInsets.all(16),
       borderRadius: 12,
@@ -65,14 +66,15 @@ class _IADisenoScreenState extends State<IADisenoScreen> {
     });
 
     try {
-      final job = await ModelsService.uploadPlan(
-        _image!,
-        usuario: user!.id!,
-      );
+      final job = await ModelsService.uploadPlan(_image!, usuario: user!.id!);
       if (!mounted) return;
       setState(() => _generated = job);
       Get.find<ModelController>().notifyRefresh();
       _snack('Modelo 3D generado correctamente.', success: true);
+      await LocalNotificationsService.instance.show(
+        'Modelo generado',
+        'Tu modelo 3D está listo.',
+      );
     } catch (e) {
       _snack(e is ApiException ? e.message : 'No se pudo generar el modelo.');
     } finally {
@@ -108,7 +110,10 @@ class _IADisenoScreenState extends State<IADisenoScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const AppBadge(label: 'GENERACIÓN CON IA', color: AppColors.accent),
+                const AppBadge(
+                  label: 'GENERACIÓN CON IA',
+                  color: AppColors.accent,
+                ),
                 const SizedBox(height: 14),
                 Text(
                   'Convierte tu plano en 3D',
@@ -166,9 +171,7 @@ class _IADisenoScreenState extends State<IADisenoScreen> {
             children: [
               Expanded(
                 child: OutlinedButton.icon(
-                  onPressed: _loading
-                      ? null
-                      : () => _pick(ImageSource.gallery),
+                  onPressed: _loading ? null : () => _pick(ImageSource.gallery),
                   icon: const Icon(Icons.photo_library_outlined, size: 18),
                   label: const Text('Galería'),
                 ),
@@ -224,9 +227,8 @@ class _IADisenoScreenState extends State<IADisenoScreen> {
               label: 'Ver en pantalla completa',
               icon: Icons.open_in_full_rounded,
               variant: AppButtonVariant.secondary,
-              onPressed: () => Get.to(
-                () => _FullScreenModelPage(modelUrl: glbUrl),
-              ),
+              onPressed: () =>
+                  Get.to(() => _FullScreenModelPage(modelUrl: glbUrl)),
             ),
           ],
         ],

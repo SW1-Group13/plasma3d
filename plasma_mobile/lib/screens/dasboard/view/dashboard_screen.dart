@@ -7,6 +7,7 @@ import 'package:image_picker/image_picker.dart';
 import '../../../api/api_client.dart';
 import '../../../api/models_service.dart';
 import '../../../config/app_colors.dart';
+import '../../../notifications/local_notifications_service.dart';
 import '../../auth/service/auth_controller.dart';
 import '../../main/sidebar/widget/modelo_detalle_page.dart';
 import '../../widgets/ui/app_ui.dart';
@@ -60,8 +61,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       success ? 'Listo' : 'Ups',
       message,
       snackPosition: SnackPosition.BOTTOM,
-      backgroundColor:
-          (success ? AppColors.success : AppColors.danger).withValues(alpha: 0.95),
+      backgroundColor: (success ? AppColors.success : AppColors.danger)
+          .withValues(alpha: 0.95),
       colorText: Colors.white,
       margin: const EdgeInsets.all(16),
       borderRadius: 12,
@@ -83,12 +84,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     setState(() => _busy = true);
     try {
-      await ModelsService.uploadPlan(
-        File(picked.path),
-        usuario: user!.id!,
-      );
+      await ModelsService.uploadPlan(File(picked.path), usuario: user!.id!);
       await _load();
       _snack('Plano procesado y modelo generado.', success: true);
+      await LocalNotificationsService.instance.show(
+        'Modelo generado',
+        'Tu plano se convirtió en un modelo 3D.',
+      );
     } catch (e) {
       _snack(e is ApiException ? e.message : 'No se pudo subir el plano.');
     } finally {
@@ -108,6 +110,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       await ModelsService.createEmpty(usuario: id);
       await _load();
       _snack('Modelo vacío creado.', success: true);
+      await LocalNotificationsService.instance.show(
+        'Modelo creado',
+        'Tu modelo vacío está listo para editar.',
+      );
     } catch (e) {
       _snack(e is ApiException ? e.message : 'No se pudo crear el modelo.');
     } finally {
@@ -145,7 +151,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       await _load();
       _snack('Proyecto eliminado.', success: true);
     } catch (e) {
-      _snack(e is ApiException ? e.message : 'No se pudo eliminar el proyecto.');
+      _snack(
+        e is ApiException ? e.message : 'No se pudo eliminar el proyecto.',
+      );
     }
   }
 
@@ -199,8 +207,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               AppEmptyState(
                 icon: Icons.view_in_ar_rounded,
                 title: 'Aún no tienes modelos',
-                message:
-                    'Sube un plano para generarlo con IA o crea un modelo vacío para empezar.',
+                message: 'Sube un plano para generarlo con IA o crea un modelo vacío para empezar.',
                 action: AppButton(
                   label: 'Subir plano',
                   icon: Icons.upload_file_rounded,
@@ -283,7 +290,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   onPressed: _busy ? null : _createEmpty,
                   style: OutlinedButton.styleFrom(
                     foregroundColor: Colors.white,
-                    side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                    side: BorderSide(
+                      color: Colors.white.withValues(alpha: 0.3),
+                    ),
                   ),
                   icon: const Icon(Icons.add_rounded, size: 18),
                   label: const Text('Vacío'),
@@ -333,7 +342,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return AppCard(
       child: Column(
         children: [
-          const Icon(Icons.cloud_off_rounded, color: AppColors.danger, size: 36),
+          const Icon(
+            Icons.cloud_off_rounded,
+            color: AppColors.danger,
+            size: 36,
+          ),
           const SizedBox(height: 10),
           Text(
             _error!,
@@ -358,8 +371,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final columns = constraints.maxWidth >= 1000
             ? 4
             : constraints.maxWidth >= 680
-                ? 3
-                : 2;
+            ? 3
+            : 2;
         return GridView.builder(
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
@@ -516,10 +529,7 @@ class _ModelCard extends StatelessWidget {
                   model.createdLabel.isEmpty ? 'Sin fecha' : model.createdLabel,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 11,
-                    color: AppColors.muted,
-                  ),
+                  style: const TextStyle(fontSize: 11, color: AppColors.muted),
                 ),
               ],
             ),

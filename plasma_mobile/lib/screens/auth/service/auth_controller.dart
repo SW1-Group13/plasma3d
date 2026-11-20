@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:get/get.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:plasma_mobile/api/auth_service.dart';
+import 'package:plasma_mobile/notifications/local_notifications_service.dart';
 import 'package:plasma_mobile/notifications/push_notifications_service.dart';
 import 'package:plasma_mobile/routes/routes.dart';
 
@@ -135,6 +136,12 @@ class AuthController extends GetxController {
         _isLogged.value = true;
         _saveUser(data['usuario']);
         Get.offAllNamed(AppRoutes.home);
+        unawaited(
+          LocalNotificationsService.instance.show(
+            'Sesión iniciada',
+            'Bienvenido a Plasma3D.',
+          ),
+        );
         unawaited(registerPushDevice());
       } else {
         Get.snackbar(
@@ -177,6 +184,12 @@ class AuthController extends GetxController {
 
     currentUser.value = null;
     _isLogged.value = false;
+    unawaited(
+      LocalNotificationsService.instance.show(
+        'Sesión cerrada',
+        'Has cerrado sesión en Plasma3D.',
+      ),
+    );
     Get.offAllNamed(AppRoutes.signin);
   }
 
