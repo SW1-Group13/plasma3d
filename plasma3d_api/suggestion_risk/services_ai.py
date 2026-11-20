@@ -1,9 +1,9 @@
-"""Proveedores de IA compatibles con la API de OpenAI (Gemini / DeepSeek).
+"""Proveedores de IA compatibles con la API de OpenAI (Gemini / DeepSeek / Ollama).
 
-- Selecciona el proveedor segun AI_PROVIDER.
+- El proveedor lo elige el usuario en el chat; no hay proveedor por entorno.
 - Permite listas de modelos separadas por comas y rota entre ellos si uno falla.
 - Convierte las herramientas del agente al formato OpenAI (function calling).
-- Si llega una imagen, prioriza Gemini (vision) cuando hay clave configurada.
+- Si llega una imagen, solo se usa el proveedor elegido si admite visión.
 """
 import json
 import time
@@ -149,44 +149,53 @@ def available_providers():
     ]
 
 
+def provider_config(name):
+    """Configuración de un proveedor por id, tenga o no clave configurada."""
+    return _configs().get((name or '').strip().lower())
+
+
+def _provider_available(provider):
+    return bool(
+        provider
+        and provider.get('api_key')
+        and provider.get('models')
+    )
+
+
 def choose_providers(has_image=False, preferido=None):
-    """Proveedores disponibles en el orden recomendado para este turno.
+    """Devuelve SOLO el proveedor seleccionado por el usuario.
 
-    - `preferido`: el que eligió el usuario en el chat (va primero).
-    - Si no, AI_PROVIDER. Los demás quedan como respaldo.
-    - Con imagen, primero los que tienen visión.
+    - `preferido`: id elegido en el chat ('gemini', 'deepseek' u 'ollama').
+    - Sin selección, usa el primer proveedor configurado (para clientes viejos).
+    - No lee AI_PROVIDER ni cambia a otro proveedor si el elegido falla.
+    - Con imagen, exige que el proveedor elegido tenga visión.
     """
-    configs = _configs()
-    selected = (getattr(settings, 'AI_PROVIDER', 'gemini') or 'gemini').strip().lower()
     preferido = (preferido or '').strip().lower()
+    selected = provider_config(preferido) if preferido else None
+    if not _provider_available(selected):
+        selected = None
 
-    order = []
-    if preferido in configs:
-        order.append(preferido)
-    if selected in configs and selected not in order:
-        order.append(selected)
-    for name in ('gemini', 'deepseek', 'ollama'):
-        if name not in order:
-            order.append(name)
+    if selected is None and not preferido:
+        for name in ('gemini', 'deepseek', 'ollama'):
+            candidate = provider_config(name)
+            if _provider_available(candidate):
+                selected = candidate
+                break
 
-    providers = []
-    for name in order:
-        provider = configs[name]
-        if provider['api_key'] and provider['models']:
-            providers.append(provider)
-    if has_image:
-        # Estable: conserva el orden, pero los que ven imágenes primero.
-        providers.sort(key=lambda p: p['name'] not in VISION_PROVIDERS)
-    return providers
+    if selected is None:
+        return []
+    if has_image and selected['name'] not in VISION_PROVIDERS:
+        return []
+    return [selected]
 
 
-def choose_provider(has_image=False):
-    """Primer proveedor disponible (compatibilidad)."""
-    providers = choose_providers(has_image=has_image)
+def choose_provider(has_image=False, preferido=None):
+    """Proveedor seleccionado (compatibilidad)."""
+    providers = choose_providers(has_image=has_image, preferido=preferido)
     if not providers:
         raise AIProviderError(
-            'No hay proveedor de IA configurado. Define GEMINI_API_KEY o '
-            'DEEPSEEK_API_KEY en el entorno.'
+            'No hay proveedor de IA seleccionado o configurado. Configura '
+            'Gemini, DeepSeek u Ollama (OLLAMA_URL).'
         )
     return providers[0]
 

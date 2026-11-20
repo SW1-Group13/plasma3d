@@ -71,7 +71,7 @@ export interface AgentStepRequest {
 }
 
 export interface AgentConfig {
-  /** Proveedor real configurado en el backend (AI_PROVIDER). */
+  /** Primer proveedor disponible (sugerencia inicial; el usuario elige). */
   provider: string;
   /** Proveedores con API key configurada (los que se pueden elegir). */
   providers?: AgentProvider[];

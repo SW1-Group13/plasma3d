@@ -37,6 +37,7 @@ services:
       CSRF_COOKIE_SECURE: "False"
     volumes:
       - media_data:/app/media
+      - ./plasma3d_api/secrets:/app/secrets:ro
     depends_on:
       postgres:
         condition: service_healthy
