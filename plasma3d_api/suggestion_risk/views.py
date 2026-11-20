@@ -160,11 +160,8 @@ def agente_chat_stream(request):
 @permission_classes([IsAuthenticated])
 def ai_config(request):
     """Configuracion real de IA: proveedores disponibles, imágenes y audio."""
-    proveedor = (getattr(settings, 'AI_PROVIDER', 'gemini') or 'gemini').strip().lower()
     providers = available_providers()
-    ids = [p['id'] for p in providers]
-    if proveedor not in ids and ids:
-        proveedor = ids[0]
+    proveedor = providers[0]['id'] if providers else ''
     return Response(
         {
             'provider': proveedor,

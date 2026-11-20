@@ -33,6 +33,7 @@ services:
       DEBUG: "True"
     volumes:
       - ./plasma3d_api:/app
+      - ./plasma3d_api/secrets:/app/secrets:ro
     ports:
       - "8000:8000"
     stdin_open: true

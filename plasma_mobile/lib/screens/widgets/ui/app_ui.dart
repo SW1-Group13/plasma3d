@@ -31,7 +31,9 @@ class AppCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(AppColors.radius),
         border: Border.all(color: borderColor),
       ),
-      child: child,
+      // Material interno: los ListTile necesitan pintar ink/splash sobre un
+      // Material, no sobre el DecoratedBox de la tarjeta.
+      child: Material(type: MaterialType.transparency, child: child),
     );
 
     if (onTap == null) return content;
@@ -124,7 +126,10 @@ class AppButton extends StatelessWidget {
           const SizedBox(
             width: 18,
             height: 18,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: Colors.white,
+            ),
           )
         else if (icon != null)
           Icon(icon, size: 18),
@@ -258,10 +263,7 @@ class AppEmptyState extends StatelessWidget {
                 ),
               ),
             ],
-            if (action != null) ...[
-              const SizedBox(height: 16),
-              action!,
-            ],
+            if (action != null) ...[const SizedBox(height: 16), action!],
           ],
         ),
       ),
@@ -310,13 +312,13 @@ class AppAvatar extends StatelessWidget {
   }
 
   Widget _initialWidget(String initial) => Text(
-        initial,
-        style: TextStyle(
-          color: AppColors.primary,
-          fontWeight: FontWeight.w700,
-          fontSize: size * 0.4,
-        ),
-      );
+    initial,
+    style: TextStyle(
+      color: AppColors.primary,
+      fontWeight: FontWeight.w700,
+      fontSize: size * 0.4,
+    ),
+  );
 }
 
 class AppLogo extends StatelessWidget {

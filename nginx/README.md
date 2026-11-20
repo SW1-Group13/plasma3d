@@ -22,11 +22,42 @@ Punto de entrada único del despliegue. La configuración activa es
 - **`Dockerfile`** — imagen `nginx:stable-alpine` con `default.conf` (opcional;
   el compose usa `nginx:alpine` y monta el archivo).
 
+## Publicar imágenes en Docker Hub
+
+```bash
+# Desde la raíz del repositorio
+docker login -u sebastiandevjs
+
+# Compila API y web con las etiquetas de docker-compose.prod.yml
+docker compose -f docker-compose.prod.yml build
+
+# Sube sebastiandevjs/plasma3d_api:prod y sebastiandevjs/plasma3d_web:prod
+docker compose -f docker-compose.prod.yml push plasma3d-api plasma3d-web
+```
+
+Equivalente sin compose:
+
+```bash
+docker build -f plasma3d_api/Dockerfile.prod -t sebastiandevjs/plasma3d_api:prod ./plasma3d_api
+docker build -f plasma3d_web/Dockerfile.prod --build-arg VITE_BASE_URL=/ -t sebastiandevjs/plasma3d_web:prod ./plasma3d_web
+docker push sebastiandevjs/plasma3d_api:prod
+docker push sebastiandevjs/plasma3d_web:prod
+```
+
+El borde usa `nginx:alpine` directamente, así que no requiere push.
+
 ## Despliegue
 
 ```bash
 # Desde la raíz del repositorio
 docker compose -f docker-compose.prod.yml up -d --build
+```
+
+En el servidor, para usar las imágenes ya publicadas:
+
+```bash
+docker compose -f docker-compose.prod.yml pull
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 El borde publica **80** y **443**. El frontend (`plasma3d-web`) ya **no**

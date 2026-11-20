@@ -19,9 +19,11 @@ import uuid
 from .agent_tools import DECLARACIONES, EDITOR, SERVIDOR, ejecutar_servidor
 from .services_ai import (
     AIProviderError,
+    VISION_PROVIDERS,
     chat_completion,
     chat_completion_stream,
     choose_providers,
+    provider_config,
 )
 from .support_guides import (
     find_guide,
@@ -774,9 +776,24 @@ def _nucleo_agente(
     )
     providers = choose_providers(has_image=trae_imagen, preferido=proveedor)
     if not providers:
+        if proveedor:
+            cfg = provider_config(proveedor)
+            if cfg is None:
+                raise AgenteError(
+                    'El proveedor seleccionado "{}" no existe.'.format(proveedor)
+                )
+            if not cfg.get('api_key') or not cfg.get('models'):
+                raise AgenteError(
+                    'El proveedor seleccionado "{}" no está configurado.'.format(proveedor)
+                )
+            if trae_imagen and cfg['name'] not in VISION_PROVIDERS:
+                raise AgenteError(
+                    'El proveedor seleccionado "{}" no admite imágenes. '
+                    'Elige Gemini.'.format(proveedor)
+                )
         raise AgenteError(
-            'No hay proveedor de IA configurado. Define GEMINI_API_KEY o '
-            'DEEPSEEK_API_KEY en el entorno.'
+            'No hay proveedor de IA configurado. Configura Gemini, DeepSeek '
+            'u Ollama (OLLAMA_URL).'
         )
     compacto = _perfil(providers[0])['local']
     messages, has_image = _armar_mensajes(

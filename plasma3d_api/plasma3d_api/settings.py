@@ -195,9 +195,7 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 # AUTH_USER_MODEL = 'view_url_3D.Usuario'
 
 # --- Proveedores de IA (OpenAI-compatible) ---
-# deepseek | gemini
-AI_PROVIDER = os.getenv('AI_PROVIDER', 'gemini').strip().lower()
-
+# El proveedor se elige en el chat (gemini/deepseek/ollama), no por entorno.
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GEMINI_MODELS = os.getenv('GEMINI_MODELS', '')
 GEMINI_BASE_URL = os.getenv(

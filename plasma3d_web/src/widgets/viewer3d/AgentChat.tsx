@@ -270,7 +270,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     ? aiConfig.providers
     : [{ id: 'gemini', label: 'Gemini', vision: true }];
   const currentProvider = providers.find((p) => p.id === selectedModel) ?? providers[0];
-  const visionEnabled = aiConfig ? (aiConfig.providers?.length ? currentProvider.vision || aiConfig.vision : aiConfig.vision) : true;
+  const visionEnabled = currentProvider.vision;
   const audioEnabled = aiConfig?.audio ?? true;
 
   useEffect(() => {
@@ -289,11 +289,11 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
   }, []);
 
   useEffect(() => {
-    if (aiConfig && !aiConfig.vision) {
+    if (!visionEnabled) {
       setImage(null);
       setImageName('');
     }
-  }, [aiConfig]);
+  }, [visionEnabled]);
   const itemSeq = useRef(Math.max(0, ...items.map((it) => ('id' in it ? it.id : 0))));
   const pendingRef = useRef<PendingTurn | null>(loadPending(userId, modelId));
   const previewRef = useRef<PreviewWaiter | null>(null);
@@ -353,7 +353,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     }
   }, [autoApply]);
 
-  // Si el proveedor guardado ya no está disponible, usar el del servidor.
+  // Si el proveedor guardado ya no está disponible, usar el primero disponible.
   useEffect(() => {
     const list = aiConfig?.providers;
     if (list?.length && !list.some((p) => p.id === selectedModel)) {
@@ -1245,7 +1245,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
 
   const imageTitle = visionEnabled
     ? 'Adjuntar imagen'
-    : 'El proveedor configurado no admite imágenes';
+    : 'El proveedor seleccionado no admite imágenes';
   const micTitle = !audioEnabled
     ? 'La transcripción de audio no está configurada'
     : recording
