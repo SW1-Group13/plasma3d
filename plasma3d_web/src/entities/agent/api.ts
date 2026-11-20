@@ -58,6 +58,8 @@ export interface AgentStepRequest {
   historial: GeminiContent[];
   contexto: AgentContext;
   mensaje?: string;
+  /** Solicita una guía de uso sin acciones sobre el plano. */
+  modo?: 'soporte';
   /** Imagen adjunta como data URL (data:image/...;base64,...). */
   imagen?: string;
   /** Proveedor elegido en el chat ('gemini' | 'deepseek'). */

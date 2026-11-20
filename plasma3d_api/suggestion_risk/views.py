@@ -41,6 +41,7 @@ def agente_chat(request):
       {historial: [...contenidos del agente], contexto: {...},
        mensaje?: str,                                   # nueva pregunta
        imagen?: str,                                    # data URL (data:image/...;base64,...)
+       modo?: 'soporte',                                # guía de uso, solo texto
        resultados?: [{id, nombre, respuesta}],          # acciones del editor ejecutadas
        pendientes?: [...]}                              # devueltos por el paso anterior
     Respuesta:
@@ -62,11 +63,14 @@ def _agente_args(data):
     mensaje = data.get('mensaje')
     imagen = data.get('imagen')
     resultados = data.get('resultados')
+    modo = data.get('modo')
     historial = data.get('historial') or []
     contexto = data.get('contexto') or {}
 
     if not isinstance(historial, list) or not isinstance(contexto, dict):
         return None, Response({'detail': 'Formato inválido.'}, status=status.HTTP_400_BAD_REQUEST)
+    if modo not in (None, 'soporte') or (modo == 'soporte' and resultados is not None):
+        return None, Response({'detail': 'Modo de agente inválido.'}, status=status.HTTP_400_BAD_REQUEST)
     if mensaje is not None and len(str(mensaje)) > MAX_CHARS_MENSAJE:
         return None, Response(
             {'detail': f'El mensaje supera {MAX_CHARS_MENSAJE} caracteres.'},
@@ -98,6 +102,7 @@ def _agente_args(data):
         'pendientes': data.get('pendientes'),
         'imagen': imagen,
         'proveedor': proveedor,
+        'modo': modo,
     }, None
 
 

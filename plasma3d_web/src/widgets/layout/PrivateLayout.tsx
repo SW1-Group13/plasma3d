@@ -16,6 +16,7 @@ import {
 import { assetUrl } from '@/shared/lib/assetUrl';
 import { cn } from '@/shared/lib/utils';
 import { ThemeToggle } from '@/features/theme/ui/ThemeToggle';
+import { SupportChat } from '@/features/support/ui/SupportChat';
 
 const links: {
   to: string;
@@ -236,6 +237,7 @@ export function PrivateLayout() {
           </div>
         )}
       </main>
+      {!fullBleed && <SupportChat />}
     </section>
   );
 }

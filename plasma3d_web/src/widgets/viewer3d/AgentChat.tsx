@@ -100,6 +100,7 @@ type PlanDecision = 'ejecutar' | 'cambiar' | 'cancelar';
 interface LastTurn {
   text: string;
   imagen?: string;
+  modo?: 'soporte';
   /** Historial antes de enviar el mensaje. */
   historial: GeminiContent[];
   /** Cuántas ediciones del agente había antes de este turno. */
@@ -118,7 +119,7 @@ const WELCOME: ChatItem = {
   kind: 'msg',
   rol: 'agente',
   texto:
-    'Hola, soy el Agente IA de Plasma3D. Puedo calcular costos con tus precios, dibujar muros, ambientes, puertas, ventanas, pisos y techos, cambiar materiales y proponerte mejoras. También puedes adjuntar una imagen o dictarme un audio. ¿Qué necesitas?',
+    'Hola, soy el Agente IA de Plasma3D. Puedo calcular costos con tus precios, dibujar muros, ambientes, puertas, ventanas, pisos y techos, cambiar materiales y proponerte mejoras. También puedo guiarte paso a paso para usar la app. Puedes adjuntar una imagen o dictarme un audio. ¿Qué necesitas?',
 };
 
 function storageKey(userId: number | string, modelId: number | string) {
@@ -931,6 +932,9 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     try {
       let step = await callStep(current.request, generation);
       if (generation !== generationRef.current) return;
+      if (current.request.modo === 'soporte' && step.estado === 'acciones') {
+        throw new Error('La respuesta de ayuda intentó modificar el plano. No se aplicó ninguna acción.');
+      }
       let round = current.round;
       while (step.estado === 'acciones' && round < MAX_ROUNDS) {
         setStreamText('');
@@ -949,12 +953,13 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
             pendientes: step.pendientes,
             // Mantener el mismo proveedor en todo el turno.
             proveedor: step.proveedor ?? current.request.proveedor,
+            ...(current.request.modo ? { modo: current.request.modo } : {}),
           },
         };
         // Guardar primero los resultados: una excepción al resumir el plano no debe repetir el dibujo.
         writePending(current);
         try {
-          current.request.contexto = getHost()?.engine.getAgentContext() ?? {};
+          current.request.contexto = currentContext();
           writePending(current);
         } catch {
           /* el agente puede continuar con el historial y los resultados */
@@ -1083,7 +1088,14 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     lastAgentText: items.length > 1 ? lastAgentText : undefined,
   });
 
-  function send(text: string) {
+  function currentContext(): AgentStepRequest['contexto'] {
+    return {
+      ...(getHost()?.engine.getAgentContext() ?? {}),
+      pantalla_actual: 'editor',
+    };
+  }
+
+  function send(text: string, requestedMode?: 'soporte') {
     const texto = text.trim();
     const imagen = image;
     if ((!texto && !imagen) || busyRef.current || transcribing) return;
@@ -1098,12 +1110,15 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
         return;
       }
     }
+    // El servidor clasifica las preguntas escritas; los chips fuerzan soporte.
+    const modo = requestedMode;
     const request: AgentStepRequest = {
       historial,
-      contexto: getHost()?.engine.getAgentContext() ?? {},
+      contexto: currentContext(),
       proveedor: selectedModel,
       ...(texto ? { mensaje: texto } : {}),
       ...(imagen ? { imagen } : {}),
+      ...(modo ? { modo } : {}),
     };
     const displayText = texto || 'Analiza esta imagen.';
     const pending: PendingTurn = {
@@ -1113,6 +1128,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     lastTurnRef.current = {
       text: texto,
       ...(imagen ? { imagen } : {}),
+      ...(modo ? { modo } : {}),
       historial,
       undoStart: conversationUndoRef.current.length,
       itemsBefore: items.length,
@@ -1165,10 +1181,11 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     setError(null);
     const request: AgentStepRequest = {
       historial: turn.historial,
-      contexto: host?.engine.getAgentContext() ?? {},
+      contexto: currentContext(),
       proveedor: providerId,
       ...(turn.text ? { mensaje: turn.text } : {}),
       ...(turn.imagen ? { imagen: turn.imagen } : {}),
+      ...(turn.modo ? { modo: turn.modo } : {}),
     };
     const pending: PendingTurn = {
       stage: 'request', turnId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
@@ -1607,7 +1624,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
                     el.setSelectionRange(pos, pos);
                   });
                 } else {
-                  send(chip.text);
+                  send(chip.text, chip.modo);
                 }
               }}
               title={chip.edit ? 'Completa el valor y envía' : chip.text}

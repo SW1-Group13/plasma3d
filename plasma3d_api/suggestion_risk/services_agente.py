@@ -23,6 +23,12 @@ from .services_ai import (
     chat_completion_stream,
     choose_providers,
 )
+from .support_guides import (
+    find_guide,
+    is_support_question,
+    local_support_answer,
+    support_system_prompt,
+)
 
 MAX_CHARS_MENSAJE = 2000
 MAX_PASOS_SERVIDOR = 6
@@ -665,6 +671,78 @@ def _armar_mensajes(historial, contexto, mensaje, resultados, pendientes, imagen
     return messages, has_image
 
 
+def _responder_soporte(historial, contexto, mensaje, imagen, proveedor, on_token):
+    """Guía de uso en el contrato del chat, sin exponer acciones del editor."""
+    contexto = contexto if isinstance(contexto, dict) else {}
+    contexto_ayuda = {
+        key: contexto[key]
+        for key in ('pantalla_actual', 'pantalla', 'ruta', 'vista', 'seleccion', 'unidad')
+        if key in contexto
+    }
+    messages, _ = _armar_mensajes(
+        historial, contexto_ayuda, mensaje, None, None, imagen,
+    )
+    guide = find_guide(mensaje, contexto_ayuda, historial)
+    system = support_system_prompt()
+    if guide:
+        system += '\n\nGUÍA MÁS RELACIONADA: ' + guide['answer']
+    else:
+        system += '\n\nNo hay guía relacionada con esta pregunta. Di que no conoces esa función.'
+    model_messages = [{'role': 'system', 'content': system}]
+    for index, item in enumerate(messages[-14:]):
+        role = item.get('role')
+        if role not in ('user', 'assistant') or item.get('tool_calls'):
+            continue
+        content = item.get('content')
+        if isinstance(content, list):
+            # La imagen del turno actual sí se envía; las anteriores no se repiten.
+            content = content if index == len(messages[-14:]) - 1 else _contenido_texto(item)
+        else:
+            content = _solo_mensaje(content)
+        if content:
+            model_messages.append({'role': role, 'content': content})
+
+    text = ''
+    used_provider = None
+    excluded = {tool['name'] for tool in DECLARACIONES}
+    for candidate in choose_providers(has_image=bool(imagen), preferido=proveedor):
+        try:
+            if on_token is None:
+                answer = chat_completion(
+                    model_messages, candidate, temperature=0.2,
+                    exclude_tools=excluded,
+                )
+            else:
+                answer = chat_completion_stream(
+                    model_messages, candidate, on_token, temperature=0.2,
+                    exclude_tools=excluded,
+                )
+        except AIProviderError:
+            continue
+        if answer.get('tool_calls'):
+            continue
+        text = _contenido_texto(answer)
+        if text:
+            used_provider = candidate['name']
+            break
+
+    if not text:
+        text = local_support_answer(
+            mensaje, contexto_ayuda, historial, has_image=bool(imagen),
+        )
+        if on_token is not None:
+            on_token(text)
+    messages.append({'role': 'assistant', 'content': text})
+    result = {
+        'estado': 'respuesta',
+        'texto': text,
+        'historial': _sanitize_history(messages),
+    }
+    if used_provider:
+        result['proveedor'] = used_provider
+    return result
+
+
 def _nucleo_agente(
     historial,
     contexto,
@@ -673,6 +751,7 @@ def _nucleo_agente(
     pendientes=None,
     imagen=None,
     proveedor=None,
+    modo=None,
     on_token=None,
 ):
     """
@@ -683,6 +762,11 @@ def _nucleo_agente(
       {estado: 'respuesta', texto, historial, proveedor}
       {estado: 'acciones', acciones:[{id,nombre,args}], pendientes:[...], historial, proveedor}
     """
+    if (modo == 'soporte' or (mensaje and is_support_question(mensaje))) and resultados is None:
+        return _responder_soporte(
+            historial, contexto, mensaje, imagen, proveedor, on_token,
+        )
+
     # ¿Habrá imágenes en este turno? (decide el proveedor antes de armar el mensaje)
     trae_imagen = bool(imagen) or any(
         isinstance(r, dict) and (r.get('respuesta') or {}).get('imagenes')
@@ -849,11 +933,12 @@ def responder_agente(
     pendientes=None,
     imagen=None,
     proveedor=None,
+    modo=None,
 ):
     """Un paso del bucle del agente (respuesta completa, sin streaming)."""
     return _nucleo_agente(
         historial, contexto, mensaje=mensaje, resultados=resultados,
-        pendientes=pendientes, imagen=imagen, proveedor=proveedor,
+        pendientes=pendientes, imagen=imagen, proveedor=proveedor, modo=modo,
     )
 
 
@@ -865,6 +950,7 @@ def responder_agente_stream(
     pendientes=None,
     imagen=None,
     proveedor=None,
+    modo=None,
 ):
     """
     Igual que responder_agente, pero como generador de eventos:
@@ -879,6 +965,7 @@ def responder_agente_stream(
             paso = _nucleo_agente(
                 historial, contexto, mensaje=mensaje, resultados=resultados,
                 pendientes=pendientes, imagen=imagen, proveedor=proveedor,
+                modo=modo,
                 on_token=lambda t: eventos.put(('token', {'t': t})),
             )
             eventos.put(('acciones' if paso['estado'] == 'acciones' else 'fin', paso))

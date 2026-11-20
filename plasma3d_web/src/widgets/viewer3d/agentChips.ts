@@ -12,6 +12,8 @@ export interface AgentChip {
    * en vez de enviarse directo.
    */
   edit?: boolean;
+  /** Las sugerencias de ayuda piden solo una explicación, sin editar el plano. */
+  modo?: 'soporte';
 }
 
 export interface ChipContext {
@@ -34,11 +36,13 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
       { label: 'Sí, hazlo', text: 'Sí, hazlo.' },
       { label: 'No, gracias', text: 'No, gracias.' },
       { label: '¿Cuánto costaría?', text: '¿Cuánto costaría eso?' },
+      { label: '¿Cómo uso la app?', text: 'Explícame cómo usar Plasma3D paso a paso.', modo: 'soporte' },
     ];
   }
 
   if (count > 1) {
     return [
+      { label: '¿Cómo edito varias?', text: '¿Cómo edito varias piezas seleccionadas?', modo: 'soporte' },
       { label: 'Cambiar material a todas', text: 'Cambia el material de las piezas seleccionadas a ', edit: true },
       { label: '¿Cuánto cuestan?', text: '¿Cuánto cuestan las piezas seleccionadas?' },
       { label: 'Ajustar al muro', text: 'Ajusta al muro las puertas y ventanas seleccionadas.' },
@@ -47,6 +51,7 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
 
   if (count === 1 && kind === 'wall') {
     return [
+      { label: '¿Cómo edito este muro?', text: '¿Cómo edito el muro seleccionado en Plasma3D?', modo: 'soporte' },
       { label: 'Cambiar material', text: '¿Qué materiales puedo usar en este muro y cuánto cuesta cada uno?' },
       { label: 'Agregar ventana aquí', text: 'Ponle una ventana' },
       { label: 'Agregar puerta aquí', text: 'Ponle una puerta' },
@@ -58,6 +63,7 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
   if (count === 1 && (kind === 'door' || kind === 'window')) {
     const name = kind === 'door' ? 'la puerta' : 'la ventana';
     return [
+      { label: '¿Cómo la edito?', text: `¿Cómo edito ${name} seleccionada en Plasma3D?`, modo: 'soporte' },
       { label: 'Gírala 90°', text: `Gira ${name} seleccionada 90 grados.` },
       { label: 'Hazla de 1.2 m', text: `Haz ${name} seleccionada de 1.2 m de ancho.` },
       { label: 'Muévela 50 cm →', text: `Mueve ${name} seleccionada 50 cm a la derecha.` },
@@ -67,12 +73,14 @@ export function chipsFor({ kind, count, hasPlan, lastAgentText }: ChipContext): 
 
   if (count === 1 && kind === 'floor') {
     return [
+      { label: '¿Cómo cambio el piso?', text: '¿Cómo cambio el material del piso seleccionado?', modo: 'soporte' },
       { label: 'Cambiar material', text: '¿Qué materiales de piso puedo usar y cuánto cuesta cada uno?' },
       { label: '¿Cuánto cuesta este piso?', text: '¿Cuánto cuesta el piso seleccionado?' },
     ];
   }
 
   const chips: AgentChip[] = [
+    { label: '¿Cómo uso la app?', text: 'Explícame cómo usar Plasma3D paso a paso.', modo: 'soporte' },
     { label: 'Crear una pared', text: 'Créame una pared' },
     { label: 'Crear una ventana', text: 'Créame una ventana' },
     { label: 'Crear un cuarto', text: 'Créame un cuarto' },
