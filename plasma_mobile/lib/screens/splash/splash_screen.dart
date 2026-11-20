@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 
@@ -28,6 +30,7 @@ class _SplashScreenState extends State<SplashScreen> {
       Get.offAllNamed(AppRoutes.onboarding);
     } else if (auth.isLoggedIn) {
       Get.offAllNamed(AppRoutes.home);
+      unawaited(auth.registerPushDevice());
     } else {
       Get.offAllNamed(AppRoutes.signin);
     }

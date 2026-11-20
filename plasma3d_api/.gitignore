@@ -25,10 +25,13 @@ db.sqlite3
 # Migraciones (si quieres ignorarlas al resetear BD)
 **/migrations/*
 !*/migrations/__init__.py
+!push_notifications/migrations/
+!push_notifications/migrations/*.py
 
 # Archivos de entorno
 .env
 *.env
+secrets/
 
 # Compilados / caches
 .pytest_cache/

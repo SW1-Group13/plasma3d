@@ -1,5 +1,7 @@
 // lib/main.dart
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:get/get.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:plasma_mobile/screens/auth/controller/model_controller.dart';
@@ -7,6 +9,8 @@ import 'package:plasma_mobile/screens/auth/service/auth_controller.dart';
 
 import 'config/app_themes.dart';
 import 'config/theme_controller.dart';
+import 'firebase_options.dart';
+import 'notifications/push_notifications_service.dart';
 import 'routes/routes.dart';
 
 // -- importacion de las constantes
@@ -14,6 +18,11 @@ import 'const/app_constants.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  if (defaultTargetPlatform == TargetPlatform.android) {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  }
   await GetStorage.init();
 
   Get.put(ThemeController());
@@ -25,7 +34,8 @@ void main() async {
   const baseUrl = AppConstants.baseUrl;
 
   Get.put(AuthController(baseUrl: baseUrl), permanent: true);
-Get.put(ModelController()); // ⬅️ AÑADIR ESTO OBLIGATORIO
+  await PushNotificationsService.instance.initialize();
+  Get.put(ModelController()); // ⬅️ AÑADIR ESTO OBLIGATORIO
   runApp(const App());
 }
 

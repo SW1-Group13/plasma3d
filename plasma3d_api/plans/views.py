@@ -21,6 +21,7 @@ from rest_framework.response import Response
 
 from mrcnn import views
 from plans.models import Plan3DJob
+from push_notifications.clients import send_model_ready
 from users.models import Usuario
 from .serializers import Plan3DJobSerializer
 
@@ -198,6 +199,7 @@ def _build_or_discard(job, det, roof_type, fill_gaps=True):
 
 @api_view(['POST'])
 @parser_classes([MultiPartParser, FormParser])
+@permission_classes([IsAuthenticated])
 def create_plan3d_job(request):
     """
     Crear un job de Plan3D a partir de un archivo subido.
@@ -220,6 +222,12 @@ def create_plan3d_job(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
+    if usuario_instance.id != request.user.id:
+        return Response(
+            {'detail': 'No puedes generar modelos para otro usuario.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
     if _plan_limit_reached(usuario_instance):
         return _plan_limit_response()
 
@@ -231,6 +239,8 @@ def create_plan3d_job(request):
     failed = _build_or_discard(job, det, _roof_type_from(request), _fill_gaps_from(request))
     if failed is not None:
         return failed
+
+    send_model_ready(user_id=job.usuario_id, model_id=job.id)
 
     return Response(
         Plan3DJobSerializer(job).data,

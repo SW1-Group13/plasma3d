@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "264303944145",
+    "project_id": "plasma3d-96467",
+    "storage_bucket": "plasma3d-96467.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:264303944145:android:4d09a9c487a3ba6e5c40f0",
+        "android_client_info": {
+          "package_name": "com.example.plasma_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD1hJgyPd5sIQuUMJXhy2d5rR0WUo_FKkw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

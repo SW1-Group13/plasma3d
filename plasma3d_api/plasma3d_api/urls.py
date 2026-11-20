@@ -35,6 +35,7 @@ urlpatterns = [
     path('api/suggestion_risk/', include('suggestion_risk.urls')),
     path('api/media/upload/', upload_image, name='media-upload'),
     path('api/catalog/', include('catalog.urls')),
+    path('api/notifications/', include('push_notifications.urls')),
 ]
 
 # Servir archivos media (tambien cuando DEBUG=False, p. ej. en produccion)

@@ -63,6 +63,7 @@ INSTALLED_APPS = [
     'presupuesto',
     'suggestion_risk',
     'catalog',
+    'push_notifications',
 ]
 
 MIDDLEWARE = [

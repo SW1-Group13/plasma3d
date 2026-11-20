@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:get/get.dart';
 import 'package:get_storage/get_storage.dart';
 import 'package:plasma_mobile/api/auth_service.dart';
+import 'package:plasma_mobile/notifications/push_notifications_service.dart';
 import 'package:plasma_mobile/routes/routes.dart';
 
 import '../models/user_model.dart';
@@ -19,6 +21,7 @@ class AuthController extends GetxController {
   bool get isLoggedIn => _isLogged.value || accessToken != null;
 
   final Rxn<UserModel> currentUser = Rxn<UserModel>();
+  StreamSubscription<String>? _pushTokenSubscription;
 
   final String baseUrl;
   AuthController({required this.baseUrl});
@@ -29,7 +32,17 @@ class AuthController extends GetxController {
     _isFirstTime.value = _box.read('isFirstTime') ?? true;
     _isLogged.value = _box.read('isLoggedIn') ?? false;
     _restoreUser();
+    _pushTokenSubscription = PushNotificationsService
+        .instance
+        .registrationStream
+        .listen((token) => _registerPushToken(token));
     super.onInit();
+  }
+
+  @override
+  void onClose() {
+    _pushTokenSubscription?.cancel();
+    super.onClose();
   }
 
   void _restoreUser() {
@@ -122,6 +135,7 @@ class AuthController extends GetxController {
         _isLogged.value = true;
         _saveUser(data['usuario']);
         Get.offAllNamed(AppRoutes.home);
+        unawaited(registerPushDevice());
       } else {
         Get.snackbar(
           'Credenciales',
@@ -136,8 +150,20 @@ class AuthController extends GetxController {
   }
 
   Future<void> logout() async {
+    final token = accessToken;
+    final deviceToken = _box.read('push_fid') as String?;
+    if (token != null && deviceToken != null) {
+      try {
+        await _api.unregisterPushDevice(
+          token,
+          deviceToken,
+          PushNotificationsService.instance.platformName,
+        );
+      } catch (_) {
+        // La limpieza del dispositivo no debe impedir cerrar la sesión.
+      }
+    }
     try {
-      final token = accessToken;
       if (token != null) {
         await _api.logout(token);
       }
@@ -159,7 +185,10 @@ class AuthController extends GetxController {
     final id = currentUser.value?.id;
 
     if (token == null || id == null) {
-      Get.snackbar('Sesión', 'Inicia sesión de nuevo para actualizar tu perfil.');
+      Get.snackbar(
+        'Sesión',
+        'Inicia sesión de nuevo para actualizar tu perfil.',
+      );
       return false;
     }
 
@@ -178,7 +207,10 @@ class AuthController extends GetxController {
 
       if (res.isOk && res.body is Map) {
         _saveUser(res.body);
-        Get.snackbar('Perfil actualizado', 'Tus datos se guardaron correctamente.');
+        Get.snackbar(
+          'Perfil actualizado',
+          'Tus datos se guardaron correctamente.',
+        );
         return true;
       }
 
@@ -201,5 +233,29 @@ class AuthController extends GetxController {
     final stored = _box.read('access');
     if (stored is String && stored.isNotEmpty) return stored;
     return null;
+  }
+
+  Future<void> registerPushDevice() async {
+    if (!isLoggedIn || accessToken == null) return;
+    try {
+      await PushNotificationsService.instance.registerDevice();
+    } catch (_) {
+      // Un fallo de notificaciones no debe bloquear el inicio de sesión.
+    }
+  }
+
+  Future<void> _registerPushToken(String deviceToken) async {
+    final token = accessToken;
+    if (token == null || token.isEmpty) return;
+    try {
+      _box.write('push_fid', deviceToken);
+      await _api.registerPushDevice(
+        token,
+        deviceToken,
+        PushNotificationsService.instance.platformName,
+      );
+    } catch (_) {
+      // El registro se reintentará al renovar el token o iniciar sesión.
+    }
   }
 }

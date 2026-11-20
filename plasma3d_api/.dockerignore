@@ -8,6 +8,7 @@ env/
 
 # Entorno / secretos
 .env
+secrets/
 *.log
 
 # Datos y artefactos no necesarios en la imagen
