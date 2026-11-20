@@ -31,7 +31,11 @@ class ProviderSelectionTests(SimpleTestCase):
             ['gemini'],
         )
         self.assertEqual(
-            choose_providers(has_image=True, preferido='deepseek'),
+            [p['name'] for p in choose_providers(has_image=True, preferido='deepseek')],
+            ['deepseek'],
+        )
+        self.assertEqual(
+            choose_providers(has_image=True, preferido='ollama'),
             [],
         )
 
