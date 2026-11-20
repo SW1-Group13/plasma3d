@@ -94,8 +94,9 @@ def _configs():
             'models': _modelos(
                 getattr(settings, 'GEMINI_MODELS', ''),
                 [
-                    'gemini-3.8-flash',
+                    'gemini-3.5-flash',
                     'gemini-3.7-flash',
+                    'gemini-3.8-flash',
                 ],
             ),
         },
@@ -133,7 +134,7 @@ def _ollama_base():
 
 PROVIDER_LABELS = {'gemini': 'Gemini', 'deepseek': 'DeepSeek', 'ollama': 'Ollama (local)'}
 # Proveedores que aceptan imágenes en /chat/completions.
-VISION_PROVIDERS = {'gemini'}
+VISION_PROVIDERS = {'gemini', 'deepseek'}
 
 
 def available_providers():

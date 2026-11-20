@@ -266,9 +266,14 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
   /** Rondas de autorrevisión en el turno actual (máx. 2). */
   const reviewRoundsRef = useRef(0);
   const planResolveRef = useRef(new Map<number, (decision: PlanDecision) => void>());
-  const providers: AgentProvider[] = aiConfig?.providers?.length
-    ? aiConfig.providers
-    : [{ id: 'gemini', label: 'Gemini', vision: true }];
+  const providers: AgentProvider[] = (
+    aiConfig?.providers?.length
+      ? aiConfig.providers
+      : [{ id: 'gemini', label: 'Gemini', vision: true }]
+  ).map((provider) => (
+    // DeepSeek acepta imágenes; no dependemos de un /config viejo para habilitarlo.
+    provider.id === 'deepseek' ? { ...provider, vision: true } : provider
+  ));
   const currentProvider = providers.find((p) => p.id === selectedModel) ?? providers[0];
   const visionEnabled = currentProvider.vision;
   const audioEnabled = aiConfig?.audio ?? true;

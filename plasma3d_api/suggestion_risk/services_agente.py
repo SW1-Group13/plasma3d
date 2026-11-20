@@ -789,7 +789,7 @@ def _nucleo_agente(
             if trae_imagen and cfg['name'] not in VISION_PROVIDERS:
                 raise AgenteError(
                     'El proveedor seleccionado "{}" no admite imágenes. '
-                    'Elige Gemini.'.format(proveedor)
+                    'Elige Gemini o DeepSeek.'.format(proveedor)
                 )
         raise AgenteError(
             'No hay proveedor de IA configurado. Configura Gemini, DeepSeek '
