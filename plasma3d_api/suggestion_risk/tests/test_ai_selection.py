@@ -1,6 +1,6 @@
-from django.test import SimpleTestCase, override_settings
+from django.test import TestCase, override_settings
 
-from suggestion_risk.services_ai import choose_providers
+from suggestion_risk.services_ai import available_providers, choose_providers
 
 
 @override_settings(
@@ -11,7 +11,13 @@ from suggestion_risk.services_ai import choose_providers
     OLLAMA_URL='',
     OLLAMA_MODELS='qwen2.5:3b',
 )
-class ProviderSelectionTests(SimpleTestCase):
+class ProviderSelectionTests(TestCase):
+    def test_deepseek_is_first_in_the_available_providers_list(self):
+        self.assertEqual(
+            [p['id'] for p in available_providers()],
+            ['deepseek', 'gemini'],
+        )
+
     def test_only_the_selected_provider_is_used(self):
         self.assertEqual(
             [p['name'] for p in choose_providers(preferido='deepseek')],

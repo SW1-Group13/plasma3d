@@ -1,5 +1,6 @@
 import { http } from '@/shared/api/http';
 import type {
+  AdminAiSettings,
   AdminMetrics,
   AdminPayment,
   AdminRole,
@@ -31,6 +32,25 @@ export const adminApi = {
 
   async payments(): Promise<AdminPayment[]> {
     const { data } = await http.get<AdminPayment[]>('api/users/admin/pagos/');
+    return data;
+  },
+
+  async aiSettings(): Promise<AdminAiSettings> {
+    const { data } = await http.get<AdminAiSettings>(
+      'api/suggestion_risk/config/ollama/',
+    );
+    return data;
+  },
+
+  async updateAiSettings(patch: {
+    ollama_url?: string;
+    ollama_models?: string;
+    ollama_timeout?: number | null;
+  }): Promise<AdminAiSettings> {
+    const { data } = await http.patch<AdminAiSettings>(
+      'api/suggestion_risk/config/ollama/',
+      patch,
+    );
     return data;
   },
 };

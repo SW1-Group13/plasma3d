@@ -1,95 +1,95 @@
 import { useEffect, useRef } from 'react';
 import * as THREE from 'three';
-import type { ViewName } from '@/widgets/viewer3d/engine';
-import { useThemeStore } from '@/entities/theme/store';
 import { cn } from '@/shared/lib/utils';
 
 interface ViewCubeProps {
   getQuaternion: () => THREE.Quaternion | null;
   onDirection: (dir: { x: number; y: number; z: number }, ortho?: boolean) => void;
-  onSelect: (view: ViewName) => void;
   className?: string;
 }
 
-const CUBE_SIZE = 132;
-const HALF = 0.85;
+const GIZMO_SIZE = 116;
+const AXIS_LENGTH = 0.72;
 const AXIS_COLORS = {
-  x: '#ef4444',
-  y: '#22c55e',
-  z: '#3b82f6',
+  x: 0xef4444,
+  y: 0x22c55e,
+  z: 0x3b82f6,
 };
 
-const FACE_COLORS = {
-  dark: {
-    top: '#243049',
-    bottom: '#161e30',
-    border: '#3b4a66',
-    text: '#dbe3f0',
-    edge: 0x0a0e1a,
-    highlight: 0x6b93ff,
-  },
-  light: {
-    top: '#ffffff',
-    bottom: '#eaf0f8',
-    border: '#afbed2',
-    text: '#243147',
-    edge: 0x8fa2bc,
-    highlight: 0xc7dbff,
-  },
-} as const;
+const AXIS_LABEL: Record<'x' | 'y' | 'z', string> = {
+  x: 'X',
+  y: 'Y',
+  z: 'Z',
+};
 
-type FaceDef = { label: string; accent: keyof typeof AXIS_COLORS };
+interface AxisDef {
+  axis: 'x' | 'y' | 'z';
+  direction: THREE.Vector3;
+}
 
-// Orden de materiales de BoxGeometry: +X, -X, +Y, -Y, +Z, -Z
-const FACES: FaceDef[] = [
-  { label: 'RIGHT', accent: 'x' },
-  { label: 'LEFT', accent: 'x' },
-  { label: 'TOP', accent: 'y' },
-  { label: 'BOTTOM', accent: 'y' },
-  { label: 'FRONT', accent: 'z' },
-  { label: 'BACK', accent: 'z' },
+const AXES: AxisDef[] = [
+  { axis: 'x', direction: new THREE.Vector3(1, 0, 0) },
+  { axis: 'y', direction: new THREE.Vector3(0, 1, 0) },
+  { axis: 'z', direction: new THREE.Vector3(0, 0, 1) },
 ];
 
-function makeFaceTexture({ label, accent }: FaceDef, theme: 'dark' | 'light'): THREE.CanvasTexture {
-  const size = 256;
-  const colors = FACE_COLORS[theme];
+function makeLabelSprite(text: string, scale = 0.18) {
   const canvas = document.createElement('canvas');
-  canvas.width = size;
-  canvas.height = size;
+  canvas.width = 96;
+  canvas.height = 96;
   const ctx = canvas.getContext('2d')!;
-
-  // Fondo con leve gradiente
-  const gradient = ctx.createLinearGradient(0, 0, 0, size);
-  gradient.addColorStop(0, colors.top);
-  gradient.addColorStop(1, colors.bottom);
-  ctx.fillStyle = gradient;
-  ctx.fillRect(0, 0, size, size);
-
-  // Franja de eje
-  ctx.fillStyle = AXIS_COLORS[accent];
-  ctx.fillRect(0, 0, size, 14);
-
-  // Borde
-  ctx.strokeStyle = colors.border;
-  ctx.lineWidth = 8;
-  ctx.strokeRect(4, 4, size - 8, size - 8);
-
-  // Texto
-  ctx.fillStyle = colors.text;
-  ctx.font = 'bold 40px ui-sans-serif, system-ui, sans-serif';
+  ctx.clearRect(0, 0, 96, 96);
+  ctx.fillStyle = '#ffffff';
+  ctx.shadowColor = 'rgba(0, 0, 0, 0.35)';
+  ctx.shadowBlur = 5;
+  ctx.font = 'bold 58px ui-sans-serif, system-ui, sans-serif';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.fillText(label, size / 2, size / 2 + 4);
+  ctx.fillText(text, 48, 52);
 
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  return texture;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(scale, scale, 1);
+  sprite.renderOrder = 20;
+  return { sprite, texture, material };
 }
 
-export function ViewCube({ getQuaternion, onDirection, onSelect, className }: ViewCubeProps) {
+function makeRingSprite(color: number) {
+  const canvas = document.createElement('canvas');
+  canvas.width = 96;
+  canvas.height = 96;
+  const ctx = canvas.getContext('2d')!;
+  ctx.clearRect(0, 0, 96, 96);
+  ctx.strokeStyle = `#${color.toString(16).padStart(6, '0')}`;
+  ctx.lineWidth = 8;
+  ctx.beginPath();
+  ctx.arc(48, 48, 30, 0, Math.PI * 2);
+  ctx.stroke();
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    opacity: 0.8,
+    depthTest: false,
+    depthWrite: false,
+  });
+  const sprite = new THREE.Sprite(material);
+  sprite.scale.set(0.22, 0.22, 1);
+  sprite.renderOrder = 10;
+  return { sprite, texture, material };
+}
+
+export function ViewCube({ getQuaternion, onDirection, className }: ViewCubeProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const theme = useThemeStore((s) => s.theme);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -97,70 +97,133 @@ export function ViewCube({ getQuaternion, onDirection, onSelect, className }: Vi
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(CUBE_SIZE, CUBE_SIZE, false);
+    renderer.setSize(GIZMO_SIZE, GIZMO_SIZE, false);
+    renderer.setClearColor(0x000000, 0);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 20);
     camera.position.set(0, 0, 3.2);
     camera.lookAt(0, 0, 0);
 
-    const geometry = new THREE.BoxGeometry(HALF * 2, HALF * 2, HALF * 2);
-    const materials = FACES.map((face) => new THREE.MeshBasicMaterial({ map: makeFaceTexture(face, theme) }));
-    const cube = new THREE.Mesh(geometry, materials);
-    scene.add(cube);
+    const group = new THREE.Group();
+    scene.add(group);
 
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geometry),
-      new THREE.LineBasicMaterial({ color: FACE_COLORS[theme].edge }),
-    );
-    scene.add(edges);
+    const raycastTargets: THREE.Mesh[] = [];
+    const negativeLabels = new Map<THREE.Mesh, THREE.Sprite>();
+    const disposables: Array<{ dispose: () => void }> = [];
+
+    const up = new THREE.Vector3(0, 1, 0);
+
+    AXES.forEach(({ axis, direction }) => {
+      const color = AXIS_COLORS[axis];
+
+      // Línea positiva, como un eje de Blender.
+      const lineGeometry = new THREE.CylinderGeometry(0.018, 0.018, AXIS_LENGTH, 8);
+      const lineMaterial = new THREE.MeshBasicMaterial({ color });
+      const line = new THREE.Mesh(lineGeometry, lineMaterial);
+      line.position.copy(direction.clone().multiplyScalar(AXIS_LENGTH / 2));
+      line.quaternion.setFromUnitVectors(up, direction);
+      group.add(line);
+      disposables.push(lineGeometry, lineMaterial);
+
+      // Bola con la letra del eje.
+      const ballGeometry = new THREE.SphereGeometry(0.14, 24, 16);
+      const ballMaterial = new THREE.MeshBasicMaterial({ color });
+      const ball = new THREE.Mesh(ballGeometry, ballMaterial);
+      ball.position.copy(direction.clone().multiplyScalar(AXIS_LENGTH));
+      ball.userData.direction = { x: direction.x, y: direction.y, z: direction.z };
+      group.add(ball);
+      raycastTargets.push(ball);
+      disposables.push(ballGeometry, ballMaterial);
+
+      const label = makeLabelSprite(AXIS_LABEL[axis]);
+      label.sprite.position.copy(direction.clone().multiplyScalar(AXIS_LENGTH));
+      group.add(label.sprite);
+      disposables.push(label.texture, label.material);
+
+      // Lado negativo: línea tenue + aro hueco, como en Blender.
+      const negative = direction.clone().multiplyScalar(-1);
+      const negativeLineGeometry = new THREE.CylinderGeometry(0.012, 0.012, AXIS_LENGTH * 0.82, 8);
+      const negativeLineMaterial = new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity: 0.35,
+      });
+      const negativeLine = new THREE.Mesh(negativeLineGeometry, negativeLineMaterial);
+      negativeLine.position.copy(negative.clone().multiplyScalar(AXIS_LENGTH * 0.41));
+      negativeLine.quaternion.setFromUnitVectors(up, negative);
+      group.add(negativeLine);
+      disposables.push(negativeLineGeometry, negativeLineMaterial);
+
+      const ring = makeRingSprite(color);
+      ring.sprite.position.copy(negative.clone().multiplyScalar(AXIS_LENGTH));
+      group.add(ring.sprite);
+      disposables.push(ring.texture, ring.material);
+
+      // Etiqueta del eje negativo: aparece al pasar el cursor, como Blender.
+      const negativeLabel = makeLabelSprite(`-${AXIS_LABEL[axis]}`, 0.19);
+      negativeLabel.sprite.position.copy(negative.clone().multiplyScalar(AXIS_LENGTH));
+      negativeLabel.sprite.visible = false;
+      group.add(negativeLabel.sprite);
+      disposables.push(negativeLabel.texture, negativeLabel.material);
+
+      // Zona de clic más generosa, invisible.
+      const hitGeometry = new THREE.SphereGeometry(0.24, 12, 8);
+      const hitMaterial = new THREE.MeshBasicMaterial({ visible: false });
+      const hit = new THREE.Mesh(hitGeometry, hitMaterial);
+      hit.position.copy(negative.clone().multiplyScalar(AXIS_LENGTH));
+      hit.userData.direction = { x: negative.x, y: negative.y, z: negative.z };
+      group.add(hit);
+      raycastTargets.push(hit);
+      negativeLabels.set(hit, negativeLabel.sprite);
+      disposables.push(hitGeometry, hitMaterial);
+    });
+
+    const centerGeometry = new THREE.SphereGeometry(0.065, 16, 12);
+    const centerMaterial = new THREE.MeshBasicMaterial({ color: 0xcbd5e1 });
+    const center = new THREE.Mesh(centerGeometry, centerMaterial);
+    group.add(center);
+    disposables.push(centerGeometry, centerMaterial);
 
     const pointer = new THREE.Vector2();
     const raycaster = new THREE.Raycaster();
-
-    const setHighlight = (index: number | null) => {
-      materials.forEach((material, i) => {
-        material.color.set(i === index ? FACE_COLORS[theme].highlight : 0xffffff);
-      });
-    };
-
-    const classify = (hit: THREE.Intersection): { x: number; y: number; z: number } => {
-      const local = cube.worldToLocal(hit.point.clone());
-      const threshold = 0.45;
-      const ax = local.x > threshold ? 1 : local.x < -threshold ? -1 : 0;
-      const ay = local.y > threshold ? 1 : local.y < -threshold ? -1 : 0;
-      const az = local.z > threshold ? 1 : local.z < -threshold ? -1 : 0;
-      if (ax === 0 && ay === 0 && az === 0 && hit.face) {
-        const n = hit.face.normal;
-        return { x: Math.round(n.x), y: Math.round(n.y), z: Math.round(n.z) };
-      }
-      return { x: ax, y: ay, z: az };
-    };
+    let hovered: THREE.Mesh | null = null;
 
     const pick = (clientX: number, clientY: number) => {
       const rect = canvas.getBoundingClientRect();
       pointer.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointer.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointer, camera);
-      return raycaster.intersectObject(cube, false)[0];
+      return raycaster.intersectObjects(raycastTargets, false)[0]?.object as THREE.Mesh | undefined;
     };
 
     const onPointerDown = (event: PointerEvent) => {
       const hit = pick(event.clientX, event.clientY);
-      if (!hit) return;
-      onDirection(classify(hit), true);
+      const direction = hit?.userData.direction as { x: number; y: number; z: number } | undefined;
+      if (direction) onDirection(direction, true);
+    };
+
+    const setHovered = (hit: THREE.Mesh | null) => {
+      if (hovered === hit) return;
+      if (hovered) {
+        hovered.scale.setScalar(1);
+        const oldLabel = negativeLabels.get(hovered);
+        if (oldLabel) oldLabel.visible = false;
+      }
+      hovered = hit;
+      if (hovered) {
+        hovered.scale.setScalar(1.18);
+        const label = negativeLabels.get(hovered);
+        if (label) label.visible = true;
+      }
+      canvas.style.cursor = hovered ? 'pointer' : 'default';
     };
 
     const onPointerMove = (event: PointerEvent) => {
-      const hit = pick(event.clientX, event.clientY);
-      if (!hit || !hit.face) {
-        setHighlight(null);
-        return;
-      }
-      setHighlight(hit.face.materialIndex ?? null);
+      setHovered(pick(event.clientX, event.clientY) ?? null);
     };
 
-    const onPointerLeave = () => setHighlight(null);
+    const onPointerLeave = () => setHovered(null);
 
     canvas.addEventListener('pointerdown', onPointerDown);
     canvas.addEventListener('pointermove', onPointerMove);
@@ -168,7 +231,7 @@ export function ViewCube({ getQuaternion, onDirection, onSelect, className }: Vi
 
     renderer.setAnimationLoop(() => {
       const quaternion = getQuaternion();
-      if (quaternion) cube.quaternion.copy(quaternion);
+      if (quaternion) group.quaternion.copy(quaternion).invert();
       renderer.render(scene, camera);
     });
 
@@ -177,55 +240,23 @@ export function ViewCube({ getQuaternion, onDirection, onSelect, className }: Vi
       canvas.removeEventListener('pointermove', onPointerMove);
       canvas.removeEventListener('pointerleave', onPointerLeave);
       renderer.setAnimationLoop(null);
-      materials.forEach((material) => {
-        material.map?.dispose();
-        material.dispose();
-      });
-      edges.geometry.dispose();
-      (edges.material as THREE.Material).dispose();
-      geometry.dispose();
+      disposables.forEach((item) => item.dispose());
       renderer.dispose();
     };
-  }, [getQuaternion, onDirection, onSelect, theme]);
+  }, [getQuaternion, onDirection]);
 
   return (
-    <div className={cn('flex flex-col items-end gap-1', className)}>
-      <div className="rounded-2xl border border-border/70 bg-surface/85 p-1.5 shadow-xl shadow-black/50 backdrop-blur-md">
+    <div className={cn(className)}>
+      <div className="rounded-full border border-border/70 bg-surface/80 p-1 shadow-xl shadow-black/50 backdrop-blur-md">
         <canvas
           ref={canvasRef}
-          width={CUBE_SIZE}
-          height={CUBE_SIZE}
-          style={{ width: CUBE_SIZE, height: CUBE_SIZE }}
-          className="cursor-pointer rounded-xl"
-          title="Cubo de vistas: clic en cara, arista o esquina"
-          aria-label="Cubo de vistas"
+          width={GIZMO_SIZE}
+          height={GIZMO_SIZE}
+          style={{ width: GIZMO_SIZE, height: GIZMO_SIZE }}
+          className="touch-none rounded-full"
+          title="Ejes de vista: clic en X, Y o Z (positivo o negativo)"
+          aria-label="Gizmo de ejes de vista"
         />
-      </div>
-      <div className="flex gap-1 rounded-lg border border-border/70 bg-surface/85 p-0.5 shadow-xl shadow-black/40 backdrop-blur-md">
-        <button
-          type="button"
-          onClick={() => onSelect('isometrica')}
-          title="Vista inicial (isometrica)"
-          className="cursor-pointer rounded-md px-2 py-0.5 text-[10px] font-semibold text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-        >
-          HOME
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelect('planta')}
-          title="Vista superior (planta)"
-          className="cursor-pointer rounded-md px-2 py-0.5 text-[10px] font-semibold text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-        >
-          PLANTA
-        </button>
-        <button
-          type="button"
-          onClick={() => onSelect('3d')}
-          title="Vista 3D libre"
-          className="cursor-pointer rounded-md px-2 py-0.5 text-[10px] font-semibold text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-        >
-          3D
-        </button>
       </div>
     </div>
   );

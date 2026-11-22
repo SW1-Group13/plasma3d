@@ -10,6 +10,9 @@ import { Spinner } from '@/shared/ui/spinner';
 import { EyeIcon, EyeOffIcon } from '@/shared/ui/icons';
 import { toast } from '@/shared/ui/toast';
 
+const DEMO_ADMIN_EMAIL = 'admin@plasma3d.local';
+const DEMO_ADMIN_PASSWORD = 'Admin12345!';
+
 export function LoginForm() {
   const navigate = useNavigate();
   const setSession = useSession((s) => s.setSession);
@@ -63,7 +66,20 @@ export function LoginForm() {
       </div>
 
       <div className="flex flex-col gap-1.5">
-        <Label htmlFor={passwordId}>Contrasena</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor={passwordId}>Contrasena</Label>
+          <button
+            type="button"
+            onClick={() => {
+              setEmail(DEMO_ADMIN_EMAIL);
+              setPassword(DEMO_ADMIN_PASSWORD);
+            }}
+            className="cursor-pointer text-xs font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+            title="Autocompletar credenciales del administrador"
+          >
+            Usar admin
+          </button>
+        </div>
         <div className="relative">
           <Input
             id={passwordId}

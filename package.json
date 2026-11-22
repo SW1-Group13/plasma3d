@@ -1,0 +1,24 @@
+{
+  "name": "plasma_3d",
+  "version": "1.0.0",
+  "description": "<div align=\"center\" width=\"100\">   <h1>Plasma3D</h1> </div>",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SW1-Group13/plasma-3d.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/SW1-Group13/plasma-3d/issues"
+  },
+  "homepage": "https://github.com/SW1-Group13/plasma-3d#readme"
+}

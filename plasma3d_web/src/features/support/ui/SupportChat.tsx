@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { agentApi, type GeminiContent } from '@/entities/agent/api';
+import {
+  agentApi,
+  type AgentConfig,
+  type AgentProvider,
+  type GeminiContent,
+} from '@/entities/agent/api';
 import { Button } from '@/shared/ui/button';
 import {
   Dialog,
@@ -53,8 +58,60 @@ export function SupportChat() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [failedQuestion, setFailedQuestion] = useState<string | null>(null);
+  const [aiConfig, setAiConfig] = useState<AgentConfig | null>(null);
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('plasma3d.agent.model');
+      if (stored && !stored.startsWith('local-')) return stored;
+    } catch {
+      /* sin almacenamiento */
+    }
+    return 'deepseek';
+  });
   const listEnd = useRef<HTMLDivElement>(null);
   const busyRef = useRef(false);
+
+  const providers = useMemo<AgentProvider[]>(
+    () => (
+      aiConfig?.providers?.length
+        ? aiConfig.providers
+        : [{ id: 'gemini', label: 'Gemini', vision: true }]
+    ),
+    [aiConfig],
+  );
+  const currentProvider = providers.find((p) => p.id === selectedModel) ?? providers[0];
+
+  useEffect(() => {
+    let alive = true;
+    agentApi
+      .config()
+      .then((config) => {
+        if (alive) setAiConfig(config);
+      })
+      .catch(() => {
+        /* mantener Gemini como fallback */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (providers.length && !providers.some((p) => p.id === selectedModel)) {
+      const preferred = providers.some((p) => p.id === aiConfig?.provider)
+        ? aiConfig!.provider
+        : providers[0].id;
+      setSelectedModel(preferred);
+    }
+  }, [aiConfig, providers, selectedModel]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('plasma3d.agent.model', selectedModel);
+    } catch {
+      /* sin almacenamiento */
+    }
+  }, [selectedModel]);
 
   useEffect(() => {
     if (open) listEnd.current?.scrollIntoView?.({ block: 'end' });
@@ -77,6 +134,7 @@ export function SupportChat() {
         mensaje: question,
         historial: history,
         contexto: { pantalla: screen.name, ruta: location.pathname },
+        proveedor: selectedModel,
       });
       if (step.estado !== 'respuesta') {
         throw new Error('El modo de ayuda intentó ejecutar una acción.');
@@ -110,6 +168,22 @@ export function SupportChat() {
             </DialogTitle>
             <DialogDescription>Ayuda para usar {screen.name}</DialogDescription>
           </DialogHeader>
+
+          <div className="flex shrink-0 items-center gap-2 border-b border-border bg-surface-2/40 px-4 py-1.5 text-[11px] text-muted">
+            <span className="shrink-0">Modelo</span>
+            <select
+              value={currentProvider.id}
+              onChange={(event) => setSelectedModel(event.target.value)}
+              aria-label="Modelo de IA para Ayuda IA"
+              className="min-w-0 flex-1 cursor-pointer rounded-md border border-border bg-surface px-2 py-1 text-[11px] text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+            >
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.label}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4" aria-live="polite">
             {messages.map((message, index) => (

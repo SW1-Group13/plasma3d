@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import axios from 'axios';
 import {
   agentApi,
@@ -27,6 +33,28 @@ import { useSession } from '@/entities/session/store';
 import { ImageIcon, SparklesIcon, XIcon } from '@/shared/ui/icons';
 import { cn } from '@/shared/lib/utils';
 import { toast } from '@/shared/ui/toast';
+
+const AGENT_PANEL_SIZE_KEY = 'plasma3d.agent.panelSize';
+const AGENT_PANEL_MIN_WIDTH = 300;
+const AGENT_PANEL_MIN_HEIGHT = 320;
+
+function loadAgentPanelSize() {
+  try {
+    const stored = localStorage.getItem(AGENT_PANEL_SIZE_KEY);
+    if (stored) {
+      const value = JSON.parse(stored) as { width?: number; height?: number };
+      if (typeof value.width === 'number' && typeof value.height === 'number') {
+        return {
+          width: Math.max(AGENT_PANEL_MIN_WIDTH, value.width),
+          height: Math.max(AGENT_PANEL_MIN_HEIGHT, value.height),
+        };
+      }
+    }
+  } catch {
+    /* sin almacenamiento */
+  }
+  return { width: 360, height: 600 };
+}
 
 interface AgentChatProps {
   open: boolean;
@@ -226,6 +254,10 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
       : { text: 'La aplicación se interrumpió. Revisa el plano antes de iniciar otra conversación.' };
   });
   const [minimized, setMinimized] = useState(false);
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== 'undefined' && window.matchMedia('(min-width: 640px)').matches,
+  );
+  const [panelSize, setPanelSize] = useState(loadAgentPanelSize);
   const [selectedModel, setSelectedModel] = useState<string>(() => {
     try {
       const stored = localStorage.getItem('plasma3d.agent.model');
@@ -234,7 +266,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     } catch {
       /* sin almacenamiento */
     }
-    return 'gemini';
+    return 'deepseek';
   });
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const [image, setImage] = useState<string | null>(null);
@@ -276,6 +308,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
   ));
   const currentProvider = providers.find((p) => p.id === selectedModel) ?? providers[0];
   const visionEnabled = currentProvider.vision;
+  // TODO:descomentar audio
   const audioEnabled = aiConfig?.audio ?? true;
 
   useEffect(() => {
@@ -299,6 +332,53 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
       setImageName('');
     }
   }, [visionEnabled]);
+
+  useEffect(() => {
+    const media = window.matchMedia('(min-width: 640px)');
+    const update = () => setIsDesktop(media.matches);
+    update();
+    media.addEventListener?.('change', update);
+    return () => media.removeEventListener?.('change', update);
+  }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENT_PANEL_SIZE_KEY, JSON.stringify(panelSize));
+    } catch {
+      /* sin almacenamiento */
+    }
+  }, [panelSize]);
+
+  function startResize(event: ReactPointerEvent<HTMLButtonElement>) {
+    if (!isDesktop) return;
+    event.preventDefault();
+    const start = {
+      x: event.clientX,
+      y: event.clientY,
+      width: panelSize.width,
+      height: panelSize.height,
+    };
+    const onMove = (moveEvent: PointerEvent) => {
+      const maxWidth = Math.max(AGENT_PANEL_MIN_WIDTH, window.innerWidth - 96);
+      const maxHeight = Math.max(AGENT_PANEL_MIN_HEIGHT, window.innerHeight - 24);
+      setPanelSize({
+        width: Math.min(
+          maxWidth,
+          Math.max(AGENT_PANEL_MIN_WIDTH, start.width + moveEvent.clientX - start.x),
+        ),
+        height: Math.min(
+          maxHeight,
+          Math.max(AGENT_PANEL_MIN_HEIGHT, start.height + moveEvent.clientY - start.y),
+        ),
+      });
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp, { once: true });
+  }
   const itemSeq = useRef(Math.max(0, ...items.map((it) => ('id' in it ? it.id : 0))));
   const pendingRef = useRef<PendingTurn | null>(loadPending(userId, modelId));
   const previewRef = useRef<PreviewWaiter | null>(null);
@@ -1041,6 +1121,8 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
     }
   }
 
+  // TODO:descomentar audio
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function toggleRecording() {
     if (transcribing) return;
     if (recording) {
@@ -1251,6 +1333,8 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
   const imageTitle = visionEnabled
     ? 'Adjuntar imagen'
     : 'El proveedor seleccionado no admite imágenes';
+  // TODO:descomentar audio
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const micTitle = !audioEnabled
     ? 'La transcripción de audio no está configurada'
     : recording
@@ -1287,8 +1371,9 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
       className={cn(
         'p3d-fade-in absolute z-40 flex flex-col overflow-hidden border border-cyan-400/40 bg-surface/95 shadow-2xl shadow-black/50 backdrop-blur-md',
         'inset-x-0 bottom-0 h-[70%] rounded-t-2xl',
-        'sm:inset-x-auto sm:bottom-3 sm:left-[4.5rem] sm:top-3 sm:h-auto sm:w-80 sm:rounded-2xl',
+        'sm:inset-x-auto sm:bottom-3 sm:left-[4.5rem] sm:top-auto sm:h-auto sm:w-auto sm:rounded-2xl',
       )}
+      style={isDesktop ? { width: panelSize.width, height: panelSize.height } : undefined}
     >
       <header className="flex shrink-0 items-center gap-2.5 border-b border-border bg-surface-2/60 px-3 py-2.5">
         <span className="relative flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-cyan-400 to-primary text-white">
@@ -1665,6 +1750,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
         >
           <ImageIcon width={18} height={18} />
         </button>
+        {/* TODO:descomentar audio
         <button
           type="button"
           onClick={() => void toggleRecording()}
@@ -1687,6 +1773,7 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
             </svg>
           )}
         </button>
+        */}
         <textarea
           ref={inputRef}
           value={input}
@@ -1714,6 +1801,15 @@ export function AgentChat({ open, onClose, modelId, getHost, selection, hasPlan 
           </svg>
         </button>
       </form>
+      <button
+        type="button"
+        onPointerDown={startResize}
+        aria-label="Redimensionar chat"
+        title="Redimensionar chat"
+        className="absolute bottom-1 right-1 z-10 hidden h-5 w-5 cursor-se-resize items-center justify-center rounded text-muted hover:bg-surface-2 hover:text-foreground sm:flex"
+      >
+        <span aria-hidden="true" className="text-sm leading-none">◢</span>
+      </button>
     </section>
   );
 }

@@ -5,6 +5,7 @@ import {
   type DraftInfo,
   type DrawType,
   type RoofDrawKind,
+  type ProjectionMode,
   type RoofMode,
   type SelectedInfo,
   type TransformMode,
@@ -51,6 +52,7 @@ import {
   CalculatorIcon,
   CubeIcon,
   DownloadIcon,
+  EyeIcon,
   GridIcon,
   ImageIcon,
   KeyboardIcon,
@@ -61,6 +63,7 @@ import {
   RotateIcon,
   SaveIcon,
   ScaleIcon,
+  SlidersIcon,
   SparklesIcon,
   TagIcon,
   TrashIcon,
@@ -77,10 +80,9 @@ const VIEWS: { id: ViewName; label: string }[] = [
   { id: '3d', label: '3D' },
 ];
 
-const ROOF_MODES: RoofMode[] = ['visible', 'transparente', 'oculto'];
+const ROOF_MODES: RoofMode[] = ['visible', 'oculto'];
 const ROOF_LABELS: Record<RoofMode, string> = {
   visible: 'Visible',
-  transparente: 'Transparente',
   oculto: 'Oculto',
 };
 const ROOF_STORAGE_KEY = 'plasma3d.roofMode';
@@ -162,12 +164,14 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
     title: 'Vistas',
     items: [
       { action: 'Planta / Alzado / Perfil / Iso / 3D', keys: '1 / 2 / 3 / 4 / 5' },
-      { action: 'Techo: visible / transparente / oculto', keys: 'T' },
+      { action: 'Techo: visible / oculto', keys: 'T' },
       { action: 'Menú de medidas (cotas)', keys: 'M' },
       { action: 'Abrir / cerrar Agente IA', keys: 'I' },
       { action: 'Modo Animado (presentación)', keys: 'P' },
       { action: 'Ver / ocultar plano original', keys: 'O' },
       { action: 'Ver / ocultar plano trabajado', keys: 'Shift+O' },
+      { action: 'Alternar ortográfica / perspectiva', keys: '5 (numpad)' },
+      { action: 'Orbitar', keys: 'Rueda + arrastrar' },
       { action: 'Zoom', keys: 'Rueda' },
       { action: 'Desplazar (pan)', keys: 'Botón derecho' },
     ],
@@ -184,13 +188,6 @@ const SHORTCUTS: { title: string; items: { action: string; keys: string }[] }[] 
       { action: 'Duplicar', keys: 'Ctrl+D' },
       { action: 'Cortar pared o piso (Shift+clic: otro eje)', keys: 'C' },
       { action: 'Deshacer / Rehacer', keys: 'Ctrl+Z / Ctrl+Y' },
-    ],
-  },
-  {
-    title: 'Herramientas',
-    items: [
-      { action: 'Seleccionar', keys: 'V' },
-      { action: 'Mano / desplazar la vista (pan)', keys: 'H' },
     ],
   },
   {
@@ -222,6 +219,7 @@ interface EditorViewerProps {
 
 export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const viewerRef = useRef<HTMLDivElement>(null);
   const engineRef = useRef<EditorEngine | null>(null);
 
   const updateGlb = useModelStore((s) => s.updateGlb);
@@ -272,6 +270,30 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     (panel: 'original' | 'trabajado') => setPlanPanel((cur) => (cur === panel ? 'none' : panel)),
     [],
   );
+
+  // El canvas cambia de tamaño al dividir la pantalla (o al activar Animado):
+  // esperar al layout real y reencuadrar el modelo en su mitad.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => engineRef.current?.fitToModel());
+    return () => window.cancelAnimationFrame(frame);
+  }, [planPanel, animated]);
+
+  // Refuerzo: cuando el contenedor real del 3D cambia de tamaño (split,
+  // rotación, etc.), reencuadrar recién cuando el navegador ya aplicó el layout.
+  useEffect(() => {
+    const host = viewerRef.current;
+    if (!host) return;
+    let frame = 0;
+    const observer = new ResizeObserver(() => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => engineRef.current?.fitToModel());
+    });
+    observer.observe(host);
+    return () => {
+      observer.disconnect();
+      window.cancelAnimationFrame(frame);
+    };
+  }, []);
   const getFloorPlan = useCallback(() => engineRef.current?.getFloorPlan() ?? null, []);
   const [planUrl] = useState<string>(() => {
     try {
@@ -283,14 +305,13 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const planUrlRef = useRef(planUrl);
   const [fillGap, setFillGap] = useState(true);
   const [view, setViewState] = useState<ViewName>('planta');
-  const [ortho, setOrtho] = useState(false);
+  const [projection, setProjection] = useState<ProjectionMode>('orthographic');
   const [draft, setDraft] = useState<DraftInfo | null>(null);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [layersOpen, setLayersOpen] = useState(false);
   const [materialsOpen, setMaterialsOpen] = useState(false);
   const [newMaterialOpen, setNewMaterialOpen] = useState(false);
-  const [tool, setTool] = useState<'select' | 'hand'>('select');
   const [roofMode, setRoofMode] = useState<RoofMode>(readStoredRoofMode);
   const [hasRoof, setHasRoof] = useState(false);
   const roofModeRef = useRef(roofMode);
@@ -316,6 +337,14 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   const applyView = useCallback((next: ViewName) => {
     setViewState(next);
     engineRef.current?.setView(next);
+  }, []);
+
+  const toggleProjection = useCallback(() => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    engine.setProjectionMode(
+      engine.getProjectionMode() === 'orthographic' ? 'perspective' : 'orthographic',
+    );
   }, []);
 
   /** Lo que el Agente IA puede usar del editor (motor, vista y medidas). */
@@ -349,6 +378,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
 
     const engine = new EditorEngine(canvas);
     engineRef.current = engine;
+    engine.setToolMode('select');
     engine.setHistoryListener(setHistory);
     engine.setChangeListener(() => {
       dirtyRef.current = true;
@@ -371,6 +401,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
     });
     engine.setMarqueeListener(setMarquee);
     engine.setPresentationListener(setAnimated);
+    engine.setProjectionListener(setProjection);
 
     const raw = localStorage.getItem('modelo');
     let stored: { id?: number; glb_model?: string } | null = null;
@@ -425,8 +456,6 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
   useEffect(() => void engineRef.current?.setRotationSnap(rotSnap || null), [rotSnap]);
   useEffect(() => void engineRef.current?.setGridVisible(gridVisible), [gridVisible]);
   useEffect(() => void engineRef.current?.setTheme(theme), [theme]);
-  useEffect(() => void engineRef.current?.setOrthoMode(ortho), [ortho]);
-  useEffect(() => void engineRef.current?.setToolMode(tool), [tool]);
   useEffect(() => void engineRef.current?.setMultiSelect(multiSelect), [multiSelect]);
   useEffect(() => void engineRef.current?.setLockVertical(lockVertical), [lockVertical]);
   useEffect(() => {
@@ -463,6 +492,11 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           target.tagName === 'TEXTAREA' ||
           target.isContentEditable)
       ) {
+        return;
+      }
+      if (e.code === 'Numpad5') {
+        e.preventDefault();
+        toggleProjection();
         return;
       }
       if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z')) {
@@ -505,8 +539,6 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       else if (e.key === 'e' || e.key === 'E') setMode('rotate');
       else if (e.key === 'r' || e.key === 'R') setMode('scale');
       else if (e.key === 'g' || e.key === 'G') setGridVisible((v) => !v);
-      else if (e.key === 'v' || e.key === 'V') setTool('select');
-      else if (e.key === 'h' || e.key === 'H') setTool('hand');
       else if ((e.key === 't' || e.key === 'T') && hasRoofRef.current) setRoofMode(nextRoofMode);
       else if (e.key === 'm' || e.key === 'M') setMeasuresOpen((v) => !v);
       else if (e.key === 'i' || e.key === 'I') setAgentOpen((v) => !v);
@@ -545,7 +577,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
       window.removeEventListener('keyup', onKeyUp);
       window.removeEventListener('blur', onBlur);
     };
-  }, [applyView, runSnap, togglePlanPanel]);
+  }, [applyView, runSnap, togglePlanPanel, toggleProjection]);
 
   const startCreate = useCallback((type: DrawType) => {
     engineRef.current?.startCreate(type);
@@ -712,18 +744,22 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           <Divider />
 
           <div className="flex items-center gap-1">
-            {VIEWS.map((v) => (
-              <ViewButton key={v.id} active={view === v.id} onClick={() => applyView(v.id)} title={`Vista ${v.label}`}>
-                {v.label}
-              </ViewButton>
-            ))}
+            <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor (se guarda solo a los 3 s de cada cambio)">
+              <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
+            </RibbonAction>
+            <span
+              className={cn(
+                'whitespace-nowrap px-1 text-[11px]',
+                saveState === 'saved' && 'text-emerald-400',
+                saveState === 'saving' && 'text-muted',
+                saveState === 'dirty' && 'text-amber-400',
+                saveState === 'error' && 'text-red-400',
+              )}
+              title={saveState === 'error' ? 'No se pudo guardar; se reintentará al siguiente cambio o pulsa Guardar' : undefined}
+            >
+              {saveState === 'saved' ? 'Guardado ✓' : saveState === 'saving' ? 'Guardando…' : saveState === 'dirty' ? 'Sin guardar' : 'Error al guardar'}
+            </span>
           </div>
-
-          <Divider />
-
-          <RibbonAction onClick={onSave} disabled={isBusy || !user} title="Guardar en el servidor (se guarda solo a los 3 s de cada cambio)">
-            <SaveIcon width={15} height={15} /> <Lbl>Guardar</Lbl>
-          </RibbonAction>
           <div className="relative">
             <RibbonAction
               onClick={() => setExportOpen((v) => !v)}
@@ -762,30 +798,13 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
             )}
           </div>
 
-          <span
-            className={cn(
-              'hidden whitespace-nowrap px-1 text-[11px] sm:inline',
-              saveState === 'saved' && 'text-emerald-400',
-              saveState === 'saving' && 'text-muted',
-              saveState === 'dirty' && 'text-amber-400',
-              saveState === 'error' && 'text-red-400',
-            )}
-            title={saveState === 'error' ? 'No se pudo guardar; se reintentará al siguiente cambio o pulsa Guardar' : undefined}
-          >
-            {saveState === 'saved' ? 'Guardado ✓' : saveState === 'saving' ? 'Guardando…' : saveState === 'dirty' ? 'Sin guardar' : 'Error al guardar'}
-          </span>
-          
-        
           <RibbonAction onClick={onAnalyzeClick} disabled={isBusy} title="Analisis estructural">
             <SparklesIcon width={15} height={15} /> <Lbl>Analizar</Lbl>
           </RibbonAction>
           <RibbonAction onClick={onBudgetClick} disabled={isBusy} title="Generar presupuesto">
             <CalculatorIcon width={15} height={15} /> <Lbl>Presupuesto</Lbl>
           </RibbonAction>
-          <RibbonAction onClick={onOpenPrices} title="Precios de materiales">
-            <TagIcon width={15} height={15} /> <Lbl>Precios</Lbl>
-          </RibbonAction>
-          {/* Agente IA: brilla en celeste mientras el chat está abierto */}
+          {/* Agente IA: acción principal del flujo del editor */}
           <button
             type="button"
             onClick={() => setAgentOpen((v) => !v)}
@@ -800,113 +819,87 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             <SparklesIcon width={15} height={15} /> <Lbl>Agente IA</Lbl>
           </button>
-          {/* Animado: vista de presentación del modelo abierto (brilla en celeste mientras está activa) */}
-          <button
-            type="button"
-            onClick={() => {
-              const engine = engineRef.current;
-              engine?.setPresentationMode(!engine.isPresentationMode());
-            }}
-            disabled={modelLoading}
-            aria-pressed={animated}
-            title={animated ? 'Volver al editor (P)' : 'Ver el modelo animado (P)'}
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
-              animated
-                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
-                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
-            )}
-          >
-            <PlayCircleIcon width={15} height={15} />{' '}
-            <Lbl>{animated ? `Animado · ${showTextures ? 'Texturas' : 'Colores'}` : 'Animado'}</Lbl>
-          </button>
-          {/* Plano original: pantalla dividida (brilla en celeste mientras está abierto) */}
-          <button
-            type="button"
-            onClick={() => togglePlanPanel('original')}
-            disabled={!planUrl}
-            aria-pressed={planPanel === 'original'}
-            title={
-              !planUrl
-                ? 'Este modelo no tiene plano original'
-                : planPanel === 'original'
-                  ? 'Ocultar plano original (O)'
-                  : 'Ver el plano original junto al 3D (O)'
-            }
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
-              planPanel === 'original'
-                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
-                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
-            )}
-          >
-            <ImageIcon width={15} height={15} /> <Lbl>Ver plano original</Lbl>
-          </button>
-          {/* Plano trabajado: planta 2D generada desde el 3D actual (con lo nuevo marcado) */}
-          <button
-            type="button"
-            onClick={() => togglePlanPanel('trabajado')}
-            disabled={modelLoading}
-            aria-pressed={planPanel === 'trabajado'}
-            title={
-              planPanel === 'trabajado'
-                ? 'Ocultar plano trabajado (Shift+O)'
-                : 'Ver el plano 2D actualizado con lo que agregaste a mano o con la IA (Shift+O)'
-            }
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50',
-              planPanel === 'trabajado'
-                ? 'p3d-agent-glow bg-cyan-400/10 text-cyan-200'
-                : 'text-muted hover:bg-surface-2 hover:text-cyan-200',
-            )}
-          >
-            <LayersIcon width={15} height={15} /> <Lbl>Ver plano trabajado</Lbl>
-          </button>
 
           <div className="flex shrink-0 items-center gap-1 sm:ml-auto">
-            <RibbonAction onClick={() => setLayersOpen(true)} title="Administrar capas">
-              <LayersIcon width={15} height={15} /> <Lbl>Capas</Lbl>
-            </RibbonAction>
-            <RibbonAction onClick={() => setMaterialsOpen(true)} title="Biblioteca de materiales">
-              <ImageIcon width={15} height={15} /> <Lbl>Materiales</Lbl>
-            </RibbonAction>
-            <RibbonAction onClick={() => setShortcutsOpen(true)} title="Ver atajos de teclado">
-              <KeyboardIcon width={15} height={15} /> <Lbl>Atajos</Lbl>
-            </RibbonAction>
-            <RibbonAction onClick={() => setPropsOpen((v) => !v)} active={propsOpen} title="Mostrar/ocultar propiedades">
-              <CubeIcon width={15} height={15} /> <Lbl>Propiedades</Lbl>
-            </RibbonAction>
+            <ControlPopover
+              label="Vista"
+              title="Mostrar u ocultar planos, animación y opciones de escena"
+              icon={<EyeIcon width={15} height={15} />}
+            >
+              <PopoverSection label="Modelo" />
+              <ToggleOption
+                active={animated}
+                disabled={modelLoading}
+                icon={<PlayCircleIcon width={14} height={14} />}
+                label={animated ? `Animado · ${showTextures ? 'Texturas' : 'Colores'}` : 'Animado'}
+                onClick={() => engineRef.current?.setPresentationMode(!engineRef.current?.isPresentationMode())}
+              />
+              <ToggleOption
+                active={planPanel === 'original'}
+                disabled={!planUrl}
+                icon={<ImageIcon width={14} height={14} />}
+                label="Plano original"
+                title={!planUrl ? 'Este modelo no tiene plano original' : 'Ver junto al 3D (O)'}
+                onClick={() => togglePlanPanel('original')}
+              />
+              <ToggleOption
+                active={planPanel === 'trabajado'}
+                disabled={modelLoading}
+                icon={<LayersIcon width={14} height={14} />}
+                label="Plano trabajado 2D"
+                title="Ver el plano 2D actualizado (Shift+O)"
+                onClick={() => togglePlanPanel('trabajado')}
+              />
+              <PopoverSection label="Escena" />
+              <ToggleOption
+                active={gridVisible}
+                icon={<GridIcon width={14} height={14} />}
+                label="Grilla"
+                onClick={() => setGridVisible((v) => !v)}
+              />
+              <ToggleOption
+                active={projection === 'orthographic'}
+                label="Proyección ortográfica"
+                title="Alternar ortográfica / perspectiva (Numpad 5)"
+                onClick={toggleProjection}
+              />
+              <ToggleOption
+                active={showTextures}
+                label={`Texturas: ${showTextures ? 'ON' : 'OFF'}`}
+                onClick={() => setShowTextures(!showTextures)}
+              />
+            </ControlPopover>
+
+            <RibbonMenu
+              label="Más"
+              title="Precios, paneles y atajos"
+              icon={<span aria-hidden="true" className="text-base leading-none">⋯</span>}
+              items={[
+                { label: 'Precios de materiales', icon: <TagIcon width={14} height={14} />, onClick: onOpenPrices },
+                { label: 'Capas', icon: <LayersIcon width={14} height={14} />, onClick: () => setLayersOpen(true) },
+                { label: 'Materiales', icon: <ImageIcon width={14} height={14} />, onClick: () => setMaterialsOpen(true) },
+                { label: 'Propiedades', icon: <CubeIcon width={14} height={14} />, active: propsOpen, onClick: () => setPropsOpen((v) => !v) },
+                { label: 'Atajos de teclado', icon: <KeyboardIcon width={14} height={14} />, onClick: () => setShortcutsOpen(true) },
+              ]}
+            />
           </div>
         </div>
 
         <div className="no-scrollbar flex items-center gap-1.5 overflow-x-auto [&>*]:shrink-0 border-t border-border/60 px-2 py-1.5 sm:flex-wrap sm:overflow-visible sm:px-3">
           <span className="hidden pr-1 text-[10px] font-semibold uppercase tracking-wide text-muted sm:inline">
-            Transformar
+            Herramientas
           </span>
-          {/* Equivalentes táctiles de Ctrl+clic y Shift (solo celular) */}
-          <MobileToggle
-            active={multiSelect}
-            onClick={() => setMultiSelect((v) => !v)}
-            title="Multiselección: cada toque agrega o quita piezas (reemplaza Ctrl+clic)"
-          >
-            Multi
-          </MobileToggle>
-          <MobileToggle
-            active={lockVertical}
-            onClick={() => setLockVertical((v) => !v)}
-            title="Bloquear vertical al mover (reemplaza mantener Shift)"
-          >
-            Bloq. Y
-          </MobileToggle>
-          <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} title="Mover (W)">
-            <MoveIcon width={15} height={15} /> <Lbl>Mover</Lbl>
-          </ModeButton>
-          <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} title="Rotar (E)">
-            <RotateIcon width={15} height={15} /> <Lbl>Rotar</Lbl>
-          </ModeButton>
-          <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} title="Escalar (R)">
-            <ScaleIcon width={15} height={15} /> <Lbl>Escalar</Lbl>
-          </ModeButton>
+          <div className="flex items-center gap-0.5 rounded-lg bg-surface-2/50 p-0.5 ring-1 ring-inset ring-border/60">
+            <ModeButton active={mode === 'translate'} onClick={() => setMode('translate')} title="Mover (W)">
+              <MoveIcon width={15} height={15} /> <Lbl>Mover</Lbl>
+            </ModeButton>
+            <ModeButton active={mode === 'rotate'} onClick={() => setMode('rotate')} title="Rotar (E)">
+              <RotateIcon width={15} height={15} /> <Lbl>Rotar</Lbl>
+            </ModeButton>
+            <ModeButton active={mode === 'scale'} onClick={() => setMode('scale')} title="Escalar (R)">
+              <ScaleIcon width={15} height={15} /> <Lbl>Escalar</Lbl>
+            </ModeButton>
+          </div>
           <ModeButton
             active={history.cutMode}
             onClick={() => engineRef.current?.setCutMode(!history.cutMode)}
@@ -914,93 +907,94 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           >
             <span aria-hidden>✂</span> <Lbl>Cortar</Lbl>
           </ModeButton>
-          <ModeButton active={false} onClick={() => engineRef.current?.undo()} title="Deshacer (Ctrl+Z)">
-            <span aria-hidden className={history.canUndo ? '' : 'opacity-40'}>↶</span>
-          </ModeButton>
-          <ModeButton active={false} onClick={() => engineRef.current?.redo()} title="Rehacer (Ctrl+Y)">
-            <span aria-hidden className={history.canRedo ? '' : 'opacity-40'}>↷</span>
-          </ModeButton>
 
           <Divider />
 
-          <button
-            onClick={() => setSpace(space === 'local' ? 'world' : 'local')}
-            className="cursor-pointer rounded-md border border-border bg-surface-2 px-2.5 py-1.5 text-xs text-muted transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-            title="Alternar espacio local / mundo"
-          >
-            Espacio: {space === 'local' ? 'Local' : 'Mundo'}
-          </button>
+          <div className="flex items-center gap-0.5 rounded-lg bg-surface-2/50 p-0.5 ring-1 ring-inset ring-border/60">
+            <ModeButton active={false} onClick={() => engineRef.current?.undo()} title="Deshacer (Ctrl+Z)">
+              <span aria-hidden className={history.canUndo ? '' : 'opacity-40'}>↶</span>
+            </ModeButton>
+            <ModeButton active={false} onClick={() => engineRef.current?.redo()} title="Rehacer (Ctrl+Y)">
+              <span aria-hidden className={history.canRedo ? '' : 'opacity-40'}>↷</span>
+            </ModeButton>
+          </div>
 
-          <select
-            aria-label="Snap de traslacion"
-            className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-            value={snap}
-            onChange={(e) => setSnap(Number(e.target.value))}
-            title="Snap traslacion"
+          <ControlPopover
+            label="Ajustes"
+            title="Multiselección, bloqueo vertical, espacio y snaps"
+            icon={<SlidersIcon width={15} height={15} />}
           >
-            <option value={0}>Snap off</option>
-            <option value={0.25}>Snap .25</option>
-            <option value={0.5}>Snap .5</option>
-            <option value={1}>Snap 1</option>
-          </select>
-
-          <select
-            aria-label="Snap de rotacion"
-            className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1.5 text-xs text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
-            value={rotSnap}
-            onChange={(e) => setRotSnap(Number(e.target.value))}
-            title="Snap rotacion"
-          >
-            <option value={0}>Rot off</option>
-            <option value={15}>15°</option>
-            <option value={45}>45°</option>
-            <option value={90}>90°</option>
-          </select>
-
-          <Divider />
-
-          <button
-            onClick={() => setGridVisible((v) => !v)}
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-              gridVisible ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
-            )}
-            title="Mostrar/ocultar grilla (G)"
-          >
-            <GridIcon width={15} height={15} /> <Lbl>Grilla</Lbl>
-          </button>
-          <button
-            onClick={() => setOrtho((v) => !v)}
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-              ortho ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
-            )}
-            title="Modo orto persistente (o manten Shift al dibujar)"
-          >
-            Orto
-          </button>
-          <button
-            onClick={() => setShowTextures(!showTextures)}
-            className={cn(
-              'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-              showTextures ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
-            )}
-            title="Mostrar texturas (Realista) / colores planos (Sombreado)"
-          >
-            Texturas: {showTextures ? 'ON' : 'OFF'}
-          </button>
-          {hasRoof && (
+            <PopoverSection label="Selección" />
+            <ToggleOption
+              active={multiSelect}
+              label="Multiselección"
+              title="Cada toque agrega o quita piezas (Ctrl+clic)"
+              onClick={() => setMultiSelect((v) => !v)}
+            />
+            <ToggleOption
+              active={lockVertical}
+              label="Bloquear vertical"
+              title="Mantén Shift para el mismo efecto temporal"
+              onClick={() => setLockVertical((v) => !v)}
+            />
+            <PopoverSection label="Precisión" />
             <button
-              onClick={() => setRoofMode(nextRoofMode)}
-              className={cn(
-                'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                roofMode !== 'visible' ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
-              )}
-              title="Techo visible / transparente / oculto (T). Transparente u oculto: el clic lo atraviesa para medir y seleccionar el interior. No se borra al guardar."
+              type="button"
+              onClick={() => setSpace(space === 'local' ? 'world' : 'local')}
+              className="flex w-full cursor-pointer items-center justify-between rounded-md px-2 py-2 text-left text-xs text-foreground transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              title="Alternar espacio local / mundo"
             >
-              Techo: {ROOF_LABELS[roofMode]}
+              <span>Espacio</span>
+              <span className="text-muted">{space === 'local' ? 'Local' : 'Mundo'}</span>
             </button>
+            <label className="flex items-center justify-between gap-3 px-2 py-1.5 text-xs text-foreground">
+              <span>Snap traslación</span>
+              <select
+                aria-label="Snap de traslación"
+                className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-foreground"
+                value={snap}
+                onChange={(e) => setSnap(Number(e.target.value))}
+              >
+                <option value={0}>Off</option>
+                <option value={0.25}>0.25 m</option>
+                <option value={0.5}>0.5 m</option>
+                <option value={1}>1 m</option>
+              </select>
+            </label>
+            <label className="flex items-center justify-between gap-3 px-2 py-1.5 text-xs text-foreground">
+              <span>Snap rotación</span>
+              <select
+                aria-label="Snap de rotación"
+                className="cursor-pointer rounded-md border border-border bg-surface-2 px-2 py-1 text-xs text-foreground"
+                value={rotSnap}
+                onChange={(e) => setRotSnap(Number(e.target.value))}
+              >
+                <option value={0}>Off</option>
+                <option value={15}>15°</option>
+                <option value={45}>45°</option>
+                <option value={90}>90°</option>
+              </select>
+            </label>
+          </ControlPopover>
+
+          {hasRoof && (
+            <ControlPopover
+              label={`Techo: ${ROOF_LABELS[roofMode]}`}
+              title="Visibilidad del techo"
+              icon={<MaskIcon src="/icons/roof.svg" className="h-[15px] w-[15px]" />}
+            >
+              <PopoverSection label="Techo" />
+              {ROOF_MODES.map((mode) => (
+                <ToggleOption
+                  key={mode}
+                  active={roofMode === mode}
+                  label={ROOF_LABELS[mode]}
+                  onClick={() => setRoofMode(mode)}
+                />
+              ))}
+            </ControlPopover>
           )}
+
           <MeasuresMenu
             open={measuresOpen}
             onOpenChange={setMeasuresOpen}
@@ -1030,8 +1024,14 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           className="h-1/2 shrink-0 border-b border-border md:h-auto md:w-1/2 md:border-b-0 md:border-r"
         />
       )}
-      <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-        <canvas ref={canvasRef} className={cn('absolute inset-0 h-full w-full', tool === 'hand' ? 'cursor-grab active:cursor-grabbing' : 'cursor-default')} />
+      <div
+        ref={viewerRef}
+        className={cn(
+          'relative min-h-0 min-w-0 flex-1 overflow-hidden',
+          planPanel !== 'none' && 'md:w-1/2 md:flex-none',
+        )}
+      >
+        <canvas ref={canvasRef} className="absolute inset-0 h-full w-full cursor-default" />
         <LoadingOverlay show={modelLoading} label="Cargando modelo 3D..." />
 
         {canSnap && selected && (
@@ -1102,11 +1102,8 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           )}
         >
           <div className="no-scrollbar flex flex-row gap-1.5 overflow-x-auto rounded-xl border border-border/70 bg-surface/85 p-1.5 shadow-xl shadow-black/40 backdrop-blur-md [&>*]:shrink-0 sm:flex-col sm:overflow-visible">
-            <ToolButton title="Seleccionar (V)" active={tool === 'select'} onClick={() => setTool('select')}>
+            <ToolButton title="Seleccionar" active onClick={() => undefined}>
               <PointerIcon width={18} height={18} />
-            </ToolButton>
-            <ToolButton title="Mano / Pan (H)" active={tool === 'hand'} onClick={() => setTool('hand')}>
-              <MoveIcon width={18} height={18} />
             </ToolButton>
             <span className="mx-0.5 h-auto w-px self-stretch bg-border sm:mx-0 sm:my-0.5 sm:h-px sm:w-full" />
             <ToolButton title="Dibujar muro" onClick={() => startCreate('wall')}>
@@ -1151,11 +1148,10 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
           className="absolute right-2 top-2 z-30 origin-top-right scale-[0.65] sm:right-3 sm:top-3 sm:scale-100"
           getQuaternion={getCameraQuaternion}
           onDirection={handleDirection}
-          onSelect={applyView}
         />
 
-        {/* Propiedades (derecha, debajo del dado) */}
-        {propsOpen && (
+        {/* Propiedades (derecha, debajo del dado). Solo con una pieza seleccionada. */}
+        {propsOpen && selected && (
           <aside
             className={cn(
               // Celular: hoja inferior a todo el ancho (45 % del alto).
@@ -1412,7 +1408,7 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
         <span className="tabular-nums">
           {selected
             ? `X ${selected.position.x.toFixed(2)}  Y ${selected.position.y.toFixed(2)}  Z ${selected.position.z.toFixed(2)}`
-            : 'Sin seleccion'}
+            : ''}
         </span>
         <div className="flex items-center gap-3">
           {isBusy && (
@@ -1420,10 +1416,9 @@ export function EditorViewer({ onBudget, onOpenPrices, onAnalyze }: EditorViewer
               <Spinner className="h-3.5 w-3.5" /> Procesando...
             </span>
           )}
-          <span className="hidden sm:inline">Herramienta: {tool === 'hand' ? 'Mano' : 'Seleccionar'}</span>
           <span className="hidden sm:inline">Vista: {VIEWS.find((v) => v.id === view)?.label ?? view}</span>
           <span className="hidden md:inline">Modo: {mode === 'translate' ? 'Mover' : mode === 'rotate' ? 'Rotar' : 'Escalar'}</span>
-          <span className="hidden lg:inline">1-5 vistas · W/E/R · G grilla · T techo · M medidas · I agente · Ctrl+clic/marco multi · Shift: orto / bloquea vertical · arrastra la pieza para moverla · R tiradores · K colocar · Q girar · Ctrl+D duplicar · Alt altura · C cortar · Ctrl+Z deshacer · Supr borrar</span>
+          <span className="hidden lg:inline">Atajos: W/E/R transformar · G grilla · M medidas · I agente · Ctrl+Z deshacer</span>
         </div>
       </div>
 
@@ -1492,34 +1487,6 @@ function Lbl({ children }: { children: React.ReactNode }) {
   return <span className="hidden md:inline">{children}</span>;
 }
 
-/** Interruptor visible solo en celular (equivalente táctil de una tecla). */
-function MobileToggle({
-  active,
-  onClick,
-  title,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-pressed={active}
-      onClick={onClick}
-      className={cn(
-        'inline-flex cursor-pointer items-center rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 sm:hidden',
-        active ? 'bg-primary text-white' : 'bg-surface-2 text-muted',
-      )}
-    >
-      {children}
-    </button>
-  );
-}
-
 function ModeButton({
   active,
   onClick,
@@ -1536,7 +1503,7 @@ function ModeButton({
       title={title}
       onClick={onClick}
       className={cn(
-        'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+        'inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
         active ? 'bg-primary text-white shadow-sm shadow-primary/25' : 'bg-surface-2 text-muted hover:text-foreground',
       )}
     >
@@ -1550,21 +1517,25 @@ function RibbonAction({
   disabled,
   title,
   active,
+  expanded,
   children,
 }: {
   onClick: () => void;
   disabled?: boolean;
   title: string;
   active?: boolean;
+  expanded?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <button
+      type="button"
       title={title}
       onClick={onClick}
       disabled={disabled}
+      aria-expanded={expanded}
       className={cn(
-        'inline-flex cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:cursor-not-allowed disabled:opacity-50',
         active ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
       )}
     >
@@ -1573,27 +1544,212 @@ function RibbonAction({
   );
 }
 
-function ViewButton({
-  active,
-  onClick,
+interface RibbonMenuItem {
+  label: string;
+  icon?: React.ReactNode;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+  title?: string;
+}
+
+function useAnchoredPanel(
+  open: boolean,
+  buttonRef: React.RefObject<HTMLButtonElement | null>,
+  width: number,
+) {
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const rect = buttonRef.current?.getBoundingClientRect();
+      if (!rect) return;
+      setPos({
+        top: Math.min(rect.bottom + 6, window.innerHeight - 80),
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - width - 8)),
+      });
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [open, buttonRef, width]);
+  return pos;
+}
+
+function RibbonMenu({
+  label,
   title,
+  icon,
+  items,
+}: {
+  label: string;
+  title: string;
+  icon: React.ReactNode;
+  items: RibbonMenuItem[];
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const pos = useAnchoredPanel(open, buttonRef, 256);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={title}
+        className={cn(
+          'inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+          open ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+        )}
+      >
+        {icon} <Lbl>{label}</Lbl>
+        <span aria-hidden="true" className="text-[9px] opacity-60">▾</span>
+      </button>
+      {open && pos && (
+        <div
+          role="menu"
+          style={{ top: pos.top, left: pos.left }}
+          className="fixed z-50 w-64 overflow-hidden rounded-xl border border-border/70 bg-surface/95 p-1.5 shadow-xl shadow-black/40 backdrop-blur-md"
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              type="button"
+              role="menuitem"
+              disabled={item.disabled}
+              title={item.title}
+              onClick={() => {
+                item.onClick();
+                setOpen(false);
+              }}
+              className={cn(
+                'flex w-full cursor-pointer items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:cursor-not-allowed disabled:opacity-40',
+                item.active ? 'bg-primary/10 text-primary' : 'text-foreground',
+              )}
+            >
+              {item.icon}
+              <span className="min-w-0 flex-1">{item.label}</span>
+              {item.active && <span aria-hidden="true">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ControlPopover({
+  label,
+  title,
+  icon,
   children,
 }: {
-  active: boolean;
-  onClick: () => void;
+  label: string;
   title: string;
+  icon: React.ReactNode;
   children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const pos = useAnchoredPanel(open, buttonRef, 272);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (event: PointerEvent) => {
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        title={title}
+        className={cn(
+          'inline-flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+          open ? 'bg-primary/15 text-primary' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+        )}
+      >
+        {icon} <Lbl>{label}</Lbl>
+        <span aria-hidden="true" className="text-[9px] opacity-60">▾</span>
+      </button>
+      {open && pos && (
+        <div
+          role="dialog"
+          aria-label={title}
+          style={{ top: pos.top, left: pos.left, maxHeight: `calc(100dvh - ${pos.top + 12}px)` }}
+          className="fixed z-50 w-72 overflow-y-auto rounded-xl border border-border/70 bg-surface/95 p-2 shadow-xl shadow-black/40 backdrop-blur-md"
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PopoverSection({ label }: { label: string }) {
+  return (
+    <p className="px-2 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted first:pt-0">
+      {label}
+    </p>
+  );
+}
+
+function ToggleOption({
+  active,
+  label,
+  onClick,
+  disabled,
+  title,
+  icon,
+}: {
+  active: boolean;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  icon?: React.ReactNode;
 }) {
   return (
     <button
+      type="button"
+      role="menuitemcheckbox"
+      aria-checked={active}
+      disabled={disabled}
       title={title}
       onClick={onClick}
       className={cn(
-        'cursor-pointer rounded-md px-2.5 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-        active ? 'bg-primary text-white shadow-sm shadow-primary/25' : 'text-muted hover:bg-surface-2 hover:text-foreground',
+        'flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-left text-xs transition-colors hover:bg-surface-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70 disabled:cursor-not-allowed disabled:opacity-40',
+        active ? 'bg-primary/10 text-primary' : 'text-foreground',
       )}
     >
-      {children}
+      {icon}
+      <span className="min-w-0 flex-1">{label}</span>
+      <span aria-hidden="true" className={cn('text-[10px]', active ? 'opacity-100' : 'opacity-0')}>✓</span>
     </button>
   );
 }

@@ -16,14 +16,17 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.renderers import BaseRenderer, JSONRenderer
 from rest_framework.response import Response
 
-from .models import AnalisisRiesgo
+from users.permissions import EsAdministrador
+
+from .models import AnalisisRiesgo, ConfiguracionIA
+from .serializers import ConfiguracionIASerializer
 from .services_agente import (
     MAX_CHARS_MENSAJE,
     AgenteError,
     responder_agente,
     responder_agente_stream,
 )
-from .services_ai import available_providers
+from .services_ai import available_providers, get_ollama_settings
 from .services_groq import GroqError, transcribir_audio
 from .services_riesgo import analizar_archivo, analizar_plan
 
@@ -170,6 +173,42 @@ def ai_config(request):
             'audio': bool(getattr(settings, 'GROQ_API_KEY', '')),
         }
     )
+
+
+def _ollama_config_payload(config):
+    effective_url, effective_models, effective_timeout = get_ollama_settings()
+    return {
+        'ollama_url': config.ollama_url,
+        'ollama_models': config.ollama_models,
+        'ollama_timeout': config.ollama_timeout,
+        'effective': {
+            'ollama_url': effective_url,
+            'ollama_models': effective_models,
+            'ollama_timeout': effective_timeout,
+        },
+        'fallback': {
+            'ollama_url': getattr(settings, 'OLLAMA_URL', ''),
+            'ollama_models': getattr(settings, 'OLLAMA_MODELS', ''),
+            'ollama_timeout': getattr(settings, 'OLLAMA_TIMEOUT', 240),
+        },
+        'actualizado': config.actualizado,
+    }
+
+
+@api_view(['GET', 'PATCH'])
+@permission_classes([EsAdministrador])
+def ollama_config(request):
+    """Lee/actualiza la configuracion dinamica de Ollama (solo admin)."""
+    config = ConfiguracionIA.load()
+    if request.method == 'PATCH':
+        serializer = ConfiguracionIASerializer(
+            config,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        config = serializer.save()
+    return Response(_ollama_config_payload(config))
 
 
 @api_view(['POST'])

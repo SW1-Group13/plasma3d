@@ -1,9 +1,10 @@
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useSession } from '@/entities/session/store';
 import { userApi } from '@/entities/user/api';
 import { Button } from '@/shared/ui/button';
 import {
+  ArrowLeftIcon,
   CubeIcon,
   CreditCardIcon,
   LayoutDashboardIcon,
@@ -67,6 +68,11 @@ export function PrivateLayout() {
     return () => window.removeEventListener('keydown', onKey);
   }, [menuOpen]);
 
+  function goBack() {
+    if (location.key !== 'default') navigate(-1);
+    else navigate('/private/dashboard');
+  }
+
   function onLogout() {
     logout();
     navigate('/login');
@@ -77,6 +83,15 @@ export function PrivateLayout() {
       <header className="sticky top-0 z-40 border-b border-border/70 bg-canvas/85 backdrop-blur-md">
         <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4">
           <div className="flex items-center gap-2 sm:gap-6">
+            <button
+              type="button"
+              onClick={goBack}
+              className="-ml-1 flex h-10 w-10 cursor-pointer items-center justify-center rounded-lg text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70"
+              aria-label="Volver"
+              title="Volver"
+            >
+              <ArrowLeftIcon width={19} height={19} />
+            </button>
             <button
               type="button"
               onClick={() => setMenuOpen(true)}
@@ -98,22 +113,21 @@ export function PrivateLayout() {
 
             <div className="hidden items-center gap-1 text-sm sm:flex">
               {visibleLinks.map(({ to, label, icon: Icon }) => (
-                <Fragment key={to}>
-                  <NavLink
-                    to={to}
-                    className={({ isActive }) =>
-                      cn(
-                        'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                        isActive && 'bg-surface-2 font-medium text-foreground',
-                      )
-                    }
-                  >
-                    <Icon width={16} height={16} />
-                    {label}
-                  </NavLink>
-                  {to === '/private/pago' && <ThemeToggle />}
-                </Fragment>
+                <NavLink
+                  key={to}
+                  to={to}
+                  className={({ isActive }) =>
+                    cn(
+                      'flex items-center gap-2 rounded-lg px-3 py-2 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                      isActive && 'bg-surface-2 font-medium text-foreground',
+                    )
+                  }
+                >
+                  <Icon width={16} height={16} />
+                  {label}
+                </NavLink>
               ))}
+              <ThemeToggle />
             </div>
           </div>
 
@@ -199,22 +213,21 @@ export function PrivateLayout() {
             )}
 
             {visibleLinks.map(({ to, label, icon: Icon }) => (
-              <Fragment key={to}>
-                <NavLink
-                  to={to}
-                  className={({ isActive }) =>
-                    cn(
-                      'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
-                      isActive && 'bg-surface-2 font-medium text-foreground',
-                    )
-                  }
-                >
-                  <Icon width={18} height={18} />
-                  {label}
-                </NavLink>
-                {to === '/private/pago' && <ThemeToggle showLabel />}
-              </Fragment>
+              <NavLink
+                key={to}
+                to={to}
+                className={({ isActive }) =>
+                  cn(
+                    'flex h-12 items-center gap-3 rounded-lg px-3 text-muted transition-colors hover:bg-surface-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/70',
+                    isActive && 'bg-surface-2 font-medium text-foreground',
+                  )
+                }
+              >
+                <Icon width={18} height={18} />
+                {label}
+              </NavLink>
             ))}
+            <ThemeToggle showLabel />
 
             <button
               type="button"
