@@ -26,4 +26,7 @@ class UsersConfig(AppConfig):
             _ensure,
             sender=self,
             dispatch_uid='users.ensure_default_admin',
+            # Sin weak=False el receptor (función local) se recolecta al
+            # terminar ready() y la señal nunca crea al administrador.
+            weak=False,
         )
