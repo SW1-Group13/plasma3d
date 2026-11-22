@@ -43,4 +43,4 @@ RUN python manage.py collectstatic --noinput
 EXPOSE 8000
 
 # Un solo worker: el modelo Mask R-CNN se carga en memoria una sola vez.
-CMD ["sh", "-c", "python manage.py migrate && gunicorn plasma3d_api.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 600 --access-logfile - --error-logfile -"]
+CMD ["sh", "-c", "python manage.py migrate && python manage.py ensure_default_admin && gunicorn plasma3d_api.wsgi:application --bind 0.0.0.0:8000 --workers 1 --timeout 600 --access-logfile - --error-logfile -"]
