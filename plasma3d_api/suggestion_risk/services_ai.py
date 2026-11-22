@@ -83,6 +83,9 @@ def _tools_openai(exclude=None):
 
 
 def _configs():
+    ollama_url, ollama_models, ollama_timeout = get_ollama_settings()
+    ollama_base = _ollama_base(ollama_url)
+
     return {
         'gemini': {
             'name': 'gemini',
@@ -116,37 +119,68 @@ def _configs():
         # herramientas y mismo agente que Gemini). No pide API key real.
         'ollama': {
             'name': 'ollama',
-            'api_key': 'ollama' if _ollama_base() else '',
-            'base': _ollama_base(),
-            'models': _split_models(getattr(settings, 'OLLAMA_MODELS', '') or 'qwen2.5:3b'),
-            'timeout': int(getattr(settings, 'OLLAMA_TIMEOUT', 240) or 240),
+            'api_key': 'ollama' if ollama_base else '',
+            'base': ollama_base,
+            'models': _split_models(ollama_models or 'qwen2.5:3b'),
+            'timeout': ollama_timeout,
         },
     }
 
 
-def _ollama_base():
-    """OLLAMA_URL + /v1 (acepta la URL con o sin /v1)."""
-    url = (getattr(settings, 'OLLAMA_URL', '') or '').strip().rstrip('/')
+def get_ollama_settings():
+    """Configuracion efectiva: base de datos > OLLAMA_* del entorno."""
+    from .models import ConfiguracionIA
+
+    config = None
+    try:
+        config = ConfiguracionIA.load()
+    except Exception:
+        # Antes de migrar, o si la tabla no existe, usar el entorno.
+        pass
+
+    url = (
+        (getattr(config, 'ollama_url', '') or '').strip()
+        or (getattr(settings, 'OLLAMA_URL', '') or '').strip()
+    )
+    models_value = (
+        (getattr(config, 'ollama_models', '') or '').strip()
+        or (getattr(settings, 'OLLAMA_MODELS', '') or '').strip()
+    )
+    timeout = (
+        getattr(config, 'ollama_timeout', None)
+        or getattr(settings, 'OLLAMA_TIMEOUT', 240)
+    )
+    return url, models_value, int(timeout or 240)
+
+
+def _ollama_base(url=None):
+    """URL de Ollama + /v1 (acepta la URL con o sin /v1)."""
+    if url is None:
+        url = get_ollama_settings()[0]
+    url = (url or '').strip().rstrip('/')
     if not url:
         return ''
     return url if url.endswith('/v1') else url + '/v1'
 
 
 PROVIDER_LABELS = {'gemini': 'Gemini', 'deepseek': 'DeepSeek', 'ollama': 'Ollama (local)'}
+# Orden visible y orden de respaldo cuando el cliente no envía proveedor.
+PROVIDER_ORDER = ('deepseek', 'gemini', 'ollama')
 # Proveedores que aceptan imágenes en /chat/completions.
 VISION_PROVIDERS = {'gemini', 'deepseek'}
 
 
 def available_providers():
     """Proveedores con API key configurada: [{id, label, vision}]."""
+    configs = _configs()
     return [
         {
             'id': name,
             'label': PROVIDER_LABELS.get(name, name),
             'vision': name in VISION_PROVIDERS,
         }
-        for name, cfg in _configs().items()
-        if cfg['api_key'] and cfg['models']
+        for name in PROVIDER_ORDER
+        if configs[name]['api_key'] and configs[name]['models']
     ]
 
 
@@ -177,7 +211,7 @@ def choose_providers(has_image=False, preferido=None):
         selected = None
 
     if selected is None and not preferido:
-        for name in ('gemini', 'deepseek', 'ollama'):
+        for name in PROVIDER_ORDER:
             candidate = provider_config(name)
             if _provider_available(candidate):
                 selected = candidate

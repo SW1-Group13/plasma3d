@@ -109,9 +109,10 @@ interface PresentationState {
 }
 
 export type TransformMode = 'translate' | 'rotate' | 'scale';
+export type ProjectionMode = 'perspective' | 'orthographic';
 export type ViewName = 'planta' | 'alzado' | 'perfil' | 'isometrica' | '3d';
-/** Cómo se muestra el techo generado en el editor (solo vista, no se borra). */
-export type RoofMode = 'visible' | 'transparente' | 'oculto';
+/** Cómo se muestra el techo generado en el editor. */
+export type RoofMode = 'visible' | 'oculto';
 /** Medidas de una puerta/ventana (metros). */
 export interface OpeningDims {
   ancho: number;
@@ -333,7 +334,6 @@ export class EditorEngine {
   private drafting: { type: DrawType; start: THREE.Vector3; current: THREE.Vector3 } | null = null;
   private preview: THREE.Mesh | null = null;
   private agentPreview = new THREE.Group();
-  private orthoMode = false;
   private lockVertical = false;
   private multiSelect = false;
   private translationSnap: number | null = null;
@@ -394,6 +394,7 @@ export class EditorEngine {
   // Modo Animado (presentación): solo vista, se revierte por completo.
   private presentation: PresentationState | null = null;
   private onPresentation: (on: boolean) => void = () => {};
+  private onProjection: (mode: ProjectionMode) => void = () => {};
 
   constructor(private canvas: HTMLCanvasElement) {
     const { clientWidth: w, clientHeight: h } = canvas;
@@ -401,7 +402,9 @@ export class EditorEngine {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
     // Nítido en pantallas de alta densidad (celulares) sin pasar de 2x.
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(w, h);
+    // updateStyle=false: el tamaño visual lo manda el CSS (w-full/h-full).
+    // Si se fija un width inline, al dividir la pantalla el canvas se desborda.
+    this.renderer.setSize(w, h, false);
     this.renderer.setClearColor(0x0a0e1a);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -498,16 +501,12 @@ export class EditorEngine {
     });
 
     this.transformControls.addEventListener('objectChange', () => {
-      // Una sola pieza se transforma directamente: evita duplicar el delta
-      // entre el objeto y un pivote auxiliar, especialmente en piezas recién creadas.
-      if (this.selection.length === 1) {
-        this.refreshHostedWallForOpening(this.selection[0], false);
-        this.emitSelection();
-        return;
-      }
+      // El gizmo está pegado al pivote auxiliar, no directamente a la pieza:
+      // el delta debe aplicarse siempre, también con una sola pieza.
       this.applyTransformDelta();
     });
 
+    this.canvas.addEventListener('pointerdown', this.onPointerDownCapture, true);
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointermove', this.onPointerMove);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
@@ -600,6 +599,35 @@ export class EditorEngine {
   }
 
   private onPointerCancel = () => this.abortGesture();
+
+  /** La rueda orbita en cualquier proyección, también en ortográfica. */
+  private onPointerDownCapture = (event: PointerEvent) => {
+    if (event.button !== 1) return;
+    // Evita el autoscroll del navegador al arrastrar con la rueda.
+    event.preventDefault();
+    this.tween = null;
+    if (this.camera.type === 'OrthographicCamera') this.prepareOrthoOrbit();
+  };
+
+  /**
+   * En una vista cenital exacta (Planta) la cámara mira justo por el eje Y.
+   * Para que OrbitControls pueda orbitar como en Blender, se inclina un
+   * instante antes del arrastre manteniendo la proyección ortográfica.
+   */
+  private prepareOrthoOrbit() {
+    const camera = this.ortho;
+    const dir = camera.position.clone().sub(this.orbit.target);
+    const distance = dir.length();
+    if (distance < 1e-6) return;
+    dir.divideScalar(distance);
+    if (Math.abs(dir.y) < 0.98) return;
+
+    camera.up.set(0, 1, 0);
+    dir.z = Math.max(0.01, dir.z);
+    camera.position.copy(this.orbit.target).addScaledVector(dir.normalize(), distance);
+    camera.lookAt(this.orbit.target);
+    this.orbit.update();
+  }
 
   private onPointerDown = (event: PointerEvent) => {
     // Modo Animado: solo se mira (rotar/zoom los maneja OrbitControls).
@@ -833,7 +861,7 @@ export class EditorEngine {
 
   private constrainPoint(point: THREE.Vector3, start: THREE.Vector3, orthoOverride = false): THREE.Vector3 {
     const p = point.clone();
-    if (this.orthoMode || orthoOverride) {
+    if (orthoOverride) {
       const dx = Math.abs(p.x - start.x);
       const dz = Math.abs(p.z - start.z);
       if (dx >= dz) p.z = start.z;
@@ -909,7 +937,6 @@ export class EditorEngine {
         this.initMesh(slab);
         this.refreshVisibility();
         this.refreshAppearance();
-        // Un techo transparente/oculto no se puede seleccionar: solo avisar.
         if (this.selectableMeshes().includes(slab)) this.select(slab);
         else this.emitSelection();
       }
@@ -1200,6 +1227,54 @@ export class EditorEngine {
     return this.camera ? this.camera.quaternion.clone() : null;
   }
 
+  /**
+   * Reencuadra el modelo con el tamaño actual del canvas, sin cambiar la
+   * dirección de la cámara. Se usa al abrir/cerrar la pantalla dividida.
+   */
+  fitToModel() {
+    if (!this.model) return;
+    this.onResize();
+    this.tween = null;
+
+    const { center, radius } = this.getModelBounds();
+    const aspect = Math.max(this.canvas.clientWidth / this.canvas.clientHeight || 1, 0.1);
+    const camera = this.camera;
+    const dir = camera.position.clone().sub(this.orbit.target);
+    if (dir.lengthSq() < 1e-6) dir.set(1, 0.8, 1);
+    dir.normalize();
+
+    // En Animado la cámara mira un poco por debajo del centro para que el
+    // modelo quede apoyado en el piso de presentación.
+    let target = center.clone();
+    if (this.presentation) {
+      const box = new THREE.Box3().setFromObject(this.model.getObject3D());
+      const groundY = box.isEmpty() ? 0 : box.min.y;
+      target = new THREE.Vector3(center.x, groundY + (center.y - groundY) * 0.8, center.z);
+    }
+
+    if (camera.type === 'OrthographicCamera') {
+      this.ortho.zoom = 1;
+      this.viewSize = radius * 2.2 * Math.max(1, 1 / aspect);
+      this.updateOrthoFrustum();
+    }
+
+    const distance =
+      camera.type === 'OrthographicCamera'
+        ? Math.max(radius * 2, 10)
+        : this.fitDistance(radius, aspect) * (this.presentation ? 1.08 : 1);
+    camera.position.copy(target).addScaledVector(dir, distance);
+    this.orbit.target.copy(target);
+    camera.lookAt(target);
+    this.orbit.update();
+  }
+
+  /** Distancia de cámara en perspectiva para que la esfera del modelo quepa. */
+  private fitDistance(radius: number, aspect: number): number {
+    const vFov = THREE.MathUtils.degToRad(this.persp.fov);
+    const hFov = 2 * Math.atan(Math.tan(vFov / 2) * aspect);
+    return Math.max(radius / Math.sin(vFov / 2), radius / Math.sin(hFov / 2)) * 1.15;
+  }
+
   private getModelBounds() {
     const box = new THREE.Box3();
     const obj = this.model?.getObject3D();
@@ -1210,7 +1285,10 @@ export class EditorEngine {
     const center = box.getCenter(new THREE.Vector3());
     const size = box.getSize(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z, 4);
-    return { center, maxDim };
+    // Radio de la esfera que contiene todo el modelo (no solo su lado mayor):
+    // así entra completo desde cualquier ángulo.
+    const radius = Math.max(size.length() / 2, 2);
+    return { center, maxDim, radius };
   }
 
   private updateOrthoFrustum() {
@@ -1237,8 +1315,9 @@ export class EditorEngine {
   private applyView(ortho: boolean, dir: THREE.Vector3, viewName: ViewName) {
     // Cambiar de vista sale del modo Animado (restaura la escena primero).
     this.setPresentationMode(false);
-    const { center, maxDim } = this.getModelBounds();
-    const d = maxDim * 2.0;
+    const { center, radius } = this.getModelBounds();
+    const aspect = Math.max(this.canvas.clientWidth / this.canvas.clientHeight || 1, 0.1);
+    const d = ortho ? Math.max(radius * 2, 10) : this.fitDistance(radius, aspect);
     const n = dir.clone().normalize();
     const up = new THREE.Vector3(0, 1, 0);
     if (Math.abs(n.y) > 0.95) up.set(0, 0, -1);
@@ -1251,14 +1330,16 @@ export class EditorEngine {
     this.camera.up.copy(up);
     if (ortho) {
       this.ortho.zoom = 1;
-      this.viewSize = maxDim * 1.3;
+      this.viewSize = radius * 2.2 * Math.max(1, 1 / aspect);
       this.updateOrthoFrustum();
     }
     this.orbit.object = this.camera;
-    this.orbit.enableRotate = !ortho;
+    this.orbit.enableRotate = true;
     this.updateTouchGestures();
     this.transformControls.camera = this.camera;
+    this.onProjection(ortho ? 'orthographic' : 'perspective');
     this.view = viewName;
+    this.updateMouseButtons();
     this.refreshVisibility();
     this.refreshAppearance();
 
@@ -1314,19 +1395,84 @@ export class EditorEngine {
     this.transformControls.setTranslationSnap(value);
   }
 
-  setOrthoMode(enabled: boolean) {
-    this.orthoMode = enabled;
+  getProjectionMode(): ProjectionMode {
+    return this.camera.type === 'OrthographicCamera' ? 'orthographic' : 'perspective';
   }
 
-  setToolMode(mode: 'select' | 'hand') {
+  setProjectionListener(listener: (mode: ProjectionMode) => void) {
+    this.onProjection = listener;
+    this.onProjection(this.getProjectionMode());
+  }
+
+  /** Cambia la camara sin cambiar la orientacion ni el punto de mira. */
+  setProjectionMode(mode: ProjectionMode) {
+    const ortho = mode === 'orthographic';
+    if ((this.camera.type === 'OrthographicCamera') === ortho) {
+      this.orbit.enableRotate = true;
+      this.updateTouchGestures();
+      return;
+    }
+
+    const from = this.camera;
+    const to = ortho ? this.ortho : this.persp;
+    const target = this.orbit.target.clone();
+    to.position.copy(from.position);
+
+    if (ortho) {
+      // La ortográfica conserva la orientación y el encuadre.
+      to.up.copy(from.up);
+      to.quaternion.copy(from.quaternion);
+    } else {
+      // Al volver a perspectiva, la órbita debe ser "turntable" con Y arriba.
+      // Si venimos de una vista cenital exacta, inclinamos un poco la cámara
+      // para que el orbit no gire sobre un eje ambiguo.
+      to.up.set(0, 1, 0);
+      const offset = to.position.clone().sub(target);
+      if (Math.abs(offset.clone().normalize().y) > 0.98) {
+        to.position.z += Math.max(0.01, offset.length() * 0.03);
+      }
+      to.lookAt(target);
+    }
+
+    if (ortho) {
+      const distance = this.orbit.target.distanceTo(from.position);
+      const halfHeight = Math.max(
+        2,
+        distance * Math.tan(THREE.MathUtils.degToRad(this.persp.fov / 2)),
+      );
+      this.viewSize = halfHeight * 2;
+      this.ortho.zoom = 1;
+      this.updateOrthoFrustum();
+    } else {
+      this.persp.updateProjectionMatrix();
+    }
+
+    this.camera = to;
+    this.orbit.object = to;
+    // La rueda puede orbitar también con proyección ortográfica; el gesto
+    // táctil se decide abajo según el tipo de cámara.
+    this.orbit.enableRotate = true;
+    this.orbit.update();
+    this.updateTouchGestures();
+    this.transformControls.camera = to;
+    this.onProjection(mode);
+  }
+
+  setToolMode(mode: 'select' | 'hand' = 'select') {
     this.toolMode = mode;
-    // En modo Mano el boton izquierdo desplaza la vista (pan), como Figma.
+    this.updateTouchGestures();
+  }
+
+  /**
+   * Rueda del ratón: orbita en perspectiva y ortográfica. El botón derecho
+   * desplaza.
+   */
+  private updateMouseButtons() {
     this.orbit.mouseButtons = {
-      LEFT: mode === 'hand' ? THREE.MOUSE.PAN : THREE.MOUSE.ROTATE,
-      MIDDLE: THREE.MOUSE.DOLLY,
+      LEFT: null,
+      MIDDLE: THREE.MOUSE.ROTATE,
       RIGHT: THREE.MOUSE.PAN,
     };
-    this.updateTouchGestures();
   }
 
   /** Multiselección táctil: reemplaza a Ctrl+clic y habilita el marco con el dedo. */
@@ -1339,7 +1485,9 @@ export class EditorEngine {
    * (o en modo Mano); 2 dedos hacen zoom + desplazamiento.
    */
   private updateTouchGestures() {
-    const panOneFinger = this.toolMode === 'hand' || !this.orbit.enableRotate;
+    this.updateMouseButtons();
+    // En ortográfica un dedo desplaza el plano; en perspectiva, orbita.
+    const panOneFinger = this.toolMode === 'hand' || this.camera.type === 'OrthographicCamera';
     this.orbit.touches = {
       ONE: panOneFinger ? THREE.TOUCH.PAN : THREE.TOUCH.ROTATE,
       TWO: THREE.TOUCH.DOLLY_PAN,
@@ -1480,18 +1628,7 @@ export class EditorEngine {
   }
 
   private selectableMeshes(): THREE.Mesh[] {
-    return this.allMeshes().filter(
-      (mesh) =>
-        mesh.visible &&
-        !this.isLocked(mesh) &&
-        // Techo transparente/oculto (o en Planta): el clic lo atraviesa.
-        !(this.isRoof(mesh) && this.roofSeeThrough()),
-    );
-  }
-
-  /** El techo se dibuja traslúcido y no captura clics. */
-  private roofSeeThrough(): boolean {
-    return this.roofMode !== 'visible' || this.view === 'planta';
+    return this.allMeshes().filter((mesh) => mesh.visible && !this.isLocked(mesh));
   }
 
   setRoofDrawKind(kind: RoofDrawKind) {
@@ -1536,15 +1673,11 @@ export class EditorEngine {
       const selected = new Set(this.selection);
       const hasSelection = selected.size > 0;
       // Lo que puede tapar una etiqueta: piezas visibles y opacas.
-      const blockers = this.allMeshes().filter(
-        (m) => m.visible && !(this.isRoof(m) && this.roofSeeThrough()),
-      );
+      const blockers = this.allMeshes().filter((m) => m.visible);
 
       this.allMeshes().forEach((mesh) => {
         const kind = this.measureKindOf(mesh);
         if (!kind || !this.measureKinds.has(kind) || !mesh.visible) return;
-        // En Planta el techo es traslúcido: su etiqueta taparía las del plano.
-        if (kind === 'roof' && this.view === 'planta') return;
         wanted.add(mesh);
 
         const active = selected.has(mesh);
@@ -1618,7 +1751,6 @@ export class EditorEngine {
     this.allMeshes().forEach((mesh) => {
       const layer = this.resolveLayer(mesh);
       const layerVisible = layer ? layer.visible && !layer.congelada : true;
-      // En Planta el techo se ve traslúcido (ver applyMeshAppearance).
       const hiddenByMode = this.isRoof(mesh) && this.roofMode === 'oculto';
       mesh.visible = layerVisible && !hiddenByMode;
     });
@@ -1796,11 +1928,6 @@ export class EditorEngine {
       });
     }
     const nextMaterial = mesh.material as THREE.MeshStandardMaterial;
-    if (this.isRoof(mesh) && this.roofSeeThrough()) {
-      nextMaterial.transparent = true;
-      nextMaterial.opacity = Math.min(nextMaterial.opacity, 0.25);
-      nextMaterial.depthWrite = false; // no tapa el interior al renderizar
-    }
     // Ventanas sin textura: que el vidrio se vea como vidrio (no un bloque gris)
     if (!material && this.measureKindOf(mesh) === 'window') {
       nextMaterial.transparent = true;
@@ -4520,6 +4647,7 @@ export class EditorEngine {
   dispose() {
     this.clearAgentPreview();
     this.setPresentationMode(false);
+    this.canvas.removeEventListener('pointerdown', this.onPointerDownCapture, true);
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);

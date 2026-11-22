@@ -28,6 +28,12 @@ export const XIcon = (props: IconProps) => (
   </svg>
 );
 
+export const ArrowLeftIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M19 12H5M12 19l-7-7 7-7" />
+  </svg>
+);
+
 export const CheckIcon = (props: IconProps) => (
   <svg {...base(props)}>
     <path d="M20 6 9 17l-5-5" />
@@ -272,5 +278,12 @@ export const UsersIcon = (props: IconProps) => (
     <circle cx="9" cy="7" r="4" />
     <path d="M22 21v-2a4 4 0 0 0-3-3.87" />
     <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+  </svg>
+);
+
+export const SlidersIcon = (props: IconProps) => (
+  <svg {...base(props)}>
+    <path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3" />
+    <path d="M1 14h6M9 8h6M17 16h6" />
   </svg>
 );

@@ -4,10 +4,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentApi } from '@/entities/agent/api';
 import { SupportChat } from './SupportChat';
 
-vi.mock('@/entities/agent/api', () => ({ agentApi: { step: vi.fn() } }));
+vi.mock('@/entities/agent/api', () => ({
+  agentApi: { step: vi.fn(), config: vi.fn() },
+}));
 
 describe('SupportChat', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(agentApi.config).mockResolvedValue({
+      provider: 'gemini',
+      providers: [
+        { id: 'gemini', label: 'Gemini', vision: true },
+        { id: 'deepseek', label: 'DeepSeek', vision: true },
+      ],
+      vision: true,
+      audio: true,
+    });
+  });
 
   it('envía preguntas desde el Dashboard en modo soporte y muestra la guía', async () => {
     vi.mocked(agentApi.step).mockResolvedValue({

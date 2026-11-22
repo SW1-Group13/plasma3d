@@ -30,6 +30,8 @@ db.sqlite3
 !*/migrations/__init__.py
 !plasma3d_api/push_notifications/migrations/
 !plasma3d_api/push_notifications/migrations/*.py
+!plasma3d_api/suggestion_risk/migrations/
+!plasma3d_api/suggestion_risk/migrations/*.py
 
 # Archivos de entorno
 .env

@@ -1,6 +1,8 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { HomeViewer } from '@/widgets/viewer3d/HomeViewer';
 import { Button } from '@/shared/ui/button';
+import { PlayCircleIcon } from '@/shared/ui/icons';
 const STEPS = [
   { n: 1, title: 'Sube tu plano', text: 'PNG, JPG o PDF de tu plano 2D.', color: '#4f7cff' },
   { n: 2, title: 'La IA detecta muros', text: 'Muros, puertas y ventanas en segundos.', color: '#38bdf8' },
@@ -9,6 +11,8 @@ const STEPS = [
 ];
 
 export function HomePage() {
+  const [videoPlaying, setVideoPlaying] = useState(false);
+
   return (
     <div className="relative isolate overflow-hidden">
       {/* Fondo: grilla de plano en movimiento, bocetos que se dibujan y brillo */}
@@ -64,6 +68,59 @@ export function HomePage() {
           </span>
         </div>
       </div>
+
+      {/* Video: fachada ligera; el iframe de YouTube recién se carga al pulsar play. */}
+      <section aria-label="Video de Plasma3D" className="p3d-rise-in flex flex-col gap-4">
+        <div className="flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">Video</p>
+            <h2 className="mt-1 text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+              Mira Plasma3D en acción
+            </h2>
+          </div>
+          <span className="text-sm text-muted">Carga rápida: el video solo se descarga al reproducirlo.</span>
+        </div>
+
+        <div className="mx-auto w-full max-w-4xl overflow-hidden rounded-2xl border border-primary/25 bg-black shadow-2xl shadow-primary/10">
+          <div className="relative aspect-video">
+            {videoPlaying ? (
+              <iframe
+                className="absolute inset-0 h-full w-full"
+                src="https://www.youtube-nocookie.com/embed/Hj_RZQ1wC6E?autoplay=1&rel=0&modestbranding=1"
+                title="Video de Plasma3D"
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                referrerPolicy="strict-origin-when-cross-origin"
+                allowFullScreen
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => setVideoPlaying(true)}
+                className="group absolute inset-0 flex h-full w-full cursor-pointer items-center justify-center overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                aria-label="Reproducir video de Plasma3D en YouTube"
+              >
+                <img
+                  src="https://i.ytimg.com/vi/Hj_RZQ1wC6E/maxresdefault.jpg"
+                  onError={(event) => {
+                    const image = event.currentTarget;
+                    image.onerror = null;
+                    image.src = 'https://i.ytimg.com/vi/Hj_RZQ1wC6E/hqdefault.jpg';
+                  }}
+                  alt="Miniatura del video de Plasma3D"
+                  loading="lazy"
+                  decoding="async"
+                  className="h-full w-full object-cover opacity-85 transition-transform duration-300 group-hover:scale-[1.02]"
+                />
+                <span className="absolute inset-0 bg-black/25 transition-colors group-hover:bg-black/15" />
+                <span className="relative flex h-16 w-16 items-center justify-center rounded-full bg-[#ff0033] text-white shadow-xl shadow-black/40 transition-transform duration-200 group-hover:scale-110">
+                  <PlayCircleIcon width={34} height={34} />
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+      </section>
 
       {/* Cómo funciona */}
       <section aria-label="Cómo funciona" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { adminApi } from '@/entities/admin/api';
 import type {
+  AdminAiSettings,
   AdminMetrics,
   AdminPayment,
   AdminRole,
@@ -43,6 +44,18 @@ function dateLabel(value?: string | null): string {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleDateString();
 }
 
+function aiFormFromSettings(settings: AdminAiSettings) {
+  const effective = settings.effective ?? settings.fallback;
+  return {
+    ollama_url: settings.ollama_url || effective.ollama_url || '',
+    ollama_models: settings.ollama_models || effective.ollama_models || '',
+    ollama_timeout:
+      settings.ollama_timeout != null
+        ? String(settings.ollama_timeout)
+        : String(effective.ollama_timeout ?? 240),
+  };
+}
+
 export function AdminPage() {
   const [metrics, setMetrics] = useState<AdminMetrics | null>(null);
   const [users, setUsers] = useState<AdminUser[]>([]);
@@ -51,18 +64,30 @@ export function AdminPage() {
   const [savingId, setSavingId] = useState<number | null>(null);
   const [query, setQuery] = useState('');
   const [roleFilter, setRoleFilter] = useState<'todos' | AdminRole>('todos');
+  const [aiSettings, setAiSettings] = useState<AdminAiSettings | null>(null);
+  const [aiForm, setAiForm] = useState({
+    ollama_url: '',
+    ollama_models: '',
+    ollama_timeout: '',
+  });
+  const [savingAi, setSavingAi] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [metricsData, usersData, paymentsData] = await Promise.all([
+      const [metricsData, usersData, paymentsData, aiData] = await Promise.all([
         adminApi.metrics(),
         adminApi.users(),
         adminApi.payments(),
+        adminApi.aiSettings().catch(() => null),
       ]);
       setMetrics(metricsData);
       setUsers(usersData.results);
       setPayments(paymentsData);
+      if (aiData) {
+        setAiSettings(aiData);
+        setAiForm(aiFormFromSettings(aiData));
+      }
     } catch {
       toast.error('Error', 'No se pudo cargar el panel de administración.');
     } finally {
@@ -85,6 +110,25 @@ export function AdminPage() {
       return matchesText && matchesRole;
     });
   }, [users, query, roleFilter]);
+
+  async function saveAiSettings() {
+    setSavingAi(true);
+    try {
+      const timeout = aiForm.ollama_timeout.trim();
+      const updated = await adminApi.updateAiSettings({
+        ollama_url: aiForm.ollama_url.trim(),
+        ollama_models: aiForm.ollama_models.trim(),
+        ollama_timeout: timeout === '' ? null : Number(timeout),
+      });
+      setAiSettings(updated);
+      setAiForm(aiFormFromSettings(updated));
+      toast.success('IA actualizada', 'La configuración de Ollama se guardó.');
+    } catch {
+      toast.error('Error', 'No se pudo guardar la configuración de Ollama.');
+    } finally {
+      setSavingAi(false);
+    }
+  }
 
   async function changeRole(user: AdminUser, rol: AdminRole) {
     if (user.rol === rol) return;
@@ -150,6 +194,68 @@ export function AdminPage() {
                 hint={`${metrics.riesgo.altos} con riesgo alto/crítico`}
               />
             </div>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>IA local (Ollama)</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="grid gap-4 lg:grid-cols-[2fr_2fr_140px_auto]">
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="ai-ollama-url" className="text-xs font-medium text-muted">
+                      URL de Ollama
+                    </label>
+                    <Input
+                      id="ai-ollama-url"
+                      value={aiForm.ollama_url}
+                      onChange={(e) => setAiForm({ ...aiForm, ollama_url: e.target.value })}
+                      placeholder={aiSettings?.fallback.ollama_url || 'https://xxxx.trycloudflare.com'}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="ai-ollama-models" className="text-xs font-medium text-muted">
+                      Modelos
+                    </label>
+                    <Input
+                      id="ai-ollama-models"
+                      value={aiForm.ollama_models}
+                      onChange={(e) => setAiForm({ ...aiForm, ollama_models: e.target.value })}
+                      placeholder={aiSettings?.fallback.ollama_models || 'qwen2.5:3b'}
+                    />
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <label htmlFor="ai-ollama-timeout" className="text-xs font-medium text-muted">
+                      Timeout (s)
+                    </label>
+                    <Input
+                      id="ai-ollama-timeout"
+                      type="number"
+                      min={10}
+                      max={3600}
+                      value={aiForm.ollama_timeout}
+                      onChange={(e) => setAiForm({ ...aiForm, ollama_timeout: e.target.value })}
+                      placeholder={String(aiSettings?.fallback.ollama_timeout ?? 240)}
+                    />
+                  </div>
+                  <div className="flex items-end">
+                    <Button onClick={() => void saveAiSettings()} disabled={savingAi}>
+                      {savingAi ? <Spinner className="h-4 w-4" /> : 'Guardar IA'}
+                    </Button>
+                  </div>
+                </div>
+                <p className="mt-3 text-xs text-muted">
+                  Si dejas un campo vacío, se usa el valor de `.env`: URL{' '}
+                  <code>{aiSettings?.fallback.ollama_url || '—'}</code>, modelos{' '}
+                  <code>{aiSettings?.fallback.ollama_models || '—'}</code>, timeout{' '}
+                  <code>{aiSettings?.fallback.ollama_timeout ?? 240}s</code>.
+                </p>
+                {aiSettings?.actualizado && (
+                  <p className="mt-1 text-xs text-muted">
+                    Última actualización: {new Date(aiSettings.actualizado).toLocaleString()}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
 
             <Card>
               <CardHeader className="flex-row items-center justify-between gap-3">

@@ -46,6 +46,23 @@ export interface AdminUsersResponse {
   results: AdminUser[];
 }
 
+export interface AdminAiSettings {
+  ollama_url: string;
+  ollama_models: string;
+  ollama_timeout: number | null;
+  effective: {
+    ollama_url: string;
+    ollama_models: string;
+    ollama_timeout: number;
+  };
+  fallback: {
+    ollama_url: string;
+    ollama_models: string;
+    ollama_timeout: number;
+  };
+  actualizado: string;
+}
+
 export interface AdminPayment {
   id: number;
   usuario: number;

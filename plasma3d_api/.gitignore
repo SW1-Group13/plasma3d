@@ -27,6 +27,8 @@ db.sqlite3
 !*/migrations/__init__.py
 !push_notifications/migrations/
 !push_notifications/migrations/*.py
+!suggestion_risk/migrations/
+!suggestion_risk/migrations/*.py
 
 # Archivos de entorno
 .env
